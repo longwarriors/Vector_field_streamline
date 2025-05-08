@@ -734,3 +734,141 @@ if __name__ == "__main__":
 
     # 取消注释下行以演示多极系统
     # multi_pole_system()
+
+    # 方法6：创建一个简单的电磁铁模型
+    def setup_halbach_array(simulator, center=[0, 0, 0], radius=5.0, num_magnets=8,
+                            strength=1.0, height=0.5, linear=False, length=None,
+                            strong_side="inside", label_prefix="Halbach"):
+        """
+        创建一个海尔贝克阵列模型
+
+        参数:
+        simulator: MagneticFieldSimulator实例
+        center: 阵列中心坐标 [x, y, z]
+        radius: 环形阵列的半径(仅用于环形阵列)
+        num_magnets: 磁铁数量
+        strength: 每个磁铁的磁矩强度
+        height: 对于线性阵列，表示每个磁铁的间距；对于环形阵列，表示z方向的高度
+        linear: 如果为True，创建线性海尔贝克阵列；否则创建环形海尔贝克阵列
+        length: 线性阵列的总长度(仅用于线性阵列)，如果为None则根据num_magnets和height计算
+        strong_side: 'inside'或'outside'，决定强磁场在环形阵列的内侧还是外侧；
+                    'up'或'down'，决定强磁场在线性阵列的上方还是下方
+        label_prefix: 磁铁标签的前缀
+
+        返回值:
+        添加到模拟器的磁偶极子列表
+        """
+        dipoles = []
+        center = np.array(center)
+
+        if linear:
+            # 线性海尔贝克阵列
+            if length is None:
+                length = num_magnets * height
+
+            # 计算每个磁铁的位置
+            positions = []
+            for i in range(num_magnets):
+                # 均匀分布在指定长度上
+                x = center[0] - length / 2 + (i + 0.5) * length / num_magnets
+                positions.append([x, center[1], center[2]])
+
+            # 决定磁场强侧的方向
+            up_direction = np.array([0, 0, 1]) if strong_side.lower() == "up" else np.array([0, 0, -1])
+
+            # 创建磁铁，每个磁铁的方向根据海尔贝克原理旋转
+            for i, pos in enumerate(positions):
+                # 海尔贝克阵列的关键：每个磁铁旋转90°
+                # 对于线性阵列，如果强侧向上，则磁矩方向为：→ ↑ ← ↓ → ↑ ← ↓ ...
+                # 对于线性阵列，如果强侧向下，则磁矩方向为：← ↑ → ↓ ← ↑ → ↓ ...
+                angle = i * (2 * np.pi / 4)  # 每个磁铁旋转90度
+                if strong_side.lower() == "down":
+                    angle = -angle  # 反向旋转
+
+                # 计算磁矩方向
+                mx = np.cos(angle)
+                my = 0
+                mz = np.sin(angle)
+                orientation = np.array([mx, my, mz])
+
+                # 创建磁偶极子
+                dipole = MagneticDipole(strength, pos, orientation, f"{label_prefix}_{i + 1}")
+                dipoles.append(dipole)
+                simulator.add_dipole(dipole)
+
+        else:
+            # 环形海尔贝克阵列
+            # 计算每个磁铁的位置（圆周上均匀分布）
+            angles = np.linspace(0, 2 * np.pi, num_magnets, endpoint=False)
+            for i, angle in enumerate(angles):
+                x = center[0] + radius * np.cos(angle)
+                y = center[1] + radius * np.sin(angle)
+                z = center[2]
+                position = [x, y, z]
+
+                # 海尔贝克阵列的关键：磁矩方向旋转两倍于位置角
+                # 如果强侧在内部：磁矩方向 = 2*θ（位置角）+ π/2
+                # 如果强侧在外部：磁矩方向 = 2*θ（位置角）- π/2
+                if strong_side.lower() == "inside":
+                    m_angle = 2 * angle + np.pi / 2
+                else:  # "outside"
+                    m_angle = 2 * angle - np.pi / 2
+
+                # 计算磁矩方向
+                mx = np.cos(m_angle)
+                my = np.sin(m_angle)
+                mz = 0  # 磁矩在xy平面内
+                orientation = np.array([mx, my, mz])
+
+                # 创建磁偶极子
+                dipole = MagneticDipole(strength, position, orientation, f"{label_prefix}_{i + 1}")
+                dipoles.append(dipole)
+                simulator.add_dipole(dipole)
+
+        return dipoles
+
+
+    # 演示海尔贝克阵列的主函数
+    def demo_halbach_array():
+        """演示不同类型的海尔贝克阵列及其磁场分布"""
+        # 环形海尔贝克阵列（强侧在内）
+        sim_circle_inside = MagneticFieldSimulator()
+        setup_halbach_array(sim_circle_inside, center=[0, 0, 0], radius=5.0,
+                            num_magnets=8, strength=1.0, linear=False,
+                            strong_side="inside", label_prefix="Halbach_In")
+
+        print("环形海尔贝克阵列 - 强侧在内:")
+        sim_circle_inside.visualize(mode='2d', plane='xy', xlim=[-8, 8], ylim=[-8, 8])
+
+        # 环形海尔贝克阵列（强侧在外）
+        sim_circle_outside = MagneticFieldSimulator()
+        setup_halbach_array(sim_circle_outside, center=[0, 0, 0], radius=5.0,
+                            num_magnets=8, strength=1.0, linear=False,
+                            strong_side="outside", label_prefix="Halbach_Out")
+
+        print("环形海尔贝克阵列 - 强侧在外:")
+        sim_circle_outside.visualize(mode='2d', plane='xy', xlim=[-8, 8], ylim=[-8, 8])
+
+        # 线性海尔贝克阵列（强侧向上）
+        sim_linear_up = MagneticFieldSimulator()
+        setup_halbach_array(sim_linear_up, center=[0, 0, 0], num_magnets=8,
+                            strength=1.0, height=1.0, linear=True, length=10.0,
+                            strong_side="up", label_prefix="Halbach_Up")
+
+        print("线性海尔贝克阵列 - 强侧向上:")
+        sim_linear_up.visualize(mode='2d', plane='xz', xlim=[-8, 8], ylim=[-5, 5])
+
+        # 线性海尔贝克阵列（强侧向下）
+        sim_linear_down = MagneticFieldSimulator()
+        setup_halbach_array(sim_linear_down, center=[0, 0, 0], num_magnets=8,
+                            strength=1.0, height=1.0, linear=True, length=10.0,
+                            strong_side="down", label_prefix="Halbach_Down")
+
+        print("线性海尔贝克阵列 - 强侧向下:")
+        sim_linear_down.visualize(mode='2d', plane='xz', xlim=[-8, 8], ylim=[-5, 5])
+
+        # 3D可视化（选择其中一种配置）
+        sim_circle_inside.visualize(mode='3d', grid_size=6, xlim=[-8, 8], ylim=[-8, 8], zlim=[-3, 3])
+
+    # 运行海尔贝克阵列演示
+    demo_halbach_array()
