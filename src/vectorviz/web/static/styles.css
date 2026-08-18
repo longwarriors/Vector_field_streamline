@@ -692,6 +692,10 @@ input[type="range"]::-moz-range-thumb {
   backdrop-filter: blur(7px);
 }
 
+.colorbar[hidden] {
+  display: none;
+}
+
 .colorbar-gradient {
   width: 9px;
   min-height: 100%;
@@ -740,6 +744,7 @@ input[type="range"]::-moz-range-thumb {
   display: flex;
   visibility: hidden;
   opacity: 0;
+  pointer-events: none;
 }
 
 .spinner {

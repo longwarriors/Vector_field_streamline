@@ -337,10 +337,11 @@ def test_static_index_and_assets_are_served(client: TestClient) -> None:
     assert "VectorViz" in index.text
     assert "field-canvas" in index.text
 
-    for asset in ("/app.js", "/styles.css"):
+    for asset in ("/app.js", "/coordinates.js", "/color-scale.js", "/styles.css"):
         response = client.get(asset)
         assert response.status_code == 200
         assert response.text.strip()
+    assert '<script type="module" src="app.js"></script>' in index.text
 
 
 @pytest.mark.parametrize(

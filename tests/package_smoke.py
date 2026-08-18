@@ -20,7 +20,14 @@ def main() -> None:
 
             assert FieldLineTracer.__module__ == "vectorviz.tracing"
             assert UniformField.__module__ == "vectorviz.fields"
-            assert Path(STATIC_DIR, "index.html").is_file()
+            for asset in (
+                "index.html",
+                "app.js",
+                "coordinates.js",
+                "color-scale.js",
+                "styles.css",
+            ):
+                assert Path(STATIC_DIR, asset).is_file()
             assert create_app().title == "VectorViz API"
         finally:
             os.chdir(original_directory)

@@ -23,6 +23,7 @@ dev = [
   "httpx>=0.28",
   "mkdocs-material>=9.5",
   "mkdocstrings[python]>=0.27",
+  "playwright>=1.62.0",
   "pytest>=8.3",
   "pytest-cov>=6.0",
   "ruff>=0.8",
@@ -37,6 +38,9 @@ packages = ["src/vectorviz"]
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers --cov=vectorviz --cov-report=term-missing"
 testpaths = ["tests"]
+markers = [
+  "browser: executes the build-free frontend in headless Chromium",
+]
 
 [tool.coverage.run]
 branch = true

@@ -1,14 +1,15 @@
+import { colorForScalar, getScaleType, resolveScale } from "./color-scale.js";
+import {
+  calculatePlotRect,
+  clamp,
+  createCoordinateTransform,
+  sampleNearest as sampleScalarNearest,
+} from "./coordinates.js";
+
 (() => {
   "use strict";
 
   const API_URL = "/api/scene";
-  const PALETTE = [
-    [0.0, [68, 1, 84]],
-    [0.25, [59, 82, 139]],
-    [0.52, [33, 145, 140]],
-    [0.76, [94, 201, 98]],
-    [1.0, [253, 231, 37]],
-  ];
 
   const elements = {
     canvas: document.querySelector("#field-canvas"),
@@ -55,12 +56,10 @@
     drag: null,
     selectedSource: null,
     plotRect: null,
+    transform: null,
     scale: null,
+    presentationStatus: "idle",
   };
-
-  function clamp(value, minimum, maximum) {
-    return Math.max(minimum, Math.min(maximum, value));
-  }
 
   function finiteNumber(value, fallback = 0) {
     const number = Number(value);
@@ -170,6 +169,35 @@
     return scene;
   }
 
+  function invalidateSceneView(status) {
+    state.scene = null;
+    state.selectedSource = null;
+    state.drag = null;
+    state.plotRect = null;
+    state.transform = null;
+    state.scale = null;
+    state.presentationStatus = status;
+    delete elements.canvas.dataset.dragging;
+    elements.canvas.dataset.draggable = "false";
+    elements.canvas.setAttribute(
+      "aria-label",
+      status === "error" ? "场景计算失败，当前没有可显示结果。" : "场景正在重新计算。",
+    );
+    elements.sceneTitle.textContent = status === "error" ? "场景不可用" : "正在计算场景…";
+    elements.projectionNote.textContent =
+      status === "error"
+        ? "上一份数值结果已清除；修正参数或连接后可重试。"
+        : "新结果返回前不显示上一份数值场景。";
+    elements.scaleBadge.textContent = status === "error" ? "无有效数据" : "等待数据";
+    elements.lineCount.textContent = "—";
+    elements.gridSize.textContent = "—";
+    elements.fieldUnit.textContent = "—";
+    elements.colorbar.hidden = true;
+    elements.probe.hidden = true;
+    renderSourceEditors();
+    render();
+  }
+
   async function loadScene({ preserveSources = true } = {}) {
     window.clearTimeout(state.debounceTimer);
     if (!preserveSources) state.sourceOverrides = null;
@@ -177,9 +205,11 @@
     const controller = new AbortController();
     const sequence = ++state.requestSequence;
     state.requestController = controller;
+    const requestBody = currentRequestBody();
 
     setLoading(true);
     clearError();
+    invalidateSceneView("loading");
     try {
       const response = await fetch(API_URL, {
         method: "POST",
@@ -187,7 +217,7 @@
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(currentRequestBody()),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(await extractError(response));
@@ -195,6 +225,7 @@
       if (sequence !== state.requestSequence) return;
 
       state.scene = scene;
+      state.presentationStatus = "ready";
       state.sourceOverrides =
         elements.preset.value === "uniform"
           ? null
@@ -212,6 +243,7 @@
       elements.liveStatus.textContent = `${scene.metadata.title || "场景"}已加载，共 ${scene.lines.length} 条场线。`;
     } catch (error) {
       if (error.name !== "AbortError" && sequence === state.requestSequence) {
+        invalidateSceneView("error");
         setError(error.message || "无法连接场景计算服务");
       }
     } finally {
@@ -265,58 +297,6 @@
     }[value] || "物理场";
   }
 
-  function getScaleType(scale) {
-    const value = typeof scale === "string" ? scale : scale?.type;
-    return String(value || "linear").toLowerCase().includes("log") ? "log" : "linear";
-  }
-
-  function resolveScale(scalar) {
-    const type = getScaleType(scalar.scale);
-    let minimum = Number(scalar.vmin);
-    let maximum = Number(scalar.vmax);
-    let dataMinimum = Infinity;
-    let dataMaximum = -Infinity;
-    for (const rawValue of scalar.values) {
-      const value = Number(rawValue);
-      if (!Number.isFinite(value) || (type === "log" && value <= 0)) continue;
-      dataMinimum = Math.min(dataMinimum, value);
-      dataMaximum = Math.max(dataMaximum, value);
-    }
-    if (!Number.isFinite(minimum)) minimum = Number.isFinite(dataMinimum) ? dataMinimum : 0;
-    if (!Number.isFinite(maximum)) maximum = Number.isFinite(dataMaximum) ? dataMaximum : 1;
-    if (type === "log" && minimum <= 0) {
-      minimum = Number.isFinite(dataMinimum) ? dataMinimum : Number.MIN_VALUE;
-    }
-    if (!(maximum > minimum)) maximum = minimum + Math.max(Math.abs(minimum) * 1e-6, 1e-12);
-    return { type, minimum, maximum };
-  }
-
-  function normalizeScalar(value, scale) {
-    if (!Number.isFinite(value)) return null;
-    if (scale.type === "log") {
-      if (value <= 0) return null;
-      const minimum = Math.log10(scale.minimum);
-      const maximum = Math.log10(scale.maximum);
-      return clamp((Math.log10(value) - minimum) / (maximum - minimum), 0, 1);
-    }
-    return clamp((value - scale.minimum) / (scale.maximum - scale.minimum), 0, 1);
-  }
-
-  function paletteColor(normalized) {
-    if (normalized === null) return [7, 17, 26];
-    for (let index = 1; index < PALETTE.length; index += 1) {
-      const [rightStop, rightColor] = PALETTE[index];
-      const [leftStop, leftColor] = PALETTE[index - 1];
-      if (normalized <= rightStop) {
-        const fraction = (normalized - leftStop) / (rightStop - leftStop);
-        return leftColor.map((component, componentIndex) =>
-          Math.round(component + (rightColor[componentIndex] - component) * fraction),
-        );
-      }
-    }
-    return PALETTE.at(-1)[1];
-  }
-
   function resizeCanvas() {
     const rect = elements.canvas.getBoundingClientRect();
     const ratio = Math.min(window.devicePixelRatio || 1, 2.5);
@@ -330,51 +310,12 @@
     return { width: rect.width, height: rect.height };
   }
 
-  function calculatePlotRect(width, height) {
-    const leftMargin = width < 520 ? 36 : 48;
-    const rightMargin = width < 520 ? 55 : 68;
-    const topMargin = 20;
-    const bottomMargin = 36;
-    const availableWidth = Math.max(1, width - leftMargin - rightMargin);
-    const availableHeight = Math.max(1, height - topMargin - bottomMargin);
-    const domainWidth = state.scene.domain.x[1] - state.scene.domain.x[0];
-    const domainHeight = state.scene.domain.y[1] - state.scene.domain.y[0];
-    const domainAspect = domainWidth / domainHeight;
-
-    let plotWidth = availableWidth;
-    let plotHeight = plotWidth / domainAspect;
-    if (plotHeight > availableHeight) {
-      plotHeight = availableHeight;
-      plotWidth = plotHeight * domainAspect;
-    }
-    const horizontalInset = (availableWidth - plotWidth) / 2;
-    const verticalInset = (availableHeight - plotHeight) / 2;
-    return {
-      left: leftMargin + horizontalInset,
-      top: topMargin + verticalInset,
-      right: leftMargin + horizontalInset + plotWidth,
-      bottom: topMargin + verticalInset + plotHeight,
-    };
-  }
-
   function worldToCanvas(x, y) {
-    const { scene, plotRect } = state;
-    const [xmin, xmax] = scene.domain.x;
-    const [ymin, ymax] = scene.domain.y;
-    return [
-      plotRect.left + ((x - xmin) / (xmax - xmin)) * (plotRect.right - plotRect.left),
-      plotRect.top + ((ymax - y) / (ymax - ymin)) * (plotRect.bottom - plotRect.top),
-    ];
+    return state.transform.worldToCanvas(x, y);
   }
 
   function canvasToWorld(canvasX, canvasY) {
-    const { scene, plotRect } = state;
-    const [xmin, xmax] = scene.domain.x;
-    const [ymin, ymax] = scene.domain.y;
-    return [
-      xmin + ((canvasX - plotRect.left) / (plotRect.right - plotRect.left)) * (xmax - xmin),
-      ymax - ((canvasY - plotRect.top) / (plotRect.bottom - plotRect.top)) * (ymax - ymin),
-    ];
+    return state.transform.canvasToWorld(canvasX, canvasY);
   }
 
   function render() {
@@ -382,9 +323,11 @@
     context.clearRect(0, 0, size.width, size.height);
     context.fillStyle = "#07111a";
     context.fillRect(0, 0, size.width, size.height);
+    elements.canvas.dataset.sceneState = state.presentationStatus;
     if (!state.scene) return;
 
-    state.plotRect = calculatePlotRect(size.width, size.height);
+    state.plotRect = calculatePlotRect(size.width, size.height, state.scene.domain);
+    state.transform = createCoordinateTransform(state.scene.domain, state.plotRect);
     state.scale = resolveScale(state.scene.scalar);
     drawHeatmap();
     drawGridAndAxes();
@@ -402,21 +345,12 @@
 
     // The API uses row-major values, with y descending from ymax to ymin.
     for (let index = 0; index < scalar.values.length; index += 1) {
-      if (scalar.mask?.[index]) {
-        const offset = index * 4;
-        image.data[offset] = 7;
-        image.data[offset + 1] = 17;
-        image.data[offset + 2] = 26;
-        image.data[offset + 3] = 0;
-        continue;
-      }
-      const value = Number(scalar.values[index]);
-      const color = paletteColor(normalizeScalar(value, state.scale));
+      const color = colorForScalar(scalar.values[index], Boolean(scalar.mask?.[index]), state.scale);
       const offset = index * 4;
       image.data[offset] = color[0];
       image.data[offset + 1] = color[1];
       image.data[offset + 2] = color[2];
-      image.data[offset + 3] = 255;
+      image.data[offset + 3] = color[3];
     }
     offscreenContext.putImageData(image, 0, 0);
 
@@ -493,7 +427,7 @@
     context.lineCap = "round";
 
     for (const line of lines) {
-      const points = validPoints(line).map(([x, y]) => worldToCanvas(x, y));
+      const points = state.transform.projectPoints(validPoints(line));
       if (points.length < 2) continue;
       tracePath(points);
       context.strokeStyle = "rgba(0, 8, 12, 0.5)";
@@ -782,19 +716,7 @@
 
   function sampleNearest(x, y) {
     const { scalar, domain } = state.scene;
-    const column = clamp(
-      Math.round(((x - domain.x[0]) / (domain.x[1] - domain.x[0])) * (scalar.nx - 1)),
-      0,
-      scalar.nx - 1,
-    );
-    // Row zero corresponds to ymax.
-    const row = clamp(
-      Math.round(((domain.y[1] - y) / (domain.y[1] - domain.y[0])) * (scalar.ny - 1)),
-      0,
-      scalar.ny - 1,
-    );
-    const index = row * scalar.nx + column;
-    return scalar.mask?.[index] ? Number.NaN : Number(scalar.values[index]);
+    return sampleScalarNearest(scalar, domain, x, y);
   }
 
   function handleCanvasKeydown(event) {

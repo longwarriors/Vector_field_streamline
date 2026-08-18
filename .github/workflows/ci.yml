@@ -10,11 +10,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   quality:
     name: Quality / Ubuntu / Python 3.13
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,6 +37,9 @@ jobs:
 
       - name: Lint Python sources
         run: uv run --locked ruff check .
+
+      - name: Install headless Chromium for frontend semantics
+        run: uv run --locked playwright install --with-deps --only-shell chromium
 
       - name: Run tests and enforce coverage
         run: uv run --locked pytest
@@ -75,7 +82,7 @@ jobs:
         run: uv sync --locked
 
       - name: Run compatibility tests without the canonical coverage gate
-        run: uv run --locked pytest --no-cov
+        run: uv run --locked pytest --no-cov -m "not browser"
 
   pages-build:
     name: Build GitHub Pages artifact
