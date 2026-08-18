@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from vectorviz import __version__
+from vectorviz.web import app as web_app
 from vectorviz.web.app import STATIC_DIR, create_app
 from vectorviz.web.scene import build_scene
 from vectorviz.web.schemas import SceneRequest, SourceInput
@@ -148,3 +149,40 @@ def test_static_index_and_assets_are_served(client: TestClient) -> None:
         response = client.get(asset)
         assert response.status_code == 200
         assert response.text.strip()
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_host", "expected_port", "expected_reload"),
+    [
+        ([], "127.0.0.1", 8000, False),
+        (["--host", "0.0.0.0", "--port", "9000", "--reload"], "0.0.0.0", 9000, True),
+    ],
+)
+def test_cli_passes_server_options_to_uvicorn(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    expected_host: str,
+    expected_port: int,
+    expected_reload: bool,
+) -> None:
+    calls: list[tuple[object, dict[str, object]]] = []
+
+    def record_run(target: object, **options: object) -> None:
+        calls.append((target, options))
+
+    monkeypatch.setattr(web_app.uvicorn, "run", record_run)
+
+    web_app.main(argv)
+
+    assert len(calls) == 1
+    target, options = calls[0]
+    if expected_reload:
+        assert target == "vectorviz.web.app:create_app"
+    else:
+        assert getattr(target, "title", None) == "VectorViz API"
+    assert options == {
+        "host": expected_host,
+        "port": expected_port,
+        "reload": expected_reload,
+        "factory": expected_reload,
+    }
