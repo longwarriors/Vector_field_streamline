@@ -148,6 +148,27 @@ def test_toroidal_exclusion_is_covariant_under_rotation_and_translation() -> Non
     np.testing.assert_allclose(actual, expected, rtol=3.0e-15, atol=3.0e-16)
 
 
+def test_meridional_torus_slice_is_exactly_two_circular_exclusions() -> None:
+    major_radius = 1.2
+    minor_radius = 0.16
+    torus = ToroidalExclusion(
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 1.0, 0.0),
+        major_radius=major_radius,
+        minor_radius=minor_radius,
+    )
+    cross_section = SphericalExclusion(
+        centers=((-major_radius, 0.0), (major_radius, 0.0)),
+        radii=minor_radius,
+    )
+    points = np.array(
+        ((-1.4, 0.0), (-1.2, 0.1), (0.0, 0.0), (1.2, 0.0), (1.5, -0.2))
+    )
+    embedded = np.column_stack((points[:, 0], points[:, 1], np.zeros(points.shape[0])))
+
+    np.testing.assert_allclose(torus.margin(embedded), cross_section.margin(points), atol=0.0)
+
+
 @pytest.mark.parametrize(
     "factory",
     [
