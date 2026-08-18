@@ -1,0 +1,1 @@
+"""Browser application for vectorviz."""

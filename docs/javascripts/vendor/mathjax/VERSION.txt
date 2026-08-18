@@ -1,0 +1,7 @@
+MathJax 3.2.2
+Bundle: es5/tex-svg-full.js
+Source: https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg-full.js
+SHA-256: A4354FF94FD868AEA0CC6EAAA79A57FDA0588646FC46EE3700A349EE0A11CBE6
+License: Apache-2.0; see LICENSE in this directory.
+
+The SVG bundle is stored locally so MkDocs formulas render without an external CDN or web fonts.
