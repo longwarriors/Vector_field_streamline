@@ -3,7 +3,13 @@
 __version__ = "0.1.0"
 
 from .core import Domain, SphericalExclusion, VectorField
-from .fields import CompositeField, MagneticDipoleField, PointChargeField, UniformField
+from .fields import (
+    CircularLoopField,
+    CompositeField,
+    MagneticDipoleField,
+    PointChargeField,
+    UniformField,
+)
 from .tracing import (
     FieldLineTracer,
     TerminationReason,
@@ -15,6 +21,7 @@ from .tracing import (
 )
 
 __all__ = [
+    "CircularLoopField",
     "CompositeField",
     "Domain",
     "FieldLineTracer",

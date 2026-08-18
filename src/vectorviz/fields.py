@@ -7,6 +7,7 @@ from collections.abc import Iterable
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.constants import epsilon_0, mu_0
+from scipy.special import ellipe, ellipk, ellipkm1
 
 from .core import FloatArray, VectorField, _as_points
 
@@ -197,6 +198,322 @@ class MagneticDipoleField(VectorField):
         return values.reshape(original_shape)
 
 
+def _finite_scalar(value: float, name: str) -> float:
+    array = np.asarray(value, dtype=float)
+    if array.ndim != 0 or not np.isfinite(array):
+        raise ValueError(f"{name} must be a finite scalar.")
+    return float(array)
+
+
+class _CircularLoopGeometry(VectorField):
+    """Validated geometry shared by analytic and quadrature loop fields."""
+
+    def __init__(
+        self,
+        current: float,
+        radius: float,
+        center: ArrayLike,
+        normal: ArrayLike,
+        permeability: float,
+    ) -> None:
+        current_value = _finite_scalar(current, "current")
+        radius_value = _finite_scalar(radius, "radius")
+        permeability_value = _finite_scalar(permeability, "permeability")
+        if radius_value <= 0.0:
+            raise ValueError("radius must be positive.")
+        if permeability_value <= 0.0:
+            raise ValueError("permeability must be positive.")
+
+        center_value = np.asarray(center, dtype=float)
+        normal_value = np.asarray(normal, dtype=float)
+        if center_value.shape != (3,):
+            raise ValueError("center must have shape (3,).")
+        if normal_value.shape != (3,):
+            raise ValueError("normal must have shape (3,).")
+        if not np.all(np.isfinite(center_value)) or not np.all(np.isfinite(normal_value)):
+            raise ValueError("center and normal must be finite.")
+        normal_scale = float(np.max(np.abs(normal_value)))
+        if normal_scale == 0.0:
+            raise ValueError("normal must be nonzero.")
+        scaled_normal = normal_value / normal_scale
+        normal_norm = float(np.linalg.norm(scaled_normal))
+
+        self._current = current_value
+        self._radius = radius_value
+        self._center = _readonly(center_value)
+        self._normal = _readonly(scaled_normal / normal_norm)
+        self._permeability = permeability_value
+
+    @property
+    def dimension(self) -> int:
+        return 3
+
+    @property
+    def current(self) -> float:
+        return self._current
+
+    @property
+    def radius(self) -> float:
+        return self._radius
+
+    @property
+    def center(self) -> FloatArray:
+        return self._center
+
+    @property
+    def normal(self) -> FloatArray:
+        return self._normal
+
+    @property
+    def permeability(self) -> float:
+        return self._permeability
+
+    def _cylindrical_geometry(
+        self, points: ArrayLike
+    ) -> tuple[FloatArray, tuple[int, ...], FloatArray, FloatArray, FloatArray, FloatArray]:
+        coordinates = _as_points(points, 3)
+        original_shape = coordinates.shape
+        flat_points = coordinates.reshape(-1, 3)
+        displacement = flat_points - self._center
+        axial = displacement @ self._normal
+        radial_vectors = displacement - axial[:, np.newaxis] * self._normal
+        radial = np.linalg.norm(radial_vectors, axis=1)
+        wire_distance = np.hypot(radial - self._radius, axial)
+        geometry_scale = np.maximum(self._radius, np.linalg.norm(displacement, axis=1))
+        # A rotated point constructed on the mathematical filament generally
+        # misses exact floating equality after dot products and norms. This
+        # ULP-scale classification only absorbs coordinate roundoff; it is not
+        # a physical wire radius and never enters a field denominator.
+        singular_tolerance = 32.0 * np.finfo(float).eps * geometry_scale
+        singular = wire_distance <= singular_tolerance
+        return coordinates, original_shape, radial_vectors, radial, axial, singular
+
+
+def _elliptic_series_coefficients(order: int = 12) -> tuple[FloatArray, FloatArray]:
+    """Series for the two cancelling K/E combinations used by a loop."""
+
+    radial = np.zeros(order + 1, dtype=float)
+    flux = np.zeros(order + 1, dtype=float)
+    previous_first = 1.0
+    cumulative_second = 1.0
+    for index in range(1, order + 1):
+        first = previous_first * ((2.0 * index - 1.0) / (2.0 * index)) ** 2
+        second = -first / (2.0 * index - 1.0)
+        radial[index] = second + 0.5 * cumulative_second - first
+        flux[index] = first - 0.5 * previous_first - second
+        previous_first = first
+        cumulative_second += second
+    return radial, flux
+
+
+_RADIAL_ELLIPTIC_SERIES, _FLUX_ELLIPTIC_SERIES = _elliptic_series_coefficients()
+
+
+def _loop_elliptic_terms(
+    parameter: FloatArray, complementary_parameter: FloatArray
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    r"""Evaluate E and stable loop-specific combinations of K and E.
+
+    The radial field uses
+    ``P=-K+(1-m/2)E/(1-m)`` and the flux function uses
+    ``Q=(1-m/2)K-E``. Both begin at order :math:`m^2`, so evaluating them by
+    direct subtraction is inaccurate in the far field. A convergent power
+    series is used for small ``m``; the general branch still calls SciPy with
+    its parameter convention ``m=k^2``.
+    """
+
+    first = np.empty_like(parameter)
+    near_wire = complementary_parameter < 0.1
+    first[near_wire] = ellipkm1(complementary_parameter[near_wire])
+    first[~near_wire] = ellipk(parameter[~near_wire])
+    second = np.asarray(ellipe(parameter), dtype=float)
+    radial_term = np.empty_like(parameter)
+    flux_term = np.empty_like(parameter)
+    small_parameter = parameter < 1.0e-2
+    radial_term[small_parameter] = np.pi / 2.0 * np.polynomial.polynomial.polyval(
+        parameter[small_parameter], _RADIAL_ELLIPTIC_SERIES
+    )
+    flux_term[small_parameter] = np.pi / 2.0 * np.polynomial.polynomial.polyval(
+        parameter[small_parameter], _FLUX_ELLIPTIC_SERIES
+    )
+    ordinary = ~small_parameter
+    radial_term[ordinary] = (
+        -first[ordinary]
+        + (1.0 - 0.5 * parameter[ordinary])
+        / complementary_parameter[ordinary]
+        * second[ordinary]
+    )
+    flux_term[ordinary] = (
+        (1.0 - 0.5 * parameter[ordinary]) * first[ordinary] - second[ordinary]
+    )
+    return second, radial_term, flux_term
+
+
+class CircularLoopField(_CircularLoopGeometry):
+    r"""Magnetic flux density of an ideal circular filamentary current loop.
+
+    Coordinates, ``radius`` and ``center`` use metres, ``current`` uses
+    amperes, and the returned field uses tesla when ``permeability`` has SI
+    units. ``normal`` fixes the loop plane and the positive-current direction
+    by the right-hand rule. The filament itself is an explicit ``NaN``
+    singularity; no finite wire radius or epsilon softening is implied.
+    """
+
+    _NEAR_AXIS_RATIO = 1.0e-3
+
+    def __init__(
+        self,
+        current: float,
+        radius: float,
+        center: ArrayLike = (0.0, 0.0, 0.0),
+        normal: ArrayLike = (0.0, 0.0, 1.0),
+        *,
+        permeability: float = mu_0,
+    ) -> None:
+        super().__init__(current, radius, center, normal, permeability)
+
+    def _axis_derivatives(
+        self, axial: FloatArray
+    ) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]:
+        radius_squared = self._radius**2
+        axial_squared = axial**2
+        scale_squared = radius_squared + axial_squared
+        coefficient = self._permeability * self._current * radius_squared / 2.0
+        field = coefficient * scale_squared**-1.5
+        first = -3.0 * coefficient * axial * scale_squared**-2.5
+        second = (
+            3.0
+            * coefficient
+            * (4.0 * axial_squared - radius_squared)
+            * scale_squared**-3.5
+        )
+        third = (
+            15.0
+            * coefficient
+            * axial
+            * (3.0 * radius_squared - 4.0 * axial_squared)
+            * scale_squared**-4.5
+        )
+        fourth = (
+            45.0
+            * coefficient
+            * (radius_squared**2 - 12.0 * radius_squared * axial_squared + 8.0 * axial**4)
+            * scale_squared**-5.5
+        )
+        return field, first, second, third, fourth
+
+    def evaluate(self, points: ArrayLike) -> FloatArray:
+        (
+            _coordinates,
+            original_shape,
+            radial_vectors,
+            radial,
+            axial,
+            singular,
+        ) = self._cylindrical_geometry(points)
+        values = np.empty((radial.size, 3), dtype=float)
+
+        scale = np.sqrt(self._radius**2 + axial**2)
+        near_axis = radial <= self._NEAR_AXIS_RATIO * scale
+        if np.any(near_axis):
+            rho = radial[near_axis]
+            z = axial[near_axis]
+            field, first, second, third, fourth = self._axis_derivatives(z)
+            radial_coefficient = -0.5 * first + rho**2 * third / 16.0
+            axial_component = field - rho**2 * second / 4.0 + rho**4 * fourth / 64.0
+            values[near_axis] = (
+                radial_coefficient[:, np.newaxis] * radial_vectors[near_axis]
+                + axial_component[:, np.newaxis] * self._normal
+            )
+
+        general = ~near_axis & ~singular
+        if np.any(general):
+            rho = radial[general]
+            z = axial[general]
+            radius = self._radius
+            q_squared = (radius + rho) ** 2 + z**2
+            wire_distance_squared = (radius - rho) ** 2 + z**2
+            complementary_parameter = wire_distance_squared / q_squared
+            parameter = np.empty_like(complementary_parameter)
+            near_wire = complementary_parameter < 0.1
+            parameter[near_wire] = 1.0 - complementary_parameter[near_wire]
+            parameter[~near_wire] = 4.0 * radius * rho[~near_wire] / q_squared[~near_wire]
+            second, radial_elliptic, _flux_elliptic = _loop_elliptic_terms(
+                parameter, complementary_parameter
+            )
+            prefactor = self._permeability * self._current / (2.0 * np.pi * np.sqrt(q_squared))
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                radial_component = prefactor * z / rho * radial_elliptic
+                axial_component = prefactor * (
+                    -radial_elliptic + 2.0 * radius**2 / wire_distance_squared * second
+                )
+                values[general] = (
+                    radial_component[:, np.newaxis]
+                    * radial_vectors[general]
+                    / rho[:, np.newaxis]
+                    + axial_component[:, np.newaxis] * self._normal
+                )
+
+        values[singular] = np.nan
+        return values.reshape(original_shape)
+
+    def flux_function(self, points: ArrayLike) -> FloatArray:
+        r"""Return the axisymmetric flux function :math:`\psi=\rho A_\phi`.
+
+        The result has the leading shape of ``points``. It is zero on the
+        symmetry axis and ``NaN`` on the ideal filament. Away from the source,
+        its contours in any meridional plane are magnetic field lines.
+        """
+
+        (
+            _coordinates,
+            original_shape,
+            _radial_vectors,
+            radial,
+            axial,
+            singular,
+        ) = self._cylindrical_geometry(points)
+        result = np.empty(radial.size, dtype=float)
+
+        scale = np.sqrt(self._radius**2 + axial**2)
+        near_axis = radial <= self._NEAR_AXIS_RATIO * scale
+        if np.any(near_axis):
+            rho = radial[near_axis]
+            field, _first, second, _third, fourth = self._axis_derivatives(axial[near_axis])
+            result[near_axis] = (
+                0.5 * field * rho**2
+                - second * rho**4 / 16.0
+                + fourth * rho**6 / 384.0
+            )
+
+        general = ~near_axis & ~singular
+        if np.any(general):
+            rho = radial[general]
+            z = axial[general]
+            radius = self._radius
+            q_squared = (radius + rho) ** 2 + z**2
+            wire_distance_squared = (radius - rho) ** 2 + z**2
+            complementary_parameter = wire_distance_squared / q_squared
+            parameter = np.empty_like(complementary_parameter)
+            near_wire = complementary_parameter < 0.1
+            parameter[near_wire] = 1.0 - complementary_parameter[near_wire]
+            parameter[~near_wire] = 4.0 * radius * rho[~near_wire] / q_squared[~near_wire]
+            _second, _radial_elliptic, flux_elliptic = _loop_elliptic_terms(
+                parameter, complementary_parameter
+            )
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                result[general] = (
+                    self._permeability
+                    * self._current
+                    / np.pi
+                    * np.sqrt(radius * rho / parameter)
+                    * flux_elliptic
+                )
+
+        result[singular] = np.nan
+        return result.reshape(original_shape[:-1])
+
+
 class CompositeField(VectorField):
     """Weighted linear superposition of vector fields with equal dimension.
 
@@ -259,6 +576,7 @@ class CompositeField(VectorField):
 
 
 __all__ = [
+    "CircularLoopField",
     "CompositeField",
     "MagneticDipoleField",
     "PointChargeField",
