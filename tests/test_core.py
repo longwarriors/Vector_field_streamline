@@ -28,6 +28,10 @@ def test_domain_reports_geometry_and_batch_containment() -> None:
     assert contained.shape == (2, 2)
     np.testing.assert_array_equal(contained, [[True, True], [False, False]])
     assert bool(domain.contains((4.01, 0.0), atol=0.02))
+    assert domain.lower.dtype == np.float64
+    assert domain.upper.dtype == np.float64
+    with pytest.raises(ValueError, match="atol must be non-negative"):
+        domain.contains((0.0, 0.0), atol=-1.0e-12)
 
 
 def test_domain_margin_has_expected_sign_and_readonly_bounds() -> None:
@@ -81,6 +85,8 @@ def test_spherical_exclusion_margin_for_one_and_many_sources() -> None:
         (((0.0, 0.0), (1.0, 0.0)), (0.1,)),
         ((0.0, 0.0), 0.0),
         ((0.0, np.nan), 0.1),
+        ([], 0.1),
+        ([[]], 0.1),
     ],
 )
 def test_spherical_exclusion_rejects_invalid_geometry(centers: object, radii: object) -> None:
