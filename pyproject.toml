@@ -48,7 +48,7 @@ source = ["vectorviz"]
 
 [tool.coverage.report]
 # The canonical coverage gate runs on ubuntu-latest with Python 3.13 in CI.
-fail_under = 85
+fail_under = 90
 precision = 2
 show_missing = true
 skip_covered = true
