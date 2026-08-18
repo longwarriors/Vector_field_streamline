@@ -1,0 +1,21 @@
+# Default: auto-detect text files and normalize line endings in the repository
+* text=auto
+
+# Source and config files: always LF, on every platform
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.txt text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.ipynb text eol=lf
+*.lock text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+.python-version text eol=lf
+
+# Vendored third-party assets: byte-for-byte, no line-ending conversion
+# (last rule wins, overriding the *.js rule above for these paths)
+docs/javascripts/vendor/** -text
