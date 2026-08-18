@@ -8,6 +8,7 @@ VectorViz 同时提供 Python 公共 API 与浏览器使用的 HTTP API。本页
 
 ```python
 from vectorviz import (
+    CircularLoopField,
     CompositeField,
     Domain,
     FieldLineTracer,
@@ -50,9 +51,27 @@ vectors = field.evaluate(points)
 | `UniformField` | 匀强向量场与积分器基准 |
 | `PointChargeField` | 二维或三维点电荷电场 |
 | `MagneticDipoleField` | 磁偶极近似与远场模型 |
+| `CircularLoopField` | 理想细圆电流环的三维磁感应强度 |
 | `CompositeField` | 对多个同维场做线性叠加 |
 
 所有物理场内部应采用一致单位。输入源参数的单位与坐标系不得只存在于图标题里。
+
+#### `CircularLoopField`
+
+```python
+loop = CircularLoopField(
+    current=1.0,
+    radius=0.8,
+    center=(0.0, 0.0, 0.0),
+    normal=(0.0, 0.0, 1.0),
+)
+field = loop.evaluate(points)
+psi = loop.flux_function(points)
+```
+
+`current`、`radius` 和 `center` 分别使用 A、m 和 m；默认 `permeability` 使用 `scipy.constants.mu_0`，因此 `evaluate()` 返回 T。单位法向由构造器归一化，并与正电流按右手定则绑定。模型维数固定为 3；`center` 与 `normal` 是只读数组。
+
+理想细导线圆周是显式 `NaN` 奇点，即使电流为 0 也不把源几何点伪装成普通采样点。`flux_function()` 返回轴对称磁通函数 $\psi=\rho A_\phi$：结果形状是 `points.shape[:-1]`，轴上取 0，细导线上取 `NaN`。测试中的直接 Biot–Savart 求积是独立验证 oracle，不是另一个公共运行时场类。
 
 ### `TraceOptions`
 
@@ -301,6 +320,10 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
       heading_level: 4
 
 ::: vectorviz.fields.MagneticDipoleField
+    options:
+      heading_level: 4
+
+::: vectorviz.fields.CircularLoopField
     options:
       heading_level: 4
 

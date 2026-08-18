@@ -48,7 +48,7 @@ uv run mkdocs serve
 
 - Ubuntu + Python 3.13 是权威质量环境，安装 headless Chromium，并运行 Ruff、包含前端语义测试的完整 pytest 覆盖率、严格文档构建以及 wheel/sdist 构件冒烟；
 - Ubuntu/Windows + Python 3.11/3.14 只验证非浏览器兼容性，不重复下载浏览器或统计覆盖率；
-- 覆盖率配置位于 `pyproject.toml`，使用两位精度，精确综合覆盖率低于 85.00% 时失败；
+- 覆盖率配置位于 `pyproject.toml`，使用两位精度，精确综合覆盖率低于 90.00% 时失败；
 - CI 固定 uv 与各 GitHub Action 的版本，依赖安装始终从 `uv sync --locked` 开始。
 - 同一分支的新 workflow 会取消尚未完成的旧 workflow，避免旧提交在新提交之后反向覆盖 Pages。
 

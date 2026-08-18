@@ -41,7 +41,7 @@
 
     - [`scipy.integrate.solve_ivp`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.solve_ivp.html)：自适应 ODE、事件和稠密输出。本项目的闭环候选使用距种子平方的一半对弧长的导数从负到正过零定位局部最近点，再独立校验距离和切向；
     - [Regular grid interpolation](https://docs.scipy.org/doc/scipy/tutorial/interpolate/ND_regular_grid.html)：规则网格多分量插值；
-    - [`scipy.special.ellipk`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipk.html) 与 [`ellipe`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipe.html)：完全椭圆积分。SciPy 的参数是 $m=k^2$。
+    - [`scipy.special.ellipk`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipk.html)、[`ellipe`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipe.html) 与 [`ellipkm1`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipkm1.html)：完全椭圆积分。前两者的参数是 $m=k^2$；`ellipkm1` 直接接受 $p=1-m$，用于保留近导线极限中的小补参数。
 
 3. M. Steffen et al., [“Investigation of Smoothness-Increasing Accuracy-Conserving Filters for Improving Streamline Integration through Discontinuous Fields”](https://doi.org/10.1109/TVCG.2008.9), *IEEE Transactions on Visualization and Computer Graphics* **14** (2008), 680–692。讨论场光滑性、重建与积分误差。
 

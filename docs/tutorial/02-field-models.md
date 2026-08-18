@@ -114,8 +114,7 @@ print(value)  # T
 
 ## 圆电流线圈：从积分模型到解析模型
 
-!!! note "当前状态"
-    圆线圈模型尚未进入代码。本节给出实现顺序和验证公式。
+`CircularLoopField` 已实现理想细圆电流环的三维解析场。`current` 使用 A，`radius` 和 `center` 使用 m，默认返回 T；`normal` 是线圈平面的单位法向，并与正电流按右手定则绑定。测试侧保留直接 Biot–Savart 求积作为独立 oracle，但不会把逐点自适应求积暴露为交互运行时模型。
 
 半径为 $a$、电流为 $I$ 的理想细线圈先由 Biot–Savart 定律定义：
 
@@ -136,11 +135,56 @@ $$
 
 中心值是 $\mu_0I/(2a)$，远场按 $r^{-3}$ 衰减并趋近磁偶极。[^openstax-current-loop]
 
-轴外闭式解要用第一、第二类完全椭圆积分。NASA 技术报告给出了多种坐标系下的公式，并把定义域限定在导体之外。[^nasa-loop] 实现时分别处理：
+设线圈中心为 $\mathbf c$、单位法向为 $\mathbf n$。对 $\mathbf d=\mathbf x-\mathbf c$ 定义
+
+$$
+z=\mathbf d\cdot\mathbf n,
+\qquad
+\boldsymbol\rho=\mathbf d-z\mathbf n,
+\qquad
+\rho=\lVert\boldsymbol\rho\rVert.
+$$
+
+再令
+
+$$
+D_\pm=(a\pm\rho)^2+z^2,
+\qquad
+m=k^2=\frac{4a\rho}{D_+},
+\qquad
+p=1-m=\frac{D_-}{D_+}.
+$$
+
+轴外闭式解使用第一、第二类完全椭圆积分 $K(m),E(m)$：
+
+$$
+B_\rho=
+\frac{\mu_0Iz}{2\pi\rho\sqrt{D_+}}
+\left[
+-K(m)+\frac{a^2+\rho^2+z^2}{D_-}E(m)
+\right],
+$$
+
+$$
+B_z=
+\frac{\mu_0I}{2\pi\sqrt{D_+}}
+\left[
+K(m)+\frac{a^2-\rho^2-z^2}{D_-}E(m)
+\right],
+\qquad
+\mathbf B=B_\rho\frac{\boldsymbol\rho}{\rho}+B_z\mathbf n.
+$$
+
+NASA 技术报告给出了多种坐标系下的等价公式，并把定义域限定在导体之外。[^nasa-loop] SciPy 的 `ellipk`/`ellipe` 接收参数 $m=k^2$，不是模数 $k$；代码同时保留 $m$ 与 $p$，避免在两个极限中用一次浮点减法丢掉较小者。[^scipy-elliptic]
+
+实现分别处理四个数值区域：
 
 1. 轴线用上面的极限公式，避开柱坐标通式中的可消奇异；
-2. 一般点用椭圆积分公式；
-3. 随机抽样点与直接 Biot–Savart 求积对比。
+2. 极近轴使用由轴线场导数得到的正则 Taylor 展开，不把很小的 $B_\rho$ 粗暴置零；
+3. $m\to1$ 时把直接计算的 $p=D_-/D_+$ 交给 `ellipkm1`，因此导线邻点保持有限，只有导线本身为奇点；
+4. 远场 $m\to0$ 时，以收敛级数计算两个从 $m^2$ 起始的 $K/E$ 组合，避免离轴磁偶极小量被相消误差淹没。
+
+固定种子的随机轴外点由测试内 Gauss–Legendre Biot–Savart 求积交叉验证；中心和整条轴线另与闭式解比较，远场同时检查磁偶极极限和 $O((a/r)^2)$ 的误差收敛。
 
 理想导线本身仍是奇点，解析公式并不会让它变成普通采样点。
 
@@ -211,4 +255,5 @@ vectors = field.evaluate(points)  # points.shape == vectors.shape == (..., D)
 [^feynman-magnetic-dipole]: R. P. Feynman, R. B. Leighton, M. Sands, [Vol. II, Ch. 14](https://www.feynmanlectures.caltech.edu/II_14.html)，电流环、Biot–Savart 定律与磁偶极近似。
 [^openstax-current-loop]: OpenStax, [§12.1 Biot–Savart Law](https://openstax.org/books/university-physics-volume-2/pages/12-1-the-biot-savart-law) 与 [§12.4 Magnetic Field of a Current Loop](https://openstax.org/books/university-physics-volume-2/pages/12-4-magnetic-field-of-a-current-loop)。
 [^nasa-loop]: J. C. Simpson et al., [“Simple Analytic Expressions for the Magnetic Field of a Circular Current Loop”](https://ntrs.nasa.gov/citations/20010038494), NASA Technical Reports Server, 2001。
+[^scipy-elliptic]: SciPy，[`ellipk`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipk.html)、[`ellipe`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipe.html) 与 [`ellipkm1`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipkm1.html)；前两者使用参数 $m$，后者直接使用 $p=1-m$。
 [^ogilvie-flux]: G. I. Ogilvie, [“Astrophysical fluid dynamics”](https://doi.org/10.1017/S0022377816000489), *Journal of Plasma Physics* 82 (2016), §9.2。
