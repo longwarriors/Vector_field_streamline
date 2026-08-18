@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta
+      name="description"
+      content="VectorViz：在浏览器中交互探索二维电场与磁场场线。"
+    >
+    <title>VectorViz · 场线实验室</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">跳到可视化区域</a>
+
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="VectorViz 首页">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 40 40" role="img">
+              <path d="M7 21c4-12 22-12 26 0M7 19c4 12 22 12 26 0" />
+              <circle cx="8" cy="20" r="3" />
+              <circle cx="32" cy="20" r="3" />
+            </svg>
+          </span>
+          <span>
+            <strong>VectorViz</strong>
+            <small>场线实验室</small>
+          </span>
+        </a>
+
+        <div class="topbar-actions">
+          <span class="connection-state" id="connection-state" data-state="idle">
+            <span class="state-dot" aria-hidden="true"></span>
+            <span id="connection-label">等待计算</span>
+          </span>
+          <button class="primary-button" id="run-button" type="button">
+            <span aria-hidden="true">↻</span>
+            重新计算
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace" id="workspace">
+        <aside class="control-panel" aria-label="场景控制">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">SCENE CONTROLS</p>
+              <h1>物理场景</h1>
+            </div>
+            <span class="beta-badge">2D</span>
+          </div>
+
+          <form id="scene-form">
+            <div class="control-group">
+              <label for="preset">场源预设</label>
+              <div class="select-wrap">
+                <select id="preset" name="preset">
+                  <option value="electric_dipole">电偶极子</option>
+                  <option value="magnetic_dipole">磁偶极子</option>
+                  <option value="uniform">匀强场</option>
+                </select>
+              </div>
+              <p class="field-help">切换解析模型并重新生成场线。</p>
+            </div>
+
+            <div class="control-group range-control">
+              <div class="label-row">
+                <label for="density">场线密度</label>
+                <output id="density-output" for="density">18</output>
+              </div>
+              <input
+                id="density"
+                name="density"
+                type="range"
+                min="6"
+                max="40"
+                step="2"
+                value="18"
+              >
+              <div class="range-bounds" aria-hidden="true">
+                <span>稀疏</span>
+                <span>细密</span>
+              </div>
+            </div>
+
+            <div class="control-group range-control">
+              <div class="label-row">
+                <label for="resolution">采样分辨率</label>
+                <output id="resolution-output" for="resolution">80 × 80</output>
+              </div>
+              <input
+                id="resolution"
+                name="resolution"
+                type="range"
+                min="32"
+                max="144"
+                step="16"
+                value="80"
+              >
+              <div class="range-bounds" aria-hidden="true">
+                <span>快速</span>
+                <span>精细</span>
+              </div>
+            </div>
+
+            <section class="source-section" aria-labelledby="source-heading">
+              <div class="source-heading-row">
+                <div>
+                  <h2 id="source-heading">场源位置</h2>
+                  <p>拖动画布标记，或直接输入坐标。</p>
+                </div>
+                <button class="text-button" id="reset-sources" type="button" disabled>
+                  重置
+                </button>
+              </div>
+              <div id="source-editor-list" class="source-editor-list">
+                <p class="empty-sources">场景加载后可调整场源。</p>
+              </div>
+            </section>
+          </form>
+
+          <div class="guide-card">
+            <span class="guide-icon" aria-hidden="true">⌖</span>
+            <div>
+              <strong>画布交互</strong>
+              <p>拖动场源改变位置；移动指针可探测坐标与场强。</p>
+            </div>
+          </div>
+
+          <dl class="scene-stats" aria-label="场景统计">
+            <div>
+              <dt>场线</dt>
+              <dd id="line-count">—</dd>
+            </div>
+            <div>
+              <dt>网格</dt>
+              <dd id="grid-size">—</dd>
+            </div>
+            <div>
+              <dt>单位</dt>
+              <dd id="field-unit">—</dd>
+            </div>
+          </dl>
+        </aside>
+
+        <section class="viewer-panel" aria-labelledby="scene-title">
+          <div class="viewer-heading">
+            <div>
+              <p class="eyebrow">LIVE FIELD VIEW</p>
+              <h2 id="scene-title">正在准备场景…</h2>
+            </div>
+            <div class="legend-chips" aria-label="图层图例">
+              <span><i class="legend-line" aria-hidden="true"></i>场线</span>
+              <span><i class="legend-arrow" aria-hidden="true">›</i>方向</span>
+              <span><i class="legend-source" aria-hidden="true"></i>场源</span>
+            </div>
+          </div>
+
+          <figure class="field-figure">
+            <div class="canvas-stage" id="canvas-stage">
+              <canvas
+                id="field-canvas"
+                tabindex="0"
+                aria-label="二维物理场可视化。场景加载后可拖动场源，并使用方向键微调选中的场源。"
+              >
+                当前浏览器不支持 Canvas，请升级浏览器后重试。
+              </canvas>
+
+              <div class="canvas-hud" aria-hidden="true">
+                <span class="hud-pill" id="scale-badge">等待数据</span>
+              </div>
+
+              <div class="probe" id="probe" hidden aria-hidden="true">
+                <span id="probe-position">x 0.00 · y 0.00</span>
+                <strong id="probe-value">—</strong>
+              </div>
+
+              <div class="colorbar" id="colorbar" hidden aria-label="场强颜色标尺">
+                <span id="colorbar-max">—</span>
+                <div class="colorbar-gradient" aria-hidden="true"></div>
+                <span id="colorbar-min">—</span>
+                <strong id="colorbar-label">场强</strong>
+              </div>
+
+              <div class="loading-overlay" id="loading-overlay" role="status" aria-live="polite">
+                <span class="spinner" aria-hidden="true"></span>
+                <strong>正在计算场线</strong>
+                <span>求值、积分与绘制可能需要几秒</span>
+              </div>
+
+              <div class="error-banner" id="error-banner" role="alert" hidden>
+                <div>
+                  <strong>场景计算失败</strong>
+                  <span id="error-message">请稍后重试。</span>
+                </div>
+                <button id="retry-button" type="button">重试</button>
+              </div>
+            </div>
+
+            <figcaption>
+              <span class="caption-mark" aria-hidden="true">i</span>
+              <span id="projection-note">曲线沿局部场方向积分；颜色表示场强大小。</span>
+            </figcaption>
+          </figure>
+
+          <p class="sr-only" id="live-status" aria-live="polite"></p>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span>VectorViz · 科学计算与可视化分离</span>
+        <span>Canvas 2D renderer</span>
+      </footer>
+    </div>
+
+    <noscript>
+      <div class="noscript-message">此交互式可视化需要启用 JavaScript。</div>
+    </noscript>
+  </body>
+</html>

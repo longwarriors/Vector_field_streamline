@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vector-field-streamline"
+version = "0.1.0"
+description = "Scientific vector-field evaluation, field-line tracing, and browser visualization."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Vector Field Streamline contributors" }]
+dependencies = [
+  "fastapi>=0.115",
+  "numpy>=2.1",
+  "pydantic>=2.9",
+  "scipy>=1.14",
+  "uvicorn[standard]>=0.32",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28",
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.27",
+  "pytest>=8.3",
+  "pytest-cov>=6.0",
+  "ruff>=0.8",
+]
+
+[project.scripts]
+vectorviz = "vectorviz.web.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vectorviz"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers --cov=vectorviz --cov-report=term-missing"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["vectorviz"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = ["notebooks/vector_field.ipynb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501", "RUF001"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["B018"]

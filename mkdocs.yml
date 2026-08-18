@@ -1,0 +1,96 @@
+site_name: VectorViz
+site_description: 面向物理场、数值流线与轨迹的科学可视化工具
+site_author: VectorViz contributors
+docs_dir: docs
+site_dir: site
+dev_addr: 127.0.0.1:8001
+strict: true
+
+theme:
+  name: material
+  language: zh
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.tabs.link
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: 切换到深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: 切换到浅色模式
+
+nav:
+  - 首页: index.md
+  - 快速开始: getting-started.md
+  - 系统架构: architecture.md
+  - 物理与数学建模:
+      - 教程导读: physics-and-numerics.md
+      - 1. 场线是什么: tutorial/01-field-lines.md
+      - 2. 从物理源到向量场: tutorial/02-field-models.md
+      - 3. 数值追踪: tutorial/03-tracing.md
+      - 4. 切片、播种与验证: tutorial/04-slices-and-validation.md
+      - 5. 引力场与黑洞光线: tutorial/05-gravity-and-rays.md
+  - 参考资料: references.md
+  - API 参考: api.md
+  - 开发指南: development.md
+
+plugins:
+  - search:
+      lang:
+        - zh
+        - en
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - src
+          options:
+            docstring_style: numpy
+            show_root_heading: true
+            show_source: false
+            separate_signature: true
+            signature_crossrefs: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - footnotes
+  - md_in_html
+  - tables
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - javascripts/vendor/mathjax/tex-svg-full.js
+
+copyright: Copyright &copy; VectorViz contributors
