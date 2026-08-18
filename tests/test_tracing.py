@@ -380,7 +380,7 @@ def test_closure_detection_does_not_override_domain_exit() -> None:
     assert result.forward.termination is TerminationReason.DOMAIN_EXIT
 
 
-def test_physical_event_at_closure_chunk_boundary_keeps_priority() -> None:
+def test_physical_event_at_closure_chunk_boundary_is_not_lost() -> None:
     result = trace_field_line(
         UniformField((1.0, 0.0)),
         seed=(0.0, 0.0),
@@ -396,6 +396,31 @@ def test_physical_event_at_closure_chunk_boundary_keeps_priority() -> None:
     assert result.forward is not None
     assert result.forward.termination is TerminationReason.DOMAIN_EXIT
     np.testing.assert_allclose(result.forward.terminal_point, (0.64, 0.0), atol=2.0e-8)
+
+
+def test_physical_event_wins_when_it_coincides_with_closure_candidate() -> None:
+    candidate_x = 1.0 + np.sqrt(14.0) / 4.0
+    candidate_y = 2.0 * candidate_x**2
+    result = trace_field_line(
+        _ParabolicFlowField(),
+        seed=(-2.0, 8.0),
+        domain=Domain((-3.0, -1.0), (candidate_x, 9.0)),
+        options=_options(
+            max_arc_length=20.0,
+            closure_tolerance=4.1,
+            closure_min_arc_length=9.0,
+            closure_tangent_cosine=-1.0,
+        ),
+        direction="forward",
+    )
+
+    assert result.forward is not None
+    assert result.forward.termination is TerminationReason.DOMAIN_EXIT
+    np.testing.assert_allclose(
+        result.forward.terminal_point,
+        (candidate_x, candidate_y),
+        atol=2.0e-8,
+    )
 
 
 def test_closed_loop_supports_adaptive_solver_output_across_chunks() -> None:

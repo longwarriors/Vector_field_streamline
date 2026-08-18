@@ -39,7 +39,7 @@
 
 2. SciPy 官方文档：
 
-    - [`scipy.integrate.solve_ivp`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.solve_ivp.html)：自适应 ODE、事件和稠密输出。本项目的闭环候选使用距种子平方对弧长的导数从负到正过零定位局部最近点，再独立校验距离和切向；
+    - [`scipy.integrate.solve_ivp`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.solve_ivp.html)：自适应 ODE、事件和稠密输出。本项目的闭环候选使用距种子平方的一半对弧长的导数从负到正过零定位局部最近点，再独立校验距离和切向；
     - [Regular grid interpolation](https://docs.scipy.org/doc/scipy/tutorial/interpolate/ND_regular_grid.html)：规则网格多分量插值；
     - [`scipy.special.ellipk`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipk.html) 与 [`ellipe`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipe.html)：完全椭圆积分。SciPy 的参数是 $m=k^2$。
 

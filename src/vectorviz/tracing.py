@@ -57,8 +57,9 @@ class TraceOptions:
     coordinate system's unit. ``closure_tolerance`` and
     ``closure_min_arc_length`` must be supplied together; a return is accepted
     only when the local tangent also meets ``closure_tangent_cosine``. While
-    enabled, closest returns are located from the derivative of distance to the
-    seed, so the geometric tolerance does not silently replace ``max_step``.
+    enabled, closest returns are located from the derivative of half the
+    squared distance to the seed, so the geometric tolerance does not silently
+    replace ``max_step``.
     """
 
     max_arc_length: float = 20.0
