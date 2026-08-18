@@ -26,6 +26,7 @@ jobs:
           python-version: "3.13"
           enable-cache: true
           cache-dependency-glob: uv.lock
+          cache-suffix: py-3.13
 
       - name: Sync the locked environment
         run: uv sync --locked
@@ -43,10 +44,10 @@ jobs:
         run: uv build --clear
 
       - name: Smoke-check the wheel outside the project
-        run: uv run --isolated --no-project --with dist/*.whl tests/package_smoke.py
+        run: uv run --isolated --no-project --with dist/*.whl python -I tests/package_smoke.py
 
       - name: Smoke-check the source distribution outside the project
-        run: uv run --isolated --no-project --with dist/*.tar.gz tests/package_smoke.py
+        run: uv run --isolated --no-project --with dist/*.tar.gz python -I tests/package_smoke.py
 
   compatibility:
     name: Compatibility / ${{ matrix.os }} / Python ${{ matrix.python-version }}
@@ -68,6 +69,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
           cache-dependency-glob: uv.lock
+          cache-suffix: py-${{ matrix.python-version }}
 
       - name: Sync the locked environment
         run: uv sync --locked
@@ -96,6 +98,7 @@ jobs:
           python-version: "3.13"
           enable-cache: true
           cache-dependency-glob: uv.lock
+          cache-suffix: py-3.13
 
       - name: Sync the locked environment
         run: uv sync --locked

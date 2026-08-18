@@ -1,6 +1,7 @@
 site_name: VectorViz
 site_description: 面向物理场、数值流线与轨迹的科学可视化工具
 site_author: VectorViz contributors
+site_url: https://longwarriors.github.io/Vector_field_streamline/
 docs_dir: docs
 site_dir: site
 dev_addr: 127.0.0.1:8001

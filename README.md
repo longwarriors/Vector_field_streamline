@@ -1,5 +1,7 @@
 # VectorViz
 
+[![CI](https://github.com/longwarriors/Vector_field_streamline/actions/workflows/ci.yml/badge.svg)](https://github.com/longwarriors/Vector_field_streamline/actions/workflows/ci.yml)
+
 VectorViz 是一个采用 `src` 布局的科学向量场与场线可视化项目。Python 后端负责批量场求值、自适应场线积分、奇点排除和科学元数据；浏览器前端负责热图、场线、方向箭头、场源拖动与探针显示。
 
 当前 MVP 包含：
@@ -34,6 +36,8 @@ uv run pytest
 uv run mkdocs build --strict
 ```
 
+默认测试同时执行分支覆盖统计，精确综合覆盖率不得低于 85.00%。CI 在 Ubuntu + Python 3.13 上执行权威覆盖率门槛，并在 Ubuntu/Windows + Python 3.11/3.14 上验证兼容性。
+
 文档预览：
 
 ```powershell
@@ -44,6 +48,7 @@ uv run mkdocs serve
 
 完整说明见：
 
+- [在线文档](https://longwarriors.github.io/Vector_field_streamline/)
 - [快速开始](docs/getting-started.md)
 - [系统架构](docs/architecture.md)
 - [物理与数学建模教程](docs/physics-and-numerics.md)

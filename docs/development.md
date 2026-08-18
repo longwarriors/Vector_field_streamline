@@ -41,6 +41,17 @@ uv run mkdocs serve
 
 不要把 `site/`、覆盖率目录、缓存或虚拟环境提交到版本库。
 
+## 持续集成与文档部署
+
+`.github/workflows/ci.yml` 对提交到 `master` 的改动、面向 `master` 的拉取请求和手动运行执行以下门禁：
+
+- Ubuntu + Python 3.13 是权威质量环境，运行 Ruff、完整 pytest 覆盖率、严格文档构建以及 wheel/sdist 构件冒烟；
+- Ubuntu/Windows + Python 3.11/3.14 只验证兼容性，不重复统计覆盖率；
+- 覆盖率配置位于 `pyproject.toml`，使用两位精度，精确综合覆盖率低于 85.00% 时失败；
+- CI 固定 uv 与各 GitHub Action 的版本，依赖安装始终从 `uv sync --locked` 开始。
+
+只有 `master` 上的权威质量作业和整个兼容矩阵都成功，工作流才会重新严格构建文档并部署到 [GitHub Pages](https://longwarriors.github.io/Vector_field_streamline/)。仓库首次启用时，维护者还需在 GitHub 的 **Settings → Pages → Build and deployment → Source** 中选择 **GitHub Actions**；之后不需要维护 `gh-pages` 分支，也不要手工编辑 `site/`。
+
 ## 测试策略 { #testing-strategy }
 
 ### 单元测试
@@ -171,6 +182,13 @@ uv run ruff check .
 uv run pytest
 uv run mkdocs build --strict
 uv run python -c "from vectorviz import UniformField, FieldLineTracer"
+uv build --clear
+$wheel = (Get-ChildItem dist/*.whl).FullName
+$sdist = (Get-ChildItem dist/*.tar.gz).FullName
+uv run --isolated --no-project --with $wheel python -I tests/package_smoke.py
+uv run --isolated --no-project --with $sdist python -I tests/package_smoke.py
 ```
+
+`tests/package_smoke.py` 会先切换到临时目录，再从已安装构件导入公共 API，并确认 Web 静态资源被打入包中；它不会借用仓库根目录或 editable 安装来掩盖缺失文件。
 
 还应手工打开前端做一次语义检查：单位可见、投影说明可见、源与曲线对齐、错误提示不会被吞掉。手工检查是自动化测试的补充，不是替代。
