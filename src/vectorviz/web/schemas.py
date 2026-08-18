@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 PresetName = Literal["electric_dipole", "magnetic_dipole", "uniform"]
 SourceKind = Literal["positive", "negative", "dipole", "uniform"]
@@ -10,6 +10,8 @@ SourceKind = Literal["positive", "negative", "dipole", "uniform"]
 
 class SourceInput(BaseModel):
     """A user-positionable source marker in normalized scene coordinates."""
+
+    model_config = ConfigDict(extra="forbid")
 
     x: float = Field(ge=-2.8, le=2.8)
     y: float = Field(ge=-2.8, le=2.8)
@@ -20,14 +22,16 @@ class SourceInput(BaseModel):
 class SceneRequest(BaseModel):
     """Parameters that affect physical sampling and field-line tracing."""
 
+    model_config = ConfigDict(extra="forbid")
+
     preset: PresetName = "electric_dipole"
     density: int = Field(default=18, ge=6, le=40)
     resolution: int = Field(default=72, ge=32, le=144)
-    sources: list[SourceInput] | None = Field(default=None, max_length=8)
+    sources: list[SourceInput] | None = Field(default=None, min_length=1, max_length=8)
 
     @model_validator(mode="after")
     def validate_source_override(self) -> "SceneRequest":
-        if not self.sources:
+        if self.sources is None:
             return self
         kinds = {source.kind for source in self.sources}
         if self.preset == "electric_dipole" and not kinds <= {"positive", "negative"}:

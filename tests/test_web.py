@@ -6,13 +6,14 @@ import json
 import math
 from pathlib import Path
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
 from vectorviz import __version__
 from vectorviz.web import app as web_app
 from vectorviz.web.app import STATIC_DIR, create_app
-from vectorviz.web.scene import build_scene
+from vectorviz.web.scene import _allocate_seed_counts, _build_model, build_scene
 from vectorviz.web.schemas import SceneRequest, SourceInput
 
 
@@ -87,6 +88,72 @@ def test_electric_scene_honors_source_override() -> None:
     assert sum(scene.metadata.termination_counts.values()) == 6
 
 
+def _electric_sources(positive_count: int) -> list[SourceInput]:
+    positions = [
+        (-2.4, -1.5),
+        (-1.2, -1.5),
+        (0.0, -1.5),
+        (1.2, -1.5),
+        (2.4, -1.5),
+        (-1.2, 1.5),
+        (1.2, 1.5),
+    ]
+    positives = [
+        SourceInput(x=x, y=y, kind="positive", strength=1.0)
+        for x, y in positions[:positive_count]
+    ]
+    return [*positives, SourceInput(x=0.0, y=0.5, kind="negative", strength=-1.0)]
+
+
+def test_seed_budget_boundary_assigns_one_seed_to_each_seeding_source() -> None:
+    sources = _electric_sources(positive_count=6)
+    sources = [
+        source.model_copy(update={"strength": 10.0 if index == 0 else 0.1})
+        if source.kind == "positive"
+        else source
+        for index, source in enumerate(sources)
+    ]
+    request = SceneRequest(
+        preset="electric_dipole",
+        density=6,
+        resolution=32,
+        sources=sources,
+    )
+
+    model = _build_model(request)
+    scene = build_scene(request)
+
+    assert model.seeds.shape == (request.density, 2)
+    for source in request.sources[:-1]:
+        nearby = sum(
+            math.dist(seed, (source.x, source.y)) < 0.17
+            for seed in model.seeds.tolist()
+        )
+        assert nearby == 1
+    assert len(scene.lines) == request.density
+    assert sum(scene.metadata.termination_counts.values()) == request.density
+
+
+def test_multisource_scene_keeps_density_as_the_total_seed_budget() -> None:
+    request = SceneRequest(
+        preset="electric_dipole",
+        density=10,
+        resolution=32,
+        sources=_electric_sources(positive_count=3),
+    )
+
+    scene = build_scene(request)
+
+    assert len(scene.lines) == request.density
+    assert sum(scene.metadata.termination_counts.values()) == request.density
+
+
+def test_remaining_seed_budget_uses_largest_remainders() -> None:
+    counts = _allocate_seed_counts(np.array((3.0, 2.0, 1.0)), total=10)
+
+    np.testing.assert_array_equal(counts, (5, 3, 2))
+
+
 def test_scene_request_validates_incompatible_source_overrides() -> None:
     with pytest.raises(ValueError, match="positive and negative"):
         SceneRequest(
@@ -133,6 +200,131 @@ def test_scene_endpoint_returns_browser_contract(client: TestClient) -> None:
     assert payload["scalar"]["nx"] == 32
     assert len(payload["lines"]) == 6
     assert payload["metadata"]["termination_counts"] == {"domain_exit": 6}
+
+
+def test_scene_endpoint_rejects_insufficient_seed_budget_with_actionable_detail(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": "electric_dipole",
+            "density": 6,
+            "resolution": 32,
+            "sources": [source.model_dump() for source in _electric_sources(positive_count=7)],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "electric_dipole 有 7 个正电荷参与播种，density 至少为 7"
+    }
+
+
+def test_magnetic_seed_budget_error_names_its_seeding_sources(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": "magnetic_dipole",
+            "density": 6,
+            "resolution": 32,
+            "sources": [
+                {"x": -2.4 + 0.7 * index, "y": 0.0, "kind": "dipole"}
+                for index in range(7)
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "magnetic_dipole 有 7 个磁偶极子参与播种，density 至少为 7"
+    }
+
+
+def test_degenerate_seed_results_are_counted_but_not_rendered(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": "magnetic_dipole",
+            "density": 6,
+            "resolution": 32,
+            "sources": [{"x": 0.0, "y": 0.0, "kind": "dipole", "strength": 0.0}],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["lines"] == []
+    assert payload["metadata"]["termination_counts"] == {"null_field": 6}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"preset": "not-a-preset"},
+        {"unknown_top_level": True},
+        {"density": -1},
+        {"density": 41},
+        {"resolution": 145},
+        {
+            "preset": "electric_dipole",
+            "sources": [{"x": 0.0, "kind": "positive"}],
+        },
+        {
+            "preset": "electric_dipole",
+            "sources": [
+                {"x": 0.0, "y": 0.0, "kind": "positive", "strenght": 1.0},
+                {"x": 1.0, "y": 0.0, "kind": "negative"},
+            ],
+        },
+        {"preset": "electric_dipole", "sources": []},
+        {
+            "preset": "electric_dipole",
+            "sources": [
+                {"x": float(index) / 10, "y": 0.0, "kind": "positive"}
+                for index in range(9)
+            ],
+        },
+        {
+            "preset": "electric_dipole",
+            "sources": [{"x": 0.0, "y": 0.0, "kind": "positive"}],
+        },
+        {
+            "preset": "uniform",
+            "sources": [{"x": 0.0, "y": 0.0, "kind": "uniform"}],
+        },
+    ],
+)
+def test_scene_endpoint_rejects_invalid_limits_and_malformed_sources(
+    client: TestClient,
+    payload: dict[str, object],
+) -> None:
+    response = client.post("/api/scene", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"]
+
+
+def test_minimal_scene_request_and_every_advertised_preset_are_usable(
+    client: TestClient,
+) -> None:
+    assert client.post("/api/scene", json={}).status_code == 200
+
+    preset_ids = [item["id"] for item in client.get("/api/presets").json()]
+    for preset_id in preset_ids:
+        response = client.post(
+            "/api/scene",
+            json={"preset": preset_id, "density": 6, "resolution": 32},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["metadata"]["projection_note"]
+        assert payload["scalar"]["unit"]
+        assert len(payload["scalar"]["values"]) == 32 * 32
 
 
 def test_static_index_and_assets_are_served(client: TestClient) -> None:

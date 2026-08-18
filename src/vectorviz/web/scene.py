@@ -80,17 +80,42 @@ def _source_payloads(sources: list[SourceInput]) -> tuple[SourcePayload, ...]:
 
 
 def _allocate_seed_counts(strengths: NDArray[np.float64], total: int) -> NDArray[np.int64]:
+    source_count = int(strengths.size)
+    if source_count == 0:
+        raise ValueError("at least one seeding source is required")
+    if source_count > total:
+        raise ValueError("seed budget must provide at least one seed per seeding source")
+
+    counts = np.ones(source_count, dtype=np.int64)
+    remaining = total - source_count
+    if remaining == 0:
+        return counts
+
     weights = np.abs(strengths)
     if not np.any(weights):
         weights = np.ones_like(weights)
-    raw = weights / np.sum(weights) * total
-    counts = np.maximum(1, np.floor(raw).astype(int))
-    while int(np.sum(counts)) < total:
-        counts[int(np.argmax(raw - counts))] += 1
-    while int(np.sum(counts)) > total and np.any(counts > 1):
-        index = int(np.argmax(counts - raw))
-        counts[index] -= 1
+    quotas = weights / np.sum(weights) * remaining
+    extras = np.floor(quotas).astype(np.int64)
+    counts += extras
+    unassigned = remaining - int(np.sum(extras))
+    if unassigned:
+        fractions = quotas - extras
+        order = np.argsort(-fractions, kind="stable")
+        counts[order[:unassigned]] += 1
     return counts
+
+
+def _require_seed_budget(
+    preset: str,
+    source_label: str,
+    source_count: int,
+    density: int,
+) -> None:
+    if source_count > density:
+        raise ValueError(
+            f"{preset} 有 {source_count} 个{source_label}参与播种，"
+            f"density 至少为 {source_count}"
+        )
 
 
 def _circle_seeds(
@@ -126,7 +151,9 @@ def _magnetic_seeds(
 
 
 def _build_model(request: SceneRequest) -> _SceneModel:
-    inputs = list(request.sources or _default_sources(request.preset))
+    inputs = list(
+        _default_sources(request.preset) if request.sources is None else request.sources
+    )
     payloads = _source_payloads(inputs)
 
     if request.preset == "electric_dipole":
@@ -143,6 +170,12 @@ def _build_model(request: SceneRequest) -> _SceneModel:
             raise ValueError("electric dipole needs at least one positive and one negative source")
         field = PointChargeField(signed_strengths * 1.0e-9, centers)
         positive = signed_strengths > 0
+        _require_seed_budget(
+            request.preset,
+            "正电荷",
+            int(np.count_nonzero(positive)),
+            request.density,
+        )
         seeds = _circle_seeds(centers[positive], signed_strengths[positive], request.density)
         return _SceneModel(
             field=field,
@@ -162,6 +195,12 @@ def _build_model(request: SceneRequest) -> _SceneModel:
         active = [source for source in inputs if source.kind == "dipole"]
         centers = np.array([[source.x, source.y] for source in active], dtype=float)
         strengths = np.array([source.strength for source in active], dtype=float)
+        _require_seed_budget(
+            request.preset,
+            "磁偶极子",
+            len(active),
+            request.density,
+        )
         moments = np.column_stack((np.zeros_like(strengths), strengths, np.zeros_like(strengths)))
         positions = np.column_stack((centers, np.zeros(len(centers))))
         field = _PlanarMagneticDipoleField(MagneticDipoleField(moments, positions))
