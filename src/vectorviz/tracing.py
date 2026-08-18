@@ -42,6 +42,7 @@ class TerminationReason(StrEnum):
     SOLVER_FAILURE = "solver_failure"
     SEED_OUTSIDE_DOMAIN = "seed_outside_domain"
     EXCLUSION_HIT = "exclusion_hit"
+    CLOSED_LOOP = "closed_loop"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,13 @@ class TraceOptions:
     ``null_threshold`` is an absolute field-magnitude threshold in the field's
     own units.  It defines an event surface; the tracer never adds an epsilon
     to the norm or invents a direction inside this surface.
+
+    Closed-loop detection is opt-in because its distance tolerance has the
+    coordinate system's unit. ``closure_tolerance`` and
+    ``closure_min_arc_length`` must be supplied together; a return is accepted
+    only when the local tangent also meets ``closure_tangent_cosine``. While
+    enabled, closest returns are located from the derivative of distance to the
+    seed, so the geometric tolerance does not silently replace ``max_step``.
     """
 
     max_arc_length: float = 20.0
@@ -61,6 +69,9 @@ class TraceOptions:
     null_threshold: float = 1.0e-12
     output_step: float | None = None
     method: str = "DOP853"
+    closure_tolerance: float | None = None
+    closure_min_arc_length: float | None = None
+    closure_tangent_cosine: float = 0.95
 
     def __post_init__(self) -> None:
         if not np.isfinite(self.max_arc_length) or self.max_arc_length <= 0:
@@ -83,6 +94,33 @@ class TraceOptions:
             raise ValueError("output_step must be finite and positive when supplied.")
         if not isinstance(self.method, str) or not self.method:
             raise ValueError("method must be a non-empty solve_ivp method name.")
+        if (self.closure_tolerance is None) != (self.closure_min_arc_length is None):
+            raise ValueError(
+                "closure_tolerance and closure_min_arc_length must be supplied together."
+            )
+        if self.closure_tolerance is not None and (
+            not np.isfinite(self.closure_tolerance) or self.closure_tolerance <= 0
+        ):
+            raise ValueError("closure_tolerance must be finite and positive when supplied.")
+        if self.closure_min_arc_length is not None:
+            if (
+                not np.isfinite(self.closure_min_arc_length)
+                or self.closure_min_arc_length <= 0
+            ):
+                raise ValueError(
+                    "closure_min_arc_length must be finite and positive when supplied."
+                )
+            if self.closure_min_arc_length >= self.max_arc_length:
+                raise ValueError("closure_min_arc_length must be less than max_arc_length.")
+            if self.closure_min_arc_length <= 2.0 * self.closure_tolerance:
+                raise ValueError(
+                    "closure_min_arc_length must be greater than twice closure_tolerance."
+                )
+        if (
+            not np.isfinite(self.closure_tangent_cosine)
+            or not -1.0 <= self.closure_tangent_cosine < 1.0
+        ):
+            raise ValueError("closure_tangent_cosine must be finite and within [-1, 1).")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,8 +144,10 @@ class TraceBranch:
 class TraceResult:
     """A complete trace and its independently inspectable branches.
 
-    For a bidirectional trace, ``points`` are ordered from the backward terminal
-    point through the seed to the forward terminal point. ``arc_length`` is the
+    For a non-closed bidirectional trace, ``points`` are ordered from the
+    backward terminal point through the seed to the forward terminal point. If
+    both branches close on the same geometric orbit, ``points`` contains one
+    branch only so the displayed loop is not duplicated. ``arc_length`` is the
     cumulative geometric length along that displayed ordering.
     """
 
@@ -268,58 +308,206 @@ class FieldLineTracer:
             events.append(exclusion_event)
             event_reasons.append(TerminationReason.EXCLUSION_HIT)
 
-        solution = solve_ivp(
-            rhs,
-            (0.0, options.max_arc_length),
-            seed,
-            method=options.method,
-            rtol=options.rtol,
-            atol=options.atol,
-            max_step=options.max_step,
-            first_step=options.first_step,
-            dense_output=options.output_step is not None,
-            events=events,
-        )
+        closure_enabled = options.closure_tolerance is not None
+        closure_min_arc_length = options.closure_min_arc_length
+        closure_candidate_index: int | None = None
+        seed_tangent = seed_vector / seed_magnitude
+        if closure_enabled:
+            if closure_min_arc_length is None:  # pragma: no cover - guarded by TraceOptions
+                raise RuntimeError("closure controls are incomplete")
 
-        if options.output_step is not None and solution.sol is not None:
-            end_parameter = float(solution.t[-1])
-            parameters = np.arange(0.0, end_parameter, options.output_step)
-            if parameters.size == 0 or parameters[0] != 0.0:
-                parameters = np.insert(parameters, 0, 0.0)
-            if not np.isclose(parameters[-1], end_parameter):
-                parameters = np.append(parameters, end_parameter)
-            else:
-                parameters[-1] = end_parameter
-            points = np.asarray(solution.sol(parameters).T, dtype=float)
-        else:
-            points = np.asarray(solution.y.T, dtype=float)
+            def closure_candidate_event(_parameter: float, point: FloatArray) -> float:
+                """Locate local minima of distance to the seed along this branch."""
 
-        magnitudes = np.linalg.norm(self.field.evaluate(points), axis=-1)
-        if solution.status == 1:
+                vector, magnitude = self._field_at(point)
+                if (
+                    not np.all(np.isfinite(vector))
+                    or not np.isfinite(magnitude)
+                    or magnitude <= options.null_threshold
+                ):
+                    return 1.0
+                branch_tangent = sign * vector / magnitude
+                return float(np.dot(point - seed, branch_tangent))
+
+            closure_candidate_event.terminal = False  # type: ignore[attr-defined]
+            closure_candidate_event.direction = 1.0  # type: ignore[attr-defined]
+            closure_candidate_index = len(events)
+            events.append(closure_candidate_event)
+
+        def terminal_reason(solution: Any) -> TerminationReason | None:
+            if solution.status != 1:
+                return None
             triggered_index = next(
                 (
                     index
-                    for index, event_times in enumerate(solution.t_events)
+                    for index, event_times in enumerate(
+                        solution.t_events[: len(event_reasons)]
+                    )
                     if event_times.size > 0
                 ),
                 None,
             )
-            termination = (
+            return (
                 event_reasons[triggered_index]
                 if triggered_index is not None
                 else TerminationReason.SOLVER_FAILURE
             )
-        elif solution.status == 0:
-            termination = TerminationReason.MAX_ARC_LENGTH
-        else:
+
+        def is_closed_candidate(solution: Any, parameter: float) -> bool:
+            if not closure_enabled or parameter < closure_min_arc_length:
+                return False
+            if solution.sol is None:  # pragma: no cover - dense output is required below
+                raise RuntimeError("closure detection requires dense solver output")
+            point = np.asarray(solution.sol(parameter), dtype=float)
+            vector, magnitude = self._field_at(point)
+            if (
+                not np.all(np.isfinite(vector))
+                or not np.isfinite(magnitude)
+                or magnitude <= options.null_threshold
+            ):
+                return False
+            distance = float(np.linalg.norm(point - seed))
+            tangent_cosine = float(np.dot(vector / magnitude, seed_tangent))
+            return bool(
+                distance <= options.closure_tolerance
+                and tangent_cosine >= options.closure_tangent_cosine
+            )
+
+        # A non-terminal radial event finds closest returns without shrinking
+        # max_step to the geometric tolerance. Integrating in bounded chunks
+        # lets a qualifying return stop subsequent work while keeping all
+        # physical termination events active in every chunk.
+        chunk_length = options.max_arc_length
+        if closure_enabled:
+            chunk_length = min(
+                options.max_arc_length,
+                max(
+                    16.0 * options.max_step,
+                    8.0 * options.closure_tolerance,
+                ),
+            )
+
+        solutions: list[Any] = []
+        branch_start = 0.0
+        branch_state = seed
+        closure_parameter: float | None = None
+        termination: TerminationReason | None = None
+        integration_first_step = options.first_step
+        while branch_start < options.max_arc_length:
+            branch_end = min(options.max_arc_length, branch_start + chunk_length)
+            if integration_first_step is not None:
+                integration_first_step = min(
+                    integration_first_step,
+                    branch_end - branch_start,
+                )
+            solution = solve_ivp(
+                rhs,
+                (branch_start, branch_end),
+                branch_state,
+                method=options.method,
+                rtol=options.rtol,
+                atol=options.atol,
+                max_step=options.max_step,
+                first_step=integration_first_step,
+                dense_output=options.output_step is not None or closure_enabled,
+                events=events,
+            )
+            solutions.append(solution)
+            integration_first_step = None
+
+            physical_termination = terminal_reason(solution)
+            physical_terminal_time = (
+                float(solution.t[-1]) if physical_termination is not None else None
+            )
+            candidate_times = (
+                solution.t_events[closure_candidate_index]
+                if closure_candidate_index is not None
+                else np.empty(0, dtype=float)
+            )
+            for candidate_time in candidate_times:
+                candidate_parameter = float(candidate_time)
+                if physical_terminal_time is not None and np.isclose(
+                    candidate_parameter,
+                    physical_terminal_time,
+                    rtol=0.0,
+                    atol=64.0 * np.finfo(float).eps * max(1.0, physical_terminal_time),
+                ):
+                    continue
+                if is_closed_candidate(solution, candidate_parameter):
+                    closure_parameter = candidate_parameter
+                    termination = TerminationReason.CLOSED_LOOP
+                    break
+            if closure_parameter is not None:
+                break
+            if physical_termination is not None:
+                termination = physical_termination
+                break
+            if solution.status < 0:
+                termination = TerminationReason.SOLVER_FAILURE
+                break
+            if branch_end >= options.max_arc_length:
+                termination = TerminationReason.MAX_ARC_LENGTH
+                break
+
+            branch_start = float(solution.t[-1])
+            branch_state = np.asarray(solution.y[:, -1], dtype=float)
+
+        if termination is None:  # pragma: no cover - loop always reaches a terminal state
             termination = TerminationReason.SOLVER_FAILURE
+
+        end_parameter = (
+            closure_parameter if closure_parameter is not None else float(solutions[-1].t[-1])
+        )
+        if options.output_step is not None:
+            parameters = np.arange(0.0, end_parameter, options.output_step)
+            if parameters.size == 0 or parameters[0] != 0.0:
+                parameters = np.insert(parameters, 0, 0.0)
+        elif closure_enabled:
+            parameters = np.concatenate(
+                [
+                    solution.t if index == 0 else solution.t[1:]
+                    for index, solution in enumerate(solutions)
+                ]
+            )
+            parameters = parameters[parameters <= end_parameter]
+        else:
+            parameters = solutions[-1].t
+
+        if parameters.size == 0 or not np.isclose(parameters[-1], end_parameter):
+            parameters = np.append(parameters, end_parameter)
+        else:
+            parameters[-1] = end_parameter
+
+        if options.output_step is not None or closure_enabled:
+            sampled_points: list[FloatArray] = []
+            solution_index = 0
+            for parameter in parameters:
+                while (
+                    solution_index + 1 < len(solutions)
+                    and parameter > solutions[solution_index].t[-1]
+                ):
+                    solution_index += 1
+                interpolant = solutions[solution_index].sol
+                if interpolant is None:  # pragma: no cover - requested above
+                    raise RuntimeError("dense solver output is unavailable")
+                sampled_points.append(np.asarray(interpolant(parameter), dtype=float))
+            points = np.stack(sampled_points, axis=0)
+        else:
+            points = np.asarray(solutions[-1].y.T, dtype=float)
+
+        magnitudes = np.linalg.norm(self.field.evaluate(points), axis=-1)
 
         if encountered_nonfinite and termination is TerminationReason.SOLVER_FAILURE:
             termination = TerminationReason.NONFINITE_FIELD
 
-        message = solution.message
+        message = solutions[-1].message
         if termination is TerminationReason.NONFINITE_FIELD:
             message = "integration encountered a non-finite field value"
+        elif termination is TerminationReason.CLOSED_LOOP:
+            message = (
+                "integration returned to the seed neighborhood "
+                f"within tolerance {options.closure_tolerance:g}"
+            )
 
         return TraceBranch(
             direction=direction,
@@ -328,7 +516,7 @@ class FieldLineTracer:
             field_magnitude=np.asarray(magnitudes, dtype=float),
             termination=termination,
             message=message,
-            nfev=int(solution.nfev),
+            nfev=sum(int(solution.nfev) for solution in solutions),
         )
 
     def trace(
@@ -376,7 +564,16 @@ class FieldLineTracer:
             else None
         )
 
-        if forward is not None and backward is not None:
+        if (
+            forward is not None
+            and backward is not None
+            and forward.termination is TerminationReason.CLOSED_LOOP
+            and backward.termination is TerminationReason.CLOSED_LOOP
+        ):
+            # Both branches traverse the same closed geometric line in opposite
+            # orientations. Keep both branches for diagnostics but render one.
+            points = forward.points.copy()
+        elif forward is not None and backward is not None:
             points = np.concatenate((backward.points[:0:-1], forward.points), axis=0)
         elif forward is not None:
             points = forward.points.copy()
