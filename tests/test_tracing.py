@@ -11,6 +11,7 @@ from vectorviz import (
     FieldLineTracer,
     SphericalExclusion,
     TerminationReason,
+    ToroidalExclusion,
     TraceDirection,
     TraceOptions,
     UniformField,
@@ -178,6 +179,27 @@ def test_source_exclusion_terminates_at_surface() -> None:
     assert result.forward is not None
     assert result.forward.termination is TerminationReason.EXCLUSION_HIT
     np.testing.assert_allclose(result.forward.terminal_point, (-0.2, 0.0), atol=2.0e-8)
+
+
+def test_toroidal_exclusion_terminates_a_three_dimensional_trace() -> None:
+    exclusion = ToroidalExclusion(
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 0.0, 1.0),
+        major_radius=1.0,
+        minor_radius=0.2,
+    )
+    result = trace_field_line(
+        UniformField((1.0, 0.0, 0.0)),
+        seed=(0.0, 0.0, 0.0),
+        domain=Domain((-2.0, -2.0, -2.0), (2.0, 2.0, 2.0)),
+        options=_options(),
+        direction="forward",
+        exclusions=(exclusion,),
+    )
+
+    assert result.forward is not None
+    assert result.forward.termination is TerminationReason.EXCLUSION_HIT
+    np.testing.assert_allclose(result.forward.terminal_point, (0.8, 0.0, 0.0), atol=2.0e-8)
 
 
 def test_seed_inside_exclusion_is_rejected_without_integration() -> None:

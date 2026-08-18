@@ -11,10 +11,12 @@ from vectorviz import (
     CircularLoopField,
     CompositeField,
     Domain,
+    ExclusionRegion,
     FieldLineTracer,
     MagneticDipoleField,
     PointChargeField,
     SphericalExclusion,
+    ToroidalExclusion,
     TerminationReason,
     TraceBranch,
     TraceDirection,
@@ -43,6 +45,12 @@ vectors = field.evaluate(points)
 ### `SphericalExclusion`
 
 `SphericalExclusion(centers, radii)` 表示二维圆形或三维球形排除区域。`margin()` 在区域外为正、表面为零、内部为负，追踪器用它定位 `EXCLUSION_HIT` 事件。理想点源附近应使用排除几何，而不是修改物理场公式。
+
+### `ExclusionRegion` 与 `ToroidalExclusion`
+
+`ExclusionRegion` 是追踪器接受的结构协议：实现只需提供空间 `dimension` 和 signed `margin(points)`。`ToroidalExclusion(center, normal, major_radius, minor_radius)` 是三维圆环导线的有限半径排除管；`normal` 会归一化，并要求 `0 < minor_radius < major_radius`。它的 `margin()` 是到圆形中心线的欧氏距离减去 `minor_radius`。
+
+环面半径只控制追踪终止与显示 mask，不进入 `CircularLoopField` 的分母，也不把理想细导线改造成有限截面导线模型。
 
 ### 解析场
 
@@ -306,6 +314,10 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
       heading_level: 4
 
 ::: vectorviz.core.SphericalExclusion
+    options:
+      heading_level: 4
+
+::: vectorviz.core.ToroidalExclusion
     options:
       heading_level: 4
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from vectorviz import Domain, SphericalExclusion
+from vectorviz import Domain, SphericalExclusion, ToroidalExclusion
 
 
 def test_domain_reports_geometry_and_batch_containment() -> None:
@@ -92,3 +92,76 @@ def test_spherical_exclusion_margin_for_one_and_many_sources() -> None:
 def test_spherical_exclusion_rejects_invalid_geometry(centers: object, radii: object) -> None:
     with pytest.raises(ValueError):
         SphericalExclusion(centers=centers, radii=radii)
+
+
+def test_toroidal_exclusion_margin_and_readonly_geometry() -> None:
+    exclusion = ToroidalExclusion(
+        center=(0.0, 0.0, 0.0),
+        normal=(0.0, 0.0, 4.0),
+        major_radius=2.0,
+        minor_radius=0.25,
+    )
+
+    assert exclusion.dimension == 3
+    np.testing.assert_allclose(
+        exclusion.margin(
+            (
+                (2.0, 0.0, 0.0),
+                (2.25, 0.0, 0.0),
+                (2.0, 0.0, 0.25),
+                (0.0, 0.0, 0.0),
+                (2.5, 0.0, 0.0),
+            )
+        ),
+        (-0.25, 0.0, 0.0, 1.75, 0.25),
+        atol=2.0e-16,
+    )
+    np.testing.assert_array_equal(exclusion.normal, (0.0, 0.0, 1.0))
+    assert not exclusion.center.flags.writeable
+    assert not exclusion.normal.flags.writeable
+
+
+def test_toroidal_exclusion_is_covariant_under_rotation_and_translation() -> None:
+    rotation = np.array(
+        (
+            (0.0, 0.0, 1.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+        )
+    )
+    np.testing.assert_allclose(rotation @ rotation.T, np.eye(3), atol=2.0e-16)
+    center = np.array((0.3, -0.2, 0.5))
+    translation = np.array((-0.4, 0.7, 0.2))
+    normal = np.array((0.0, 0.0, 1.0))
+    points = np.array(((1.4, -0.2, 0.5), (0.8, 0.1, 0.9), (-0.2, -0.5, 0.5)))
+    reference = ToroidalExclusion(center, normal, 1.1, 0.18)
+    transformed = ToroidalExclusion(
+        rotation @ center + translation,
+        rotation @ normal,
+        1.1,
+        0.18,
+    )
+
+    expected = reference.margin(points)
+    actual = transformed.margin(points @ rotation.T + translation)
+
+    np.testing.assert_allclose(actual, expected, rtol=3.0e-15, atol=3.0e-16)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: ToroidalExclusion((0.0, 0.0), (0.0, 0.0, 1.0), 1.0, 0.1),
+        lambda: ToroidalExclusion((0.0, 0.0, np.nan), (0.0, 0.0, 1.0), 1.0, 0.1),
+        lambda: ToroidalExclusion((0.0, 0.0, 0.0), (0.0, 0.0), 1.0, 0.1),
+        lambda: ToroidalExclusion((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.0, 0.1),
+        lambda: ToroidalExclusion((0.0, 0.0, 0.0), (0.0, 0.0, np.inf), 1.0, 0.1),
+        lambda: ToroidalExclusion((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 0.0, 0.1),
+        lambda: ToroidalExclusion((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), np.inf, 0.1),
+        lambda: ToroidalExclusion((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 1.0, 0.0),
+        lambda: ToroidalExclusion((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 1.0, 1.0),
+    ],
+)
+def test_toroidal_exclusion_rejects_invalid_geometry(factory: object) -> None:
+    with pytest.raises(ValueError):
+        factory()  # type: ignore[operator]

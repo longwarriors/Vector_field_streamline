@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -49,6 +49,21 @@ class VectorField(ABC):
         """Alias for `evaluate`."""
 
         return self.evaluate(points)
+
+
+class ExclusionRegion(Protocol):
+    """Structural contract for a signed-margin tracing exclusion."""
+
+    @property
+    def dimension(self) -> int:
+        """Spatial dimension consumed by :meth:`margin`."""
+
+        ...
+
+    def margin(self, points: ArrayLike) -> Any:
+        """Return values positive outside, zero on, and negative inside."""
+
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,4 +186,75 @@ class SphericalExclusion:
         return np.min(distances, axis=-1)
 
 
-__all__ = ["Domain", "FloatArray", "SphericalExclusion", "VectorField"]
+@dataclass(frozen=True, slots=True)
+class ToroidalExclusion:
+    """A finite-radius tube around a circular centerline in 3D.
+
+    ``normal`` defines the circle axis. ``major_radius`` is the centerline
+    radius and ``minor_radius`` is the excluded tube radius. The latter is a
+    tracing/masking geometry; it does not soften an ideal filamentary field.
+    """
+
+    center: ArrayLike
+    normal: ArrayLike
+    major_radius: float
+    minor_radius: float
+
+    def __post_init__(self) -> None:
+        center = np.asarray(self.center, dtype=float)
+        normal = np.asarray(self.normal, dtype=float)
+        if center.shape != (3,):
+            raise ValueError("center must have shape (3,).")
+        if normal.shape != (3,):
+            raise ValueError("normal must have shape (3,).")
+        if not np.all(np.isfinite(center)) or not np.all(np.isfinite(normal)):
+            raise ValueError("torus center and normal must be finite.")
+
+        normal_scale = float(np.max(np.abs(normal)))
+        if normal_scale == 0.0:
+            raise ValueError("normal must be nonzero.")
+        scaled_normal = normal / normal_scale
+        normal = scaled_normal / np.linalg.norm(scaled_normal)
+
+        major = np.asarray(self.major_radius, dtype=float)
+        minor = np.asarray(self.minor_radius, dtype=float)
+        if major.ndim != 0 or not np.isfinite(major) or float(major) <= 0.0:
+            raise ValueError("major_radius must be a finite positive scalar.")
+        if minor.ndim != 0 or not np.isfinite(minor) or float(minor) <= 0.0:
+            raise ValueError("minor_radius must be a finite positive scalar.")
+        if float(minor) >= float(major):
+            raise ValueError("minor_radius must be smaller than major_radius.")
+
+        center = np.array(center, copy=True)
+        normal = np.array(normal, copy=True)
+        center.setflags(write=False)
+        normal.setflags(write=False)
+        object.__setattr__(self, "center", center)
+        object.__setattr__(self, "normal", normal)
+        object.__setattr__(self, "major_radius", float(major))
+        object.__setattr__(self, "minor_radius", float(minor))
+
+    @property
+    def dimension(self) -> int:
+        return 3
+
+    def margin(self, points: ArrayLike) -> Any:
+        """Return Euclidean signed distance to the tube surface."""
+
+        coordinates = _as_points(points, 3)
+        displacement = coordinates - self.center
+        axial = np.einsum("...d,d->...", displacement, self.normal)
+        radial_vectors = displacement - axial[..., np.newaxis] * self.normal
+        radial = np.linalg.norm(radial_vectors, axis=-1)
+        centerline_distance = np.hypot(radial - self.major_radius, axial)
+        return centerline_distance - self.minor_radius
+
+
+__all__ = [
+    "Domain",
+    "ExclusionRegion",
+    "FloatArray",
+    "SphericalExclusion",
+    "ToroidalExclusion",
+    "VectorField",
+]

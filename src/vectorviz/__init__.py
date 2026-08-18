@@ -2,7 +2,7 @@
 
 __version__ = "0.1.0"
 
-from .core import Domain, SphericalExclusion, VectorField
+from .core import Domain, ExclusionRegion, SphericalExclusion, ToroidalExclusion, VectorField
 from .fields import (
     CircularLoopField,
     CompositeField,
@@ -24,11 +24,13 @@ __all__ = [
     "CircularLoopField",
     "CompositeField",
     "Domain",
+    "ExclusionRegion",
     "FieldLineTracer",
     "MagneticDipoleField",
     "PointChargeField",
     "SphericalExclusion",
     "TerminationReason",
+    "ToroidalExclusion",
     "TraceBranch",
     "TraceDirection",
     "TraceOptions",

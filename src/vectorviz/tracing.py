@@ -11,7 +11,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.integrate import solve_ivp
 
-from .core import Domain, FloatArray, SphericalExclusion, VectorField, _as_points
+from .core import Domain, ExclusionRegion, FloatArray, VectorField, _as_points
 
 
 class TraceDirection(StrEnum):
@@ -192,7 +192,7 @@ class FieldLineTracer:
         field: VectorField,
         domain: Domain | None = None,
         options: TraceOptions | None = None,
-        exclusions: Iterable[SphericalExclusion] = (),
+        exclusions: Iterable[ExclusionRegion] = (),
     ) -> None:
         if not isinstance(field, VectorField):
             raise TypeError("field must implement VectorField.")
@@ -601,7 +601,7 @@ def trace_field_line(
     domain: Domain | None = None,
     options: TraceOptions | None = None,
     direction: TraceDirection | str = TraceDirection.BOTH,
-    exclusions: Iterable[SphericalExclusion] = (),
+    exclusions: Iterable[ExclusionRegion] = (),
 ) -> TraceResult:
     """Convenience wrapper around `FieldLineTracer`."""
 
