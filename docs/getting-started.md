@@ -109,8 +109,11 @@ uv run --with jupyterlab jupyter lab notebooks
 ## 运行测试
 
 ```powershell
+uv run playwright install chromium
 uv run pytest
 ```
+
+Chromium 只需在第一次运行或 Playwright 升级后安装；测试由 uv 环境中的 Python Playwright 驱动，不需要 Node 项目工具链。
 
 生成 HTML 覆盖率报告：
 

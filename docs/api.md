@@ -68,10 +68,15 @@ TraceOptions(
     null_threshold=1e-12,
     output_step=None,
     method="DOP853",
+    closure_tolerance=None,
+    closure_min_arc_length=None,
+    closure_tangent_cosine=0.95,
 )
 ```
 
 `null_threshold` 使用场自身单位，是“方向未定义”事件面；它不是加入分母的 epsilon。`output_step` 非空时，结果利用求解器的稠密输出按近似弧长等间隔采样。
+
+闭环检测默认关闭。启用时必须同时给出带坐标单位的 `closure_tolerance` 和 `closure_min_arc_length`，且最小弧长必须大于空间容差的两倍，让轨迹有可分辨的离开过程；只有随后在距种子的局部最近点回到容差内，且当前切向与种子切向的余弦不小于 `closure_tangent_cosine`，才记录 `closed_loop`。该余弦阈值的合法范围是 `[-1, 1)`；上界不取 1，因为普通闭轨的浮点切向点积不会可靠地等于精确的 1。返回检查使用距种子平方沿轨迹的导数定位候选最近点，不会用空间容差暗中改写 `max_step`。双向分支仍分别保留诊断；若两支都闭合，合并后的 `TraceResult.points` 只保留一个方向的一周，不重复绘制同一闭轨。
 
 调用方应通过 `TraceOptions` 配置追踪器，不依赖模块内部常量。
 
@@ -95,7 +100,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 
 每个 `TraceBranch` 包含 `direction`、`points`、`arc_length`、`field_magnitude`、`termination`、`message` 和 `nfev`。消费者不得通过积分步间距推断场强，应读取显式的 `field_magnitude`。
 
-当前 `TerminationReason` 值为 `domain_exit`、`null_field`、`nonfinite_field`、`max_arc_length`、`solver_failure`、`seed_outside_domain` 和 `exclusion_hit`。
+当前 `TerminationReason` 值为 `domain_exit`、`null_field`、`nonfinite_field`、`max_arc_length`、`solver_failure`、`seed_outside_domain`、`exclusion_hit` 和 `closed_loop`。
 
 ### `trace_field_line`
 
@@ -163,13 +168,15 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 | 字段 | 必需 | 语义 |
 |---|---:|---|
 | `preset` | 否 | `/api/presets` 返回的稳定标识符；默认 `electric_dipole` |
-| `density` | 否 | 视觉播种密度，整数范围 6–40，默认 18，不代表物理场强 |
+| `density` | 否 | 种子总预算，整数范围 6–40，默认 18，不代表物理场强；每个参与播种的源至少分配 1 个种子 |
 | `resolution` | 否 | 两个方向共同使用的标量网格分辨率，整数范围 32–144 |
-| `sources` | 否 | 最多 8 个自定义源；若省略则使用预设源 |
+| `sources` | 否 | 1–8 个自定义源；若省略则使用预设源，显式空列表和未知字段会被拒绝 |
 
 服务端必须为密度、分辨率、源数量和数值范围设置上限，防止一次交互请求耗尽内存或 CPU。
 
-成功响应结构如下。为便于阅读，示意片段把网格缩成 $2\times2$；实际端点接受的 `resolution` 不低于 32，数组会相应更长。
+`density` 是一次场景请求的总种子预算，不是“每个源各放多少条”。电偶极预设只从非零正电荷出发，因此这些正电荷参与预算；磁偶极预设的每个偶极子都参与预算。若参与播种的源数超过 `density`，服务端返回 422，`detail` 会给出当前数量和所需最小值，例如 `electric_dipole 有 7 个正电荷参与播种，density 至少为 7`。预算充足时，每个播种源先得到 1 个种子，其余名额再按源强绝对值分配。响应始终满足 `len(lines) <= density` 与 `sum(termination_counts.values()) == density`；当每个种子都得到至少两个有限轨迹点时，前一个不等式取等号。若种子位于零场或非有限场等无法形成曲线的位置，终止计数仍会记录该次追踪，但 `lines` 会排除只有一个点的结果。
+
+成功响应结构如下。为便于阅读，示意片段把网格缩成 $2\times2$，并只展示 18 条轨迹中的 1 条；实际端点接受的 `resolution` 不低于 32，数组会相应更长。
 
 ```json
 {
@@ -196,14 +203,15 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
     }
   ],
   "sources": [
-    {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 1.0}
+    {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 1.0},
+    {"x": 1.0, "y": 0.0, "kind": "negative", "strength": -1.0}
   ],
   "metadata": {
-    "title": "Electric dipole",
-    "projection_note": "二维模型中的真实场线",
-    "field_model": "point_charge",
-    "seed_mode": "coverage",
-    "termination_counts": {"domain_exit": 12}
+    "title": "电偶极子的电场线",
+    "projection_note": "该平面法向场分量为零，所示曲线是真实场线，不是投影流线。",
+    "field_model": "三维点电荷场在 z=0 对称平面上的限制",
+    "seed_mode": "从正电荷排除面的覆盖播种；线密度默认不代表场强。",
+    "termination_counts": {"exclusion_hit": 11, "domain_exit": 7}
   }
 }
 ```
@@ -217,7 +225,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 - `nx`、`ny` 定义规则网格尺寸；
 - `values` 是长度为 `nx * ny` 的 row-major 一维数组：第 0 行对应 `ymax`，每行从 `xmin` 到 `xmax`，随后向 `ymin` 进入下一行；
 - `mask` 与 `values` 等长，`true` 表示源排除区或无效采样；
-- `scale` 告诉前端使用线性、对数或其他明确变换；
+- `scale` 当前只允许 `linear` 或 `log`；
 - `label` 与 `unit` 必须一同显示，避免无量纲色图。
 - `vmin` 与 `vmax` 是服务端在排除 mask 后给出的建议色标范围。
 

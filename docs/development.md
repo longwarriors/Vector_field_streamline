@@ -6,6 +6,7 @@
 
 ```powershell
 uv sync
+uv run playwright install chromium
 ```
 
 uv 在项目内维护 `.venv`，`uv.lock` 则固定直接与传递依赖。不要手工修改 `.venv`，也不要在项目工作流中混用 conda 或直接 `pip install`。依赖变更应先改 `pyproject.toml`，再由 uv 更新锁文件。
@@ -45,10 +46,11 @@ uv run mkdocs serve
 
 `.github/workflows/ci.yml` 对提交到 `master` 的改动、面向 `master` 的拉取请求和手动运行执行以下门禁：
 
-- Ubuntu + Python 3.13 是权威质量环境，运行 Ruff、完整 pytest 覆盖率、严格文档构建以及 wheel/sdist 构件冒烟；
-- Ubuntu/Windows + Python 3.11/3.14 只验证兼容性，不重复统计覆盖率；
+- Ubuntu + Python 3.13 是权威质量环境，安装 headless Chromium，并运行 Ruff、包含前端语义测试的完整 pytest 覆盖率、严格文档构建以及 wheel/sdist 构件冒烟；
+- Ubuntu/Windows + Python 3.11/3.14 只验证非浏览器兼容性，不重复下载浏览器或统计覆盖率；
 - 覆盖率配置位于 `pyproject.toml`，使用两位精度，精确综合覆盖率低于 85.00% 时失败；
 - CI 固定 uv 与各 GitHub Action 的版本，依赖安装始终从 `uv sync --locked` 开始。
+- 同一分支的新 workflow 会取消尚未完成的旧 workflow，避免旧提交在新提交之后反向覆盖 Pages。
 
 只有 `master` 上的权威质量作业和整个兼容矩阵都成功，工作流才会重新严格构建文档并部署到 [GitHub Pages](https://longwarriors.github.io/Vector_field_streamline/)。仓库首次启用时，维护者还需在 GitHub 的 **Settings → Pages → Build and deployment → Source** 中选择 **GitHub Actions**；之后不需要维护 `gh-pages` 分支，也不要手工编辑 `site/`。
 
@@ -107,6 +109,15 @@ uv run mkdocs serve
 - 窗口缩放后坐标与指针探针仍一致。
 
 截图测试只适合防止布局意外变化，不能替代数值和语义断言。
+
+前端入口和纯函数使用浏览器原生 ES module，由 uv 管理的 Python Playwright 在 Chromium 中直接执行；仓库不使用 `package.json`、Node 包管理器或 bundler。首次运行或 Playwright 升级后安装匹配的浏览器：
+
+```powershell
+uv run playwright install chromium
+uv run pytest tests/test_frontend.py --no-cov
+```
+
+默认 `uv run pytest` 仍包含这些浏览器测试。`browser` marker 仅供兼容矩阵在没有下载 Chromium 时排除；权威质量作业不得排除它。当前四项已自动验证请求失败不展示旧结果、公共坐标变换、log/mask 无虚假热点，以及 resize 后探针一致性。“改变显示图层不再次请求”留到 v0.3.0 图层开关存在时实现和验收，不提前制造空 UI。
 
 ## 测试分组
 
