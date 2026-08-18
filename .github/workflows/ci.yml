@@ -50,11 +50,17 @@ jobs:
       - name: Build clean distributions
         run: uv build --clear
 
+      # Development commits can share one package version; bypass cached local
+      # archives so each smoke test installs the distribution built in this run.
       - name: Smoke-check the wheel outside the project
-        run: uv run --isolated --no-project --with dist/*.whl python -I tests/package_smoke.py
+        run: >-
+          uv run --isolated --no-project --no-cache
+          --with dist/*.whl python -I tests/package_smoke.py
 
       - name: Smoke-check the source distribution outside the project
-        run: uv run --isolated --no-project --with dist/*.tar.gz python -I tests/package_smoke.py
+        run: >-
+          uv run --isolated --no-project --no-cache
+          --with dist/*.tar.gz python -I tests/package_smoke.py
 
   compatibility:
     name: Compatibility / ${{ matrix.os }} / Python ${{ matrix.python-version }}
