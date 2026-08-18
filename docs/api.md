@@ -76,7 +76,7 @@ TraceOptions(
 
 `null_threshold` 使用场自身单位，是“方向未定义”事件面；它不是加入分母的 epsilon。`output_step` 非空时，结果利用求解器的稠密输出按近似弧长等间隔采样。
 
-闭环检测默认关闭。启用时必须同时给出带坐标单位的 `closure_tolerance` 和 `closure_min_arc_length`，且最小弧长必须大于空间容差的两倍，让轨迹有可分辨的离开过程；只有随后在距种子的局部最近点回到容差内，且当前切向与种子切向的余弦不小于 `closure_tangent_cosine`，才记录 `closed_loop`。该余弦阈值的合法范围是 `[-1, 1)`；上界不取 1，因为普通闭轨的浮点切向点积不会可靠地等于精确的 1。返回检查使用距种子平方沿轨迹的导数定位候选最近点，不会用空间容差暗中改写 `max_step`。双向分支仍分别保留诊断；若两支都闭合，合并后的 `TraceResult.points` 只保留一个方向的一周，不重复绘制同一闭轨。
+闭环检测默认关闭。启用时必须同时给出带坐标单位的 `closure_tolerance` 和 `closure_min_arc_length`，且最小弧长必须大于空间容差的两倍，让轨迹有可分辨的离开过程；只有随后在距种子的局部最近点回到容差内，且当前切向与种子切向的余弦不小于 `closure_tangent_cosine`，才记录 `closed_loop`。该余弦阈值的合法范围是 `[-1, 1)`；上界不取 1，因为普通闭轨的浮点切向点积不会可靠地等于精确的 1。候选点由 $\tfrac12\lVert\mathbf x-\mathbf x_0\rVert^2$ 沿轨迹的导数定位，不会用空间容差暗中改写 `max_step`。它是 SciPy 的非终止辅助事件：候选本身不会立即停止求解器，当前分段会继续到分段末端或更早的物理终止事件；追踪器随后裁剪返回轨迹并停止后续分段。`nfev` 是各已运行分段的 RHS 求值数之和，因而可能包含闭合点之后的 RHS 求值，但不包含事件函数调用或结果场强重算。双向分支仍分别保留诊断；若两支都闭合，合并后的 `TraceResult.points` 只保留一个方向的一周，不重复绘制同一闭轨。
 
 调用方应通过 `TraceOptions` 配置追踪器，不依赖模块内部常量。
 
@@ -172,6 +172,8 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 | `resolution` | 否 | 两个方向共同使用的标量网格分辨率，整数范围 32–144 |
 | `sources` | 否 | 1–8 个自定义源；若省略则使用预设源，显式空列表和未知字段会被拒绝 |
 
+`sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。磁偶极子的 `strength` 单位为 A·m²，符号表示当前固定 $y$ 方向偶极矩的正反向；0 表示允许的零偶极矩，只有全部偶极矩都为 0 时整个磁场才退化为零场。单位由预设决定，请求不得提交 `strength_unit`。
+
 服务端必须为密度、分辨率、源数量和数值范围设置上限，防止一次交互请求耗尽内存或 CPU。
 
 `density` 是一次场景请求的总种子预算，不是“每个源各放多少条”。电偶极预设只从非零正电荷出发，因此这些正电荷参与预算；磁偶极预设的每个偶极子都参与预算。若参与播种的源数超过 `density`，服务端返回 422，`detail` 会给出当前数量和所需最小值，例如 `electric_dipole 有 7 个正电荷参与播种，density 至少为 7`。预算充足时，每个播种源先得到 1 个种子，其余名额再按源强绝对值分配。响应始终满足 `len(lines) <= density` 与 `sum(termination_counts.values()) == density`；当每个种子都得到至少两个有限轨迹点时，前一个不等式取等号。若种子位于零场或非有限场等无法形成曲线的位置，终止计数仍会记录该次追踪，但 `lines` 会排除只有一个点的结果。
@@ -182,7 +184,9 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 {
   "domain": {
     "x": [-3.0, 3.0],
-    "y": [-3.0, 3.0]
+    "y": [-3.0, 3.0],
+    "coordinate_system": "cartesian",
+    "unit": "m"
   },
   "scalar": {
     "nx": 2,
@@ -203,8 +207,20 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
     }
   ],
   "sources": [
-    {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 1.0},
-    {"x": 1.0, "y": 0.0, "kind": "negative", "strength": -1.0}
+    {
+      "x": -1.0,
+      "y": 0.0,
+      "kind": "positive",
+      "strength": 1.0,
+      "strength_unit": "nC"
+    },
+    {
+      "x": 1.0,
+      "y": 0.0,
+      "kind": "negative",
+      "strength": -1.0,
+      "strength_unit": "nC"
+    }
   ],
   "metadata": {
     "title": "电偶极子的电场线",
@@ -218,7 +234,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 
 #### `domain`
 
-给出数值坐标范围。前端使用同一个范围映射标量栅格、曲线和源，不能为每个图层独立自动缩放。
+给出数值坐标范围、坐标系和长度单位。当前响应固定为 `coordinate_system: "cartesian"` 与 `unit: "m"`。前端使用同一个范围映射标量栅格、曲线和源，不能为每个图层独立自动缩放；探针与源坐标编辑器必须同时显示该单位。
 
 #### `scalar`
 
@@ -237,13 +253,16 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 
 #### `sources`
 
-源图层独立于标量网格。前端据 `kind` 选择符号或形状，据 `strength` 显示数值；不得从颜色像素反推源参数。
+源图层独立于标量网格。前端据 `kind` 选择符号或形状，并把 `strength` 与逐源 `strength_unit` 一同显示；不得从颜色像素反推源参数。电荷响应的单位为 `nC`，磁偶极矩响应的单位为 `A·m²`。`strength_unit` 是只读响应元数据，不得混入后续 `SourceInput` 请求。
 
 #### `metadata`
 
 `projection_note` 不能省略。它说明曲线是二维真实场线、投影流线还是三维曲线切片。定义见[二维切片何时包含真实场线](tutorial/04-slices-and-validation.md#true-vs-projected)。
 
 ## API 兼容性
+
+!!! warning "pre-1.0 电荷符号契约修正"
+    旧实现遇到 `kind` 与 `strength` 符号矛盾时，会在组装电场时用 `abs()` 静默纠正物理符号，却把原始数值返回给客户端。现在 `positive`/`negative` 的不一致符号和 0 都返回 422，不再改写输入。这是 pre-1.0 阶段为消除物理模型与响应自相矛盾而做的契约修正。
 
 - 顶层 Python 导出与 HTTP 字段属于稳定接口；
 - 添加可选 JSON 字段是向后兼容变更；

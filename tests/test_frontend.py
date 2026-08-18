@@ -18,7 +18,12 @@ from vectorviz.web.app import create_app
 
 def _browser_scene() -> dict[str, object]:
     return {
-        "domain": {"x": [-2.0, 4.0], "y": [-3.0, 1.0]},
+        "domain": {
+            "x": [-2.0, 4.0],
+            "y": [-3.0, 1.0],
+            "coordinate_system": "cartesian",
+            "unit": "m",
+        },
         "scalar": {
             "nx": 3,
             "ny": 3,
@@ -38,7 +43,13 @@ def _browser_scene() -> dict[str, object]:
             }
         ],
         "sources": [
-            {"x": 1.0, "y": -1.0, "kind": "positive", "strength": 1.0}
+            {
+                "x": 1.0,
+                "y": -1.0,
+                "kind": "positive",
+                "strength": 1.0,
+                "strength_unit": "nC",
+            }
         ],
         "metadata": {
             "title": "Browser fixture",
@@ -241,6 +252,96 @@ def test_failed_request_does_not_present_a_stale_scene(
     assert request_count == 2
     assert request_bodies[0]["density"] == 18
     assert request_bodies[1]["density"] == 20
+    assert set(request_bodies[1]["sources"][0]) == {"x", "y", "kind", "strength"}
+    assert page_errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize(
+    "invalid_case",
+    [
+        "missing domain unit",
+        "wrong domain unit",
+        "missing source unit",
+        "mismatched source unit",
+        "mismatched source sign",
+        "string source strength",
+    ],
+)
+def test_invalid_response_units_or_source_types_invalidate_the_scene(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+    invalid_case: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    domain = scene["domain"]
+    sources = scene["sources"]
+    assert isinstance(domain, dict)
+    assert isinstance(sources, list)
+    source = sources[0]
+    assert isinstance(source, dict)
+    if invalid_case == "missing domain unit":
+        domain.pop("unit")
+    elif invalid_case == "wrong domain unit":
+        domain["unit"] = "cm"
+    elif invalid_case == "missing source unit":
+        source.pop("strength_unit")
+    elif invalid_case == "mismatched source unit":
+        source["strength_unit"] = "A·m²"
+    elif invalid_case == "mismatched source sign":
+        source["strength"] = -1.0
+    else:
+        source["strength"] = "1"
+
+    _route_scene(page, scene)
+    page.goto(frontend_url)
+
+    expect(page.locator("#error-banner")).to_be_visible()
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "error")
+    expect(page.locator("#scene-title")).to_have_text("场景不可用")
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_source_units_remain_visible_without_narrow_viewport_overflow(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    page.set_viewport_size({"width": 320, "height": 900})
+    scene = _browser_scene()
+    sources = scene["sources"]
+    assert isinstance(sources, list)
+    source = sources[0]
+    assert isinstance(source, dict)
+    source.update({"kind": "dipole", "strength_unit": "A·m²"})
+
+    _open_ready_scene(page, frontend_url, scene)
+
+    expect(page.locator(".source-strength")).to_have_text("1 A·m²")
+    layout = page.evaluate(
+        """() => {
+          const row = document.querySelector('.source-editor');
+          const rowRect = row.getBoundingClientRect();
+          const children = [
+            document.querySelector('.source-strength'),
+            ...document.querySelectorAll('.coordinate-field input'),
+          ];
+          return {
+            documentOverflow:
+              document.documentElement.scrollWidth - document.documentElement.clientWidth,
+            rowOverflow: row.scrollWidth - row.clientWidth,
+            childrenInside: children.every((child) => {
+              const rect = child.getBoundingClientRect();
+              return rect.left >= rowRect.left - 1 && rect.right <= rowRect.right + 1;
+            }),
+          };
+        }"""
+    )
+    assert layout["documentOverflow"] <= 1
+    assert layout["rowOverflow"] <= 1
+    assert layout["childrenInside"] is True
     assert page_errors == []
 
 
@@ -358,9 +459,19 @@ def test_scalar_lines_arrows_sources_and_probe_share_one_transform(
         target,
     )
     assert hit_target == "field-canvas"
+    expect(page.locator(".source-strength")).to_be_visible()
+    expect(page.locator(".source-strength")).to_have_text("1 nC")
+    expect(page.locator(".coordinate-axis")).to_have_text(["x/m", "y/m"])
+    coordinate_inputs = page.locator(".coordinate-field input")
+    expect(coordinate_inputs.nth(0)).to_have_attribute(
+        "aria-label", "正电荷 1 x 坐标（m）"
+    )
+    expect(coordinate_inputs.nth(1)).to_have_attribute(
+        "aria-label", "正电荷 1 y 坐标（m）"
+    )
     page.mouse.move(target["x"], target["y"])
     expect(page.locator("#probe")).to_be_visible()
-    expect(page.locator("#probe-position")).to_have_text("x 1 · y -1")
+    expect(page.locator("#probe-position")).to_have_text("x 1 m · y -1 m")
     expect(page.locator("#probe-value")).to_have_text("|F| 5 u")
 
     page.mouse.down()
@@ -466,7 +577,7 @@ def test_probe_value_remains_consistent_after_resize(
 
     before = probe_target()
     page.mouse.move(before["x"], before["y"])
-    expect(page.locator("#probe-position")).to_have_text("x 1 · y -1")
+    expect(page.locator("#probe-position")).to_have_text("x 1 m · y -1 m")
     expect(page.locator("#probe-value")).to_have_text("|F| 5 u")
 
     backing_width = page.locator("#field-canvas").evaluate("canvas => canvas.width")
@@ -481,6 +592,6 @@ def test_probe_value_remains_consistent_after_resize(
 
     page.mouse.move(after["x"], after["y"])
     expect(page.locator("#probe")).to_be_visible()
-    expect(page.locator("#probe-position")).to_have_text("x 1 · y -1")
+    expect(page.locator("#probe-position")).to_have_text("x 1 m · y -1 m")
     expect(page.locator("#probe-value")).to_have_text("|F| 5 u")
     assert page_errors == []

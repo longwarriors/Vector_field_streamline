@@ -422,20 +422,37 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .source-name {
-  display: flex;
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr);
   align-items: center;
   min-width: 0;
-  gap: 8px;
+  column-gap: 8px;
+  row-gap: 2px;
   overflow: hidden;
   font-size: 0.71rem;
   font-weight: 700;
+}
+
+.source-label {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-strength {
+  grid-column: 2;
+  color: var(--accent);
+  font-size: 0.64rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
   white-space: nowrap;
 }
 
 .source-swatch {
   width: 9px;
   height: 9px;
+  grid-row: 1 / 3;
   flex: 0 0 auto;
   border-radius: 50%;
 }
@@ -457,7 +474,7 @@ input[type="range"]::-moz-range-thumb {
 
 .coordinate-field {
   display: grid;
-  grid-template-columns: 12px 1fr;
+  grid-template-columns: auto 1fr;
   align-items: center;
   gap: 3px;
   color: var(--muted);

@@ -10,6 +10,11 @@ import {
   "use strict";
 
   const API_URL = "/api/scene";
+  const SOURCE_STRENGTH_UNITS = Object.freeze({
+    positive: "nC",
+    negative: "nC",
+    dipole: "A·m²",
+  });
 
   const elements = {
     canvas: document.querySelector("#field-canvas"),
@@ -134,6 +139,8 @@ import {
     if (!scene || typeof scene !== "object") throw new Error("响应不是有效的场景对象");
     const xDomain = scene.domain?.x;
     const yDomain = scene.domain?.y;
+    const coordinateSystem = scene.domain?.coordinate_system;
+    const coordinateUnit = scene.domain?.unit;
     if (
       !Array.isArray(xDomain) ||
       !Array.isArray(yDomain) ||
@@ -142,9 +149,11 @@ import {
       !xDomain.every(Number.isFinite) ||
       !yDomain.every(Number.isFinite) ||
       xDomain[0] >= xDomain[1] ||
-      yDomain[0] >= yDomain[1]
+      yDomain[0] >= yDomain[1] ||
+      coordinateSystem !== "cartesian" ||
+      coordinateUnit !== "m"
     ) {
-      throw new Error("场景缺少有效的 domain.x / domain.y");
+      throw new Error("场景缺少有效的笛卡尔 domain.x / domain.y / unit");
     }
 
     const nx = Number(scene.scalar?.nx);
@@ -165,6 +174,24 @@ import {
 
     scene.lines = Array.isArray(scene.lines) ? scene.lines : [];
     scene.sources = Array.isArray(scene.sources) ? scene.sources : [];
+    if (
+      !scene.sources.every((source) => {
+        if (
+          !source ||
+          !Number.isFinite(source.x) ||
+          !Number.isFinite(source.y) ||
+          !Number.isFinite(source.strength) ||
+          SOURCE_STRENGTH_UNITS[source.kind] !== source.strength_unit
+        ) {
+          return false;
+        }
+        if (source.kind === "positive") return source.strength > 0;
+        if (source.kind === "negative") return source.strength < 0;
+        return source.kind === "dipole";
+      })
+    ) {
+      throw new Error("场源缺少有效坐标、强度或 strength_unit");
+    }
     scene.metadata = scene.metadata && typeof scene.metadata === "object" ? scene.metadata : {};
     return scene;
   }
@@ -512,6 +539,8 @@ import {
     if (kind.includes("uniform")) {
       return { fill: "#59e1c1", symbol: "→", className: "neutral" };
     }
+    if (kind === "positive") return { fill: "#ff725f", symbol: "+", className: "positive" };
+    if (kind === "negative") return { fill: "#65b9ff", symbol: "−", className: "negative" };
     if (source.strength > 0) return { fill: "#ff725f", symbol: "+", className: "positive" };
     if (source.strength < 0) return { fill: "#65b9ff", symbol: "−", className: "negative" };
     return { fill: "#ffe08a", symbol: "◆", className: "neutral" };
@@ -579,8 +608,12 @@ import {
       swatch.className = `source-swatch ${style.className}`;
       swatch.setAttribute("aria-hidden", "true");
       const sourceLabel = document.createElement("span");
+      sourceLabel.className = "source-label";
       sourceLabel.textContent = readableSourceName(source, index);
-      name.append(swatch, sourceLabel);
+      const sourceStrength = document.createElement("span");
+      sourceStrength.className = "source-strength";
+      sourceStrength.textContent = `${formatValue(source.strength)} ${source.strength_unit}`;
+      name.append(swatch, sourceLabel, sourceStrength);
       row.append(name, coordinateInput(index, "x"), coordinateInput(index, "y"));
       elements.sourceEditorList.append(row);
     });
@@ -589,6 +622,8 @@ import {
   function readableSourceName(source, index) {
     const kind = String(source.kind || "").toLowerCase();
     if (kind.includes("dipole") || kind.includes("magnet")) return "磁偶极子";
+    if (kind === "positive") return `正电荷 ${index + 1}`;
+    if (kind === "negative") return `负电荷 ${index + 1}`;
     if (source.strength > 0) return `正电荷 ${index + 1}`;
     if (source.strength < 0) return `负电荷 ${index + 1}`;
     return `场源 ${index + 1}`;
@@ -597,12 +632,19 @@ import {
   function coordinateInput(index, axis) {
     const label = document.createElement("label");
     label.className = "coordinate-field";
-    label.append(document.createTextNode(axis));
+    const coordinateUnit = String(state.scene.domain.unit || "").trim();
+    const axisLabel = document.createElement("span");
+    axisLabel.className = "coordinate-axis";
+    axisLabel.textContent = coordinateUnit ? `${axis}/${coordinateUnit}` : axis;
+    label.append(axisLabel);
     const input = document.createElement("input");
     input.type = "number";
     input.step = "any";
     input.value = formatEditorValue(state.scene.sources[index][axis]);
-    input.setAttribute("aria-label", `${readableSourceName(state.scene.sources[index], index)} ${axis} 坐标`);
+    input.setAttribute(
+      "aria-label",
+      `${readableSourceName(state.scene.sources[index], index)} ${axis} 坐标${coordinateUnit ? `（${coordinateUnit}）` : ""}`,
+    );
     input.addEventListener("focus", () => {
       state.selectedSource = index;
       render();
@@ -707,7 +749,9 @@ import {
     }
     const [worldX, worldY] = canvasToWorld(canvasX, canvasY);
     const value = sampleNearest(worldX, worldY);
-    elements.probePosition.textContent = `x ${formatEditorValue(worldX)} · y ${formatEditorValue(worldY)}`;
+    const coordinateUnit = String(state.scene.domain.unit || "").trim();
+    const unitSuffix = coordinateUnit ? ` ${coordinateUnit}` : "";
+    elements.probePosition.textContent = `x ${formatEditorValue(worldX)}${unitSuffix} · y ${formatEditorValue(worldY)}${unitSuffix}`;
     elements.probeValue.textContent = `${state.scene.scalar.label || "场强"} ${formatValue(value)} ${state.scene.scalar.unit || ""}`.trim();
     elements.probe.style.left = `${canvasX}px`;
     elements.probe.style.top = `${canvasY}px`;

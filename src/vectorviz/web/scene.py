@@ -76,7 +76,18 @@ def _default_sources(preset: str) -> list[SourceInput]:
 
 
 def _source_payloads(sources: list[SourceInput]) -> tuple[SourcePayload, ...]:
-    return tuple(SourcePayload(**source.model_dump()) for source in sources)
+    payloads: list[SourcePayload] = []
+    for source in sources:
+        if source.kind in {"positive", "negative"}:
+            strength_unit = "nC"
+        elif source.kind == "dipole":
+            strength_unit = "A·m²"
+        else:
+            raise ValueError("uniform sources do not have a localized source strength")
+        payloads.append(
+            SourcePayload(**source.model_dump(), strength_unit=strength_unit)
+        )
+    return tuple(payloads)
 
 
 def _allocate_seed_counts(strengths: NDArray[np.float64], total: int) -> NDArray[np.int64]:
@@ -159,13 +170,7 @@ def _build_model(request: SceneRequest) -> _SceneModel:
     if request.preset == "electric_dipole":
         active = [source for source in inputs if source.kind in {"positive", "negative"}]
         centers = np.array([[source.x, source.y] for source in active], dtype=float)
-        signed_strengths = np.array(
-            [
-                abs(source.strength) if source.kind == "positive" else -abs(source.strength)
-                for source in active
-            ],
-            dtype=float,
-        )
+        signed_strengths = np.array([source.strength for source in active], dtype=float)
         if not np.any(signed_strengths > 0) or not np.any(signed_strengths < 0):
             raise ValueError("electric dipole needs at least one positive and one negative source")
         field = PointChargeField(signed_strengths * 1.0e-9, centers)
@@ -315,6 +320,8 @@ def build_scene(request: SceneRequest) -> SceneResponse:
         domain=DomainPayload(
             x=(float(DOMAIN.lower[0]), float(DOMAIN.upper[0])),
             y=(float(DOMAIN.lower[1]), float(DOMAIN.upper[1])),
+            coordinate_system="cartesian",
+            unit="m",
         ),
         scalar=_sample_scalar(model, request.resolution),
         lines=lines,

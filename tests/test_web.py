@@ -18,17 +18,24 @@ from vectorviz.web.schemas import SceneRequest, SourceInput
 
 
 @pytest.mark.parametrize(
-    ("preset", "source_kinds", "scalar_label", "scalar_unit"),
+    (
+        "preset",
+        "source_kinds",
+        "source_strength_units",
+        "scalar_label",
+        "scalar_unit",
+    ),
     [
-        ("electric_dipole", {"positive", "negative"}, "|E|", "V/m"),
-        ("magnetic_dipole", {"dipole"}, "|B|", "T"),
+        ("electric_dipole", {"positive", "negative"}, {"nC"}, "|E|", "V/m"),
+        ("magnetic_dipole", {"dipole"}, {"A·m²"}, "|B|", "T"),
         # A uniform field has no localized source marker.
-        ("uniform", set(), "|E|", "V/m"),
+        ("uniform", set(), set(), "|E|", "V/m"),
     ],
 )
 def test_scene_presets_are_finite_serializable_and_trace_requested_lines(
     preset: str,
     source_kinds: set[str],
+    source_strength_units: set[str],
     scalar_label: str,
     scalar_unit: str,
 ) -> None:
@@ -40,6 +47,8 @@ def test_scene_presets_are_finite_serializable_and_trace_requested_lines(
 
     assert scene.domain.x == (-3.0, 3.0)
     assert scene.domain.y == (-3.0, 3.0)
+    assert scene.domain.coordinate_system == "cartesian"
+    assert scene.domain.unit == "m"
     assert scene.scalar.nx == resolution
     assert scene.scalar.ny == resolution
     assert len(scene.scalar.values) == resolution**2
@@ -51,6 +60,7 @@ def test_scene_presets_are_finite_serializable_and_trace_requested_lines(
     assert scene.scalar.label == scalar_label
     assert scene.scalar.unit == scalar_unit
     assert {source.kind for source in scene.sources} == source_kinds
+    assert {source.strength_unit for source in scene.sources} == source_strength_units
 
     # Every requested seed should produce a drawable line and a counted reason.
     assert len(scene.lines) == density
@@ -82,7 +92,7 @@ def test_electric_scene_honors_source_override() -> None:
     )
 
     assert [source.model_dump() for source in scene.sources] == [
-        source.model_dump() for source in sources
+        {**source.model_dump(), "strength_unit": "nC"} for source in sources
     ]
     assert len(scene.lines) == 6
     assert sum(scene.metadata.termination_counts.values()) == 6
@@ -192,14 +202,143 @@ def test_health_and_preset_endpoints(client: TestClient) -> None:
 def test_scene_endpoint_returns_browser_contract(client: TestClient) -> None:
     response = client.post(
         "/api/scene",
-        json={"preset": "uniform", "density": 6, "resolution": 32},
+        json={"preset": "electric_dipole", "density": 6, "resolution": 32},
     )
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["domain"] == {
+        "x": [-3.0, 3.0],
+        "y": [-3.0, 3.0],
+        "coordinate_system": "cartesian",
+        "unit": "m",
+    }
+    assert {source["strength_unit"] for source in payload["sources"]} == {"nC"}
     assert payload["scalar"]["nx"] == 32
     assert len(payload["lines"]) == 6
-    assert payload["metadata"]["termination_counts"] == {"domain_exit": 6}
+    assert sum(payload["metadata"]["termination_counts"].values()) == 6
+
+
+@pytest.mark.parametrize(
+    ("candidate", "companion"),
+    [
+        (
+            {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 2.0},
+            {"x": 1.0, "y": 0.0, "kind": "negative", "strength": -1.0},
+        ),
+        (
+            {"x": 1.0, "y": 0.0, "kind": "negative", "strength": -2.0},
+            {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 1.0},
+        ),
+    ],
+)
+def test_charge_kind_accepts_matching_nonzero_strength_sign(
+    client: TestClient,
+    candidate: dict[str, object],
+    companion: dict[str, object],
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": "electric_dipole",
+            "density": 6,
+            "resolution": 32,
+            "sources": [candidate, companion],
+        },
+    )
+
+    assert response.status_code == 200
+    returned = response.json()["sources"]
+    assert returned[0]["kind"] == candidate["kind"]
+    assert returned[0]["strength"] == candidate["strength"]
+    assert returned[0]["strength_unit"] == "nC"
+
+
+@pytest.mark.parametrize(
+    ("candidate", "companion", "message"),
+    [
+        (
+            {"x": -1.0, "y": 0.0, "kind": "positive", "strength": -1.0},
+            {"x": 1.0, "y": 0.0, "kind": "negative", "strength": -1.0},
+            "positive source strength must be greater than 0; "
+            "zero and negative values are invalid",
+        ),
+        (
+            {"x": 1.0, "y": 0.0, "kind": "negative", "strength": 1.0},
+            {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 1.0},
+            "negative source strength must be less than 0; "
+            "zero and positive values are invalid",
+        ),
+        (
+            {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 0.0},
+            {"x": 1.0, "y": 0.0, "kind": "negative", "strength": -1.0},
+            "positive source strength must be greater than 0; "
+            "zero and negative values are invalid",
+        ),
+        (
+            {"x": 1.0, "y": 0.0, "kind": "negative", "strength": 0.0},
+            {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 1.0},
+            "negative source strength must be less than 0; "
+            "zero and positive values are invalid",
+        ),
+    ],
+)
+def test_charge_kind_rejects_mismatched_or_zero_strength(
+    client: TestClient,
+    candidate: dict[str, object],
+    companion: dict[str, object],
+    message: str,
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": "electric_dipole",
+            "density": 6,
+            "resolution": 32,
+            "sources": [candidate, companion],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["msg"] == f"Value error, {message}"
+
+
+def test_charge_kinds_use_conditional_defaults_when_strength_is_omitted(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": "electric_dipole",
+            "density": 6,
+            "resolution": 32,
+            "sources": [
+                {"x": -1.0, "y": 0.0, "kind": "positive"},
+                {"x": 1.0, "y": 0.0, "kind": "negative"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sources"][0]["strength"] == 1.0
+    assert response.json()["sources"][1] == {
+        "x": 1.0,
+        "y": 0.0,
+        "kind": "negative",
+        "strength": -1.0,
+        "strength_unit": "nC",
+    }
+
+
+def test_conditional_charge_default_is_not_misrepresented_in_json_schema() -> None:
+    source_schema = SourceInput.model_json_schema()
+    strength_schema = source_schema["properties"]["strength"]
+
+    assert "strength" not in source_schema["required"]
+    assert "default" not in strength_schema
+    assert "positive and dipole default to 1; negative defaults to -1" in str(
+        strength_schema["description"]
+    )
 
 
 def test_scene_endpoint_rejects_insufficient_seed_budget_with_actionable_detail(
@@ -278,6 +417,19 @@ def test_degenerate_seed_results_are_counted_but_not_rendered(
             "preset": "electric_dipole",
             "sources": [
                 {"x": 0.0, "y": 0.0, "kind": "positive", "strenght": 1.0},
+                {"x": 1.0, "y": 0.0, "kind": "negative"},
+            ],
+        },
+        {
+            "preset": "electric_dipole",
+            "sources": [
+                {
+                    "x": -1.0,
+                    "y": 0.0,
+                    "kind": "positive",
+                    "strength": 1.0,
+                    "strength_unit": "nC",
+                },
                 {"x": 1.0, "y": 0.0, "kind": "negative"},
             ],
         },
