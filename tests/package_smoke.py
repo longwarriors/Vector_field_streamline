@@ -23,6 +23,7 @@ def main() -> None:
             for asset in (
                 "index.html",
                 "app.js",
+                "source-controls.js",
                 "coordinates.js",
                 "color-scale.js",
                 "styles.css",

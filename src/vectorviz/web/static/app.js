@@ -5,6 +5,17 @@ import {
   createCoordinateTransform,
   sampleNearest as sampleScalarNearest,
 } from "./coordinates.js";
+import {
+  SOURCE_COORDINATE_LIMIT,
+  SOURCE_COUNT_LIMIT,
+  canRemoveSource,
+  createSource,
+  densityForSeedBudget,
+  effectiveDipoleAngleDeg,
+  normalizeAngleDeg,
+  seedingSourceCount,
+  serializeSource,
+} from "./source-controls.js";
 
 (() => {
   "use strict";
@@ -17,7 +28,11 @@ import {
     wire_out: "A",
     wire_into: "A",
   });
-  const EDITABLE_SOURCE_PRESETS = new Set(["electric_dipole", "magnetic_dipole"]);
+  const EDITABLE_SOURCE_PRESETS = new Set([
+    "electric_dipole",
+    "magnetic_dipole",
+    "halbach_array",
+  ]);
 
   const elements = {
     canvas: document.querySelector("#field-canvas"),
@@ -31,8 +46,13 @@ import {
     runButton: document.querySelector("#run-button"),
     retryButton: document.querySelector("#retry-button"),
     resetSources: document.querySelector("#reset-sources"),
+    sourceActions: document.querySelector("#source-actions"),
+    addPositiveSource: document.querySelector("#add-positive-source"),
+    addNegativeSource: document.querySelector("#add-negative-source"),
+    addDipoleSource: document.querySelector("#add-dipole-source"),
     sourceEditorList: document.querySelector("#source-editor-list"),
     sourceHelp: document.querySelector("#source-help"),
+    sourceStatus: document.querySelector("#source-status"),
     interactionHelp: document.querySelector("#interaction-help"),
     sceneTitle: document.querySelector("#scene-title"),
     projectionNote: document.querySelector("#projection-note"),
@@ -113,18 +133,32 @@ import {
   }
 
   function currentRequestBody() {
+    const serializedSources =
+      sourcesAreEditable() && state.sourceOverrides?.length
+        ? state.sourceOverrides.map(serializeSource)
+        : null;
+    const requiredDensity = seedingSourceCount(
+      elements.preset.value,
+      serializedSources,
+    );
+    const requestedDensity = Number(elements.density.value);
+    const density = densityForSeedBudget(requestedDensity, requiredDensity, {
+      min: Number(elements.density.min),
+      max: Number(elements.density.max),
+      step: Number(elements.density.step),
+    });
+    if (density !== requestedDensity) {
+      elements.density.value = String(density);
+      updateRange(elements.density, elements.densityOutput, (value) => String(value));
+      elements.sourceStatus.textContent = `${requiredDensity} 个播种源每个至少需要 1 条场线，density 已自动调整为 ${density}。`;
+    }
     const body = {
       preset: elements.preset.value,
-      density: Number(elements.density.value),
+      density,
       resolution: Number(elements.resolution.value),
     };
-    if (sourcesAreEditable() && state.sourceOverrides?.length) {
-      body.sources = state.sourceOverrides.map(({ x, y, kind, strength }) => ({
-        x: finiteNumber(x),
-        y: finiteNumber(y),
-        kind: String(kind ?? "source"),
-        strength: finiteNumber(strength, 1),
-      }));
+    if (serializedSources) {
+      body.sources = serializedSources;
     }
     return body;
   }
@@ -193,9 +227,19 @@ import {
       ) {
         return false;
       }
+      if (source.kind === "dipole") {
+        if (source.angle_deg === undefined || source.angle_deg === null) {
+          source.angle_deg = 90;
+        }
+        return (
+          Number.isFinite(source.angle_deg) &&
+          source.angle_deg >= 0 &&
+          source.angle_deg < 360
+        );
+      }
+      if (source.angle_deg !== undefined && source.angle_deg !== null) return false;
       if (source.kind === "positive") return source.strength > 0;
       if (source.kind === "negative") return source.strength < 0;
-      if (source.kind === "dipole") return true;
       return (
         (source.kind === "wire_out" || source.kind === "wire_into") &&
         source.strength >= 0
@@ -250,7 +294,10 @@ import {
 
   async function loadScene({ preserveSources = true } = {}) {
     window.clearTimeout(state.debounceTimer);
-    if (!preserveSources) state.sourceOverrides = null;
+    if (!preserveSources) {
+      state.sourceOverrides = null;
+      elements.sourceStatus.textContent = "";
+    }
     state.requestController?.abort();
     const controller = new AbortController();
     const sequence = ++state.requestSequence;
@@ -276,13 +323,8 @@ import {
 
       state.scene = scene;
       state.presentationStatus = "ready";
-      state.sourceOverrides = sourcesAreEditable()
-        ? scene.sources.map((source) => ({
-              x: finiteNumber(source.x),
-              y: finiteNumber(source.y),
-              kind: String(source.kind ?? "source"),
-              strength: finiteNumber(source.strength, 1),
-            }))
+      state.sourceOverrides = sourcesAreEditable() && Array.isArray(requestBody.sources)
+        ? scene.sources.map(serializeSource)
         : null;
       state.selectedSource = null;
       renderSourceEditors();
@@ -342,6 +384,7 @@ import {
     return {
       electric_dipole: "电偶极子场",
       magnetic_dipole: "磁偶极子场",
+      halbach_array: "Halbach 阵列磁场",
       current_loop: "圆形电流线圈磁场",
       uniform: "匀强场",
     }[value] || "物理场";
@@ -563,7 +606,12 @@ import {
       return { fill: "#ffb45f", symbol: "⊗", className: "wire" };
     }
     if (kind.includes("dipole") || kind.includes("magnet")) {
-      return { fill: "#ffe08a", symbol: "↕", className: "neutral" };
+      return {
+        fill: "#ffe08a",
+        symbol: "→",
+        className: "neutral",
+        rotation: (-effectiveDipoleAngleDeg(source) * Math.PI) / 180,
+      };
     }
     if (kind.includes("uniform")) {
       return { fill: "#59e1c1", symbol: "→", className: "neutral" };
@@ -594,7 +642,15 @@ import {
       context.font = "800 13px ui-sans-serif, system-ui, sans-serif";
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.fillText(style.symbol, x, y + 0.5);
+      if (Number.isFinite(style.rotation)) {
+        context.translate(x, y);
+        context.rotate(style.rotation);
+        context.fillText(style.symbol, 0, 0.5);
+        context.rotate(-style.rotation);
+        context.translate(-x, -y);
+      } else {
+        context.fillText(style.symbol, x, y + 0.5);
+      }
       if (index === state.selectedSource) {
         context.beginPath();
         context.arc(x, y, 16, 0, Math.PI * 2);
@@ -628,9 +684,21 @@ import {
     elements.sourceEditorList.replaceChildren();
     const sources = state.scene?.sources || [];
     const editable = sourcesAreEditable();
+    const preset = elements.preset.value;
+    const sourceLimitReached = sources.length >= SOURCE_COUNT_LIMIT;
     elements.resetSources.disabled = sources.length === 0 || !editable;
+    elements.sourceActions.hidden = !editable;
+    elements.addPositiveSource.hidden = preset !== "electric_dipole";
+    elements.addNegativeSource.hidden = preset !== "electric_dipole";
+    elements.addDipoleSource.hidden =
+      preset !== "magnetic_dipole" && preset !== "halbach_array";
+    elements.addPositiveSource.disabled = sourceLimitReached;
+    elements.addNegativeSource.disabled = sourceLimitReached;
+    elements.addDipoleSource.disabled = sourceLimitReached;
     elements.sourceHelp.textContent = editable
-      ? "拖动画布标记，或直接输入坐标。"
+      ? preset === "electric_dipole"
+        ? "可增删电荷；拖动标记或输入坐标。"
+        : "可增删磁偶极子并编辑面内方向。"
       : "固定预设只显示只读几何标记。";
     elements.interactionHelp.textContent = editable
       ? "拖动场源改变位置；移动指针可探测坐标与场强。"
@@ -669,11 +737,10 @@ import {
     sources.forEach((source, index) => {
       const row = document.createElement("div");
       row.className = "source-editor";
-      row.append(
-        createSourceName(source, index),
-        coordinateInput(index, "x"),
-        coordinateInput(index, "y"),
-      );
+      row.append(createSourceName(source, index));
+      row.append(coordinateInput(index, "x"), coordinateInput(index, "y"));
+      if (source.kind === "dipole") row.append(angleInput(index));
+      row.append(removeSourceButton(index));
       elements.sourceEditorList.append(row);
     });
   }
@@ -682,7 +749,9 @@ import {
     const kind = String(source.kind || "").toLowerCase();
     if (kind === "wire_out") return "电流出屏";
     if (kind === "wire_into") return "电流入屏";
-    if (kind.includes("dipole") || kind.includes("magnet")) return "磁偶极子";
+    if (kind.includes("dipole") || kind.includes("magnet")) {
+      return `磁偶极子 ${index + 1}`;
+    }
     if (kind === "positive") return `正电荷 ${index + 1}`;
     if (kind === "negative") return `负电荷 ${index + 1}`;
     if (source.strength > 0) return `正电荷 ${index + 1}`;
@@ -701,6 +770,9 @@ import {
     const input = document.createElement("input");
     input.type = "number";
     input.step = "any";
+    input.min = String(-SOURCE_COORDINATE_LIMIT);
+    input.max = String(SOURCE_COORDINATE_LIMIT);
+    input.dataset.sourceField = axis;
     input.value = formatEditorValue(state.scene.sources[index][axis]);
     input.setAttribute(
       "aria-label",
@@ -716,8 +788,7 @@ import {
         input.value = formatEditorValue(state.scene.sources[index][axis]);
         return;
       }
-      const domain = state.scene.domain[axis];
-      const bounded = clamp(value, domain[0], domain[1]);
+      const bounded = clamp(value, -SOURCE_COORDINATE_LIMIT, SOURCE_COORDINATE_LIMIT);
       input.value = formatEditorValue(bounded);
       updateSource(index, axis, bounded);
       scheduleLoad(360);
@@ -726,16 +797,81 @@ import {
     return label;
   }
 
+  function angleInput(index) {
+    const label = document.createElement("label");
+    label.className = "angle-field";
+    const angleLabel = document.createElement("span");
+    angleLabel.textContent = "θ/°";
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "any";
+    input.min = "0";
+    input.max = "359.999999";
+    input.dataset.sourceField = "angle_deg";
+    input.value = formatEditorValue(normalizeAngleDeg(state.scene.sources[index].angle_deg));
+    input.setAttribute(
+      "aria-label",
+      `${readableSourceName(state.scene.sources[index], index)} 方向角（度，从 +x 朝 +y 逆时针）`,
+    );
+    input.addEventListener("focus", () => {
+      state.selectedSource = index;
+      render();
+    });
+    input.addEventListener("change", () => {
+      const angle = normalizeAngleDeg(input.value);
+      input.value = formatEditorValue(angle);
+      updateSource(index, "angle_deg", angle);
+      scheduleLoad(360);
+    });
+    label.append(angleLabel, input);
+    return label;
+  }
+
+  function removeSourceButton(index) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "remove-source";
+    button.textContent = "删除";
+    button.disabled = !canRemoveSource(
+      elements.preset.value,
+      state.scene.sources,
+      index,
+    );
+    button.setAttribute(
+      "aria-label",
+      `删除${readableSourceName(state.scene.sources[index], index)}`,
+    );
+    button.addEventListener("click", () => removeSource(index));
+    return button;
+  }
+
+  function syncSourceOverrides() {
+    state.sourceOverrides = state.scene.sources.map(serializeSource);
+  }
+
   function updateSource(index, axis, value) {
     if (!sourcesAreEditable()) return;
     state.scene.sources[index][axis] = value;
-    state.sourceOverrides = state.scene.sources.map((source) => ({
-      x: finiteNumber(source.x),
-      y: finiteNumber(source.y),
-      kind: String(source.kind ?? "source"),
-      strength: finiteNumber(source.strength, 1),
-    }));
+    syncSourceOverrides();
     render();
+  }
+
+  function addSource(kind) {
+    if (!state.scene || !sourcesAreEditable()) return;
+    if (state.scene.sources.length >= SOURCE_COUNT_LIMIT) return;
+    state.scene.sources.push(createSource(kind, state.scene.sources));
+    syncSourceOverrides();
+    elements.sourceStatus.textContent = `已添加场源，当前 ${state.sourceOverrides.length} 个。`;
+    loadScene();
+  }
+
+  function removeSource(index) {
+    if (!state.scene || !sourcesAreEditable()) return;
+    if (!canRemoveSource(elements.preset.value, state.scene.sources, index)) return;
+    state.scene.sources.splice(index, 1);
+    syncSourceOverrides();
+    elements.sourceStatus.textContent = `已删除场源，当前 ${state.sourceOverrides.length} 个。`;
+    loadScene();
   }
 
   function pointerPosition(event) {
@@ -780,9 +916,17 @@ import {
       const [ymin, ymax] = state.scene.domain.y;
       const [worldX, worldY] = canvasToWorld(canvasX, canvasY);
       const source = state.scene.sources[state.drag.sourceIndex];
-      source.x = clamp(worldX, xmin, xmax);
-      source.y = clamp(worldY, ymin, ymax);
-      state.sourceOverrides = state.scene.sources.map((item) => ({ ...item }));
+      source.x = clamp(
+        worldX,
+        Math.max(xmin, -SOURCE_COORDINATE_LIMIT),
+        Math.min(xmax, SOURCE_COORDINATE_LIMIT),
+      );
+      source.y = clamp(
+        worldY,
+        Math.max(ymin, -SOURCE_COORDINATE_LIMIT),
+        Math.min(ymax, SOURCE_COORDINATE_LIMIT),
+      );
+      syncSourceOverrides();
       render();
       return;
     }
@@ -846,9 +990,17 @@ import {
     const fraction = event.shiftKey ? 0.05 : 0.01;
     const xStep = (state.scene.domain.x[1] - state.scene.domain.x[0]) * fraction;
     const yStep = (state.scene.domain.y[1] - state.scene.domain.y[0]) * fraction;
-    source.x = clamp(source.x + xDirection * xStep, ...state.scene.domain.x);
-    source.y = clamp(source.y + yDirection * yStep, ...state.scene.domain.y);
-    state.sourceOverrides = state.scene.sources.map((item) => ({ ...item }));
+    source.x = clamp(
+      source.x + xDirection * xStep,
+      Math.max(state.scene.domain.x[0], -SOURCE_COORDINATE_LIMIT),
+      Math.min(state.scene.domain.x[1], SOURCE_COORDINATE_LIMIT),
+    );
+    source.y = clamp(
+      source.y + yDirection * yStep,
+      Math.max(state.scene.domain.y[0], -SOURCE_COORDINATE_LIMIT),
+      Math.min(state.scene.domain.y[1], SOURCE_COORDINATE_LIMIT),
+    );
+    syncSourceOverrides();
     render();
     renderSourceEditors();
     scheduleLoad(400);
@@ -888,6 +1040,9 @@ import {
   elements.runButton.addEventListener("click", () => loadScene());
   elements.retryButton.addEventListener("click", () => loadScene());
   elements.resetSources.addEventListener("click", () => loadScene({ preserveSources: false }));
+  elements.addPositiveSource.addEventListener("click", () => addSource("positive"));
+  elements.addNegativeSource.addEventListener("click", () => addSource("negative"));
+  elements.addDipoleSource.addEventListener("click", () => addSource("dipole"));
   elements.canvas.addEventListener("pointerdown", handlePointerDown);
   elements.canvas.addEventListener("pointermove", handlePointerMove);
   elements.canvas.addEventListener("pointerup", finishPointerDrag);

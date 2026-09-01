@@ -393,6 +393,45 @@ input[type="range"]::-moz-range-thumb {
   color: #536873;
 }
 
+.source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.source-actions[hidden],
+.source-action[hidden] {
+  display: none;
+}
+
+.source-action,
+.remove-source {
+  min-height: 30px;
+  padding: 5px 8px;
+  color: #cfe0e4;
+  background: rgba(154, 190, 201, 0.06);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.source-action:disabled,
+.remove-source:disabled {
+  cursor: default;
+  color: #536873;
+  opacity: 0.68;
+}
+
+.source-status {
+  min-height: 1.1em;
+  margin: 7px 0 0;
+  color: var(--accent);
+  font-size: 0.66rem;
+  line-height: 1.45;
+}
+
 .source-editor-list {
   display: grid;
   gap: 9px;
@@ -429,7 +468,7 @@ input[type="range"]::-moz-range-thumb {
 
 .source-editor {
   display: grid;
-  grid-template-columns: 1fr 72px 72px;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
   align-items: center;
   gap: 7px;
   padding: 9px 10px;
@@ -448,6 +487,10 @@ input[type="range"]::-moz-range-thumb {
   overflow: hidden;
   font-size: 0.71rem;
   font-weight: 700;
+}
+
+.source-editor > .source-name {
+  grid-column: 1 / -1;
 }
 
 .source-label {
@@ -494,7 +537,8 @@ input[type="range"]::-moz-range-thumb {
   box-shadow: 0 0 0 3px rgba(255, 180, 95, 0.14);
 }
 
-.coordinate-field {
+.coordinate-field,
+.angle-field {
   display: grid;
   grid-template-columns: auto 1fr;
   align-items: center;
@@ -503,7 +547,8 @@ input[type="range"]::-moz-range-thumb {
   font-size: 0.65rem;
 }
 
-.coordinate-field input {
+.coordinate-field input,
+.angle-field input {
   width: 100%;
   min-width: 0;
   padding: 5px 4px;
@@ -729,6 +774,10 @@ input[type="range"]::-moz-range-thumb {
   font-variant-numeric: tabular-nums;
   pointer-events: none;
   backdrop-filter: blur(7px);
+}
+
+.remove-source {
+  align-self: stretch;
 }
 
 .colorbar[hidden] {
@@ -996,7 +1045,7 @@ figcaption {
   }
 
   .source-editor {
-    grid-template-columns: 1fr 68px 68px;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
   }
 
   .footer {

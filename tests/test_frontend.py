@@ -95,6 +95,35 @@ def _browser_loop_scene() -> dict[str, object]:
     return scene
 
 
+def _browser_halbach_scene(count: int = 8) -> dict[str, object]:
+    scene = json.loads(json.dumps(_browser_scene()))
+    scalar = scene["scalar"]
+    metadata = scene["metadata"]
+    assert isinstance(scalar, dict)
+    assert isinstance(metadata, dict)
+    scalar.update({"label": "|B|", "unit": "T"})
+    scene["sources"] = [
+        {
+            "x": -2.1 + 0.6 * index,
+            "y": 0.0,
+            "kind": "dipole",
+            "strength": 1.0,
+            "strength_unit": "A·m²",
+            "angle_deg": float((index % 4) * 90),
+        }
+        for index in range(count)
+    ]
+    metadata.update(
+        {
+            "title": "Halbach fixture",
+            "projection_note": "Eight editable in-plane dipoles",
+            "field_model": "test Halbach",
+            "seed_mode": "one seed group per dipole",
+        }
+    )
+    return scene
+
+
 @pytest.fixture(scope="session")
 def frontend_url() -> Iterator[str]:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -167,7 +196,9 @@ def _route_scene(page: Page, scene: dict[str, object]) -> None:
 def _instrument_canvas(page: Page) -> None:
     page.add_init_script(
         """(() => {
-            const calls = {putImages: [], drawImages: [], paints: [], texts: []};
+            const calls = {
+              putImages: [], drawImages: [], paints: [], texts: [], rotations: [],
+            };
             Object.defineProperty(window, '__vectorVizCanvasCalls', {value: calls});
             const prototype = CanvasRenderingContext2D.prototype;
             const paths = new WeakMap();
@@ -228,6 +259,12 @@ def _instrument_canvas(page: Page) -> None:
             prototype.fillText = function (value, x, y, ...args) {
               calls.texts.push({text: String(value), x: Number(x), y: Number(y)});
               return originalFillText.call(this, value, x, y, ...args);
+            };
+
+            const originalRotate = prototype.rotate;
+            prototype.rotate = function (angle) {
+              calls.rotations.push(Number(angle));
+              return originalRotate.call(this, angle);
             };
         })();"""
     )
@@ -292,7 +329,7 @@ def test_failed_request_does_not_present_a_stale_scene(
     assert request_count == 2
     assert request_bodies[0]["density"] == 18
     assert request_bodies[1]["density"] == 20
-    assert set(request_bodies[1]["sources"][0]) == {"x", "y", "kind", "strength"}
+    assert "sources" not in request_bodies[1]
     assert page_errors == []
 
 
@@ -717,4 +754,349 @@ def test_probe_value_remains_consistent_after_resize(
     expect(page.locator("#probe")).to_be_visible()
     expect(page.locator("#probe-position")).to_have_text("x 1 m · y -1 m")
     expect(page.locator("#probe-value")).to_have_text("|F| 5 u")
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_source_control_module_encodes_angle_budget_and_request_contract(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    _open_ready_scene(page, frontend_url, _browser_scene())
+
+    result = page.evaluate(
+        """async () => {
+          const controls = await import('/source-controls.js');
+          const dipoles = Array.from({length: 8}, (_, index) => ({
+            x: index / 10,
+            y: 0,
+            kind: 'dipole',
+            strength: 1,
+            angle_deg: index * 90,
+          }));
+          const replacements = dipoles.map((source) => ({...source}));
+          replacements.splice(1, 1);
+          replacements.push(controls.createSource('dipole', replacements));
+          replacements.splice(1, 1);
+          replacements.push(controls.createSource('dipole', replacements));
+          return {
+            wrappedNegative: controls.normalizeAngleDeg(-90),
+            wrappedLarge: controls.normalizeAngleDeg(450),
+            defaultAngle: controls.serializeSource({
+              x: 0,
+              y: 0,
+              kind: 'dipole',
+              strength: 1,
+            }),
+            charge: controls.serializeSource({
+              x: 9,
+              y: -9,
+              kind: 'positive',
+              strength: 1,
+              angle_deg: 30,
+            }),
+            reversedMoment: controls.effectiveDipoleAngleDeg({
+              kind: 'dipole',
+              strength: -2,
+              angle_deg: 30,
+            }),
+            seedCount: controls.seedingSourceCount('halbach_array', dipoles),
+            electricSeedCount: controls.seedingSourceCount('electric_dipole', [
+              {kind: 'positive'},
+              {kind: 'negative'},
+              {kind: 'positive'},
+            ]),
+            density: controls.densityForSeedBudget(6, 8, {
+              min: 6,
+              max: 40,
+              step: 2,
+            }),
+            uniqueReplacementPositions: new Set(
+              replacements.map(({x, y}) => `${x},${y}`),
+            ).size,
+          };
+        }"""
+    )
+
+    assert result == {
+        "wrappedNegative": 270,
+        "wrappedLarge": 90,
+        "defaultAngle": {
+            "x": 0,
+            "y": 0,
+            "kind": "dipole",
+            "strength": 1,
+            "angle_deg": 90,
+        },
+        "charge": {"x": 2.8, "y": -2.8, "kind": "positive", "strength": 1},
+        "reversedMoment": 210,
+        "seedCount": 8,
+        "electricSeedCount": 2,
+        "density": 8,
+        "uniqueReplacementPositions": 8,
+    }
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_halbach_sources_are_editable_but_cannot_bypass_api_contracts(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    ordinary_scene = _browser_scene()
+    requests: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        body = route.request.post_data_json
+        requests.append(body)
+        if body["preset"] != "halbach_array":
+            response_scene = ordinary_scene
+        else:
+            source_requests = body.get("sources")
+            response_scene = _browser_halbach_scene(
+                len(source_requests) if isinstance(source_requests, list) else 8
+            )
+            if isinstance(source_requests, list):
+                response_scene["sources"] = [
+                    {**source, "strength_unit": "A·m²"}
+                    for source in source_requests
+                ]
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(response_scene),
+        )
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+
+    page.locator("#density").evaluate("input => { input.value = '6'; }")
+    page.locator("#preset").select_option("halbach_array")
+    expect(page.locator("#scene-title")).to_have_text("Halbach fixture")
+    assert requests[-1]["density"] == 8
+    assert "sources" not in requests[-1]
+    expect(page.locator("#density")).to_have_value("8")
+    expect(page.locator("#density-output")).to_have_text("8")
+    expect(page.locator("#source-status")).to_contain_text("8 个播种源")
+    expect(page.locator(".source-editor")).to_have_count(8)
+    expect(page.locator(".source-label")).to_have_text(
+        [f"磁偶极子 {index}" for index in range(1, 9)]
+    )
+    expect(page.locator(".angle-field input")).to_have_count(8)
+    expect(page.locator("#add-dipole-source")).to_be_disabled()
+    expect(page.locator("#field-canvas")).to_have_attribute("data-draggable", "true")
+
+    with page.expect_request("**/api/scene") as unchanged_request:
+        page.locator("#run-button").click()
+    assert "sources" not in unchanged_request.value.post_data_json
+    expect(page.locator("#scene-title")).to_have_text("Halbach fixture")
+
+    first_remove = page.locator(".remove-source").first
+    with page.expect_request("**/api/scene") as delete_request:
+        first_remove.click()
+    deleted_body = delete_request.value.post_data_json
+    assert len(deleted_body["sources"]) == 7
+    expect(page.locator(".source-editor")).to_have_count(7)
+    expect(page.locator("#add-dipole-source")).to_be_enabled()
+
+    with page.expect_request("**/api/scene") as add_request:
+        page.locator("#add-dipole-source").click()
+    added_body = add_request.value.post_data_json
+    assert len(added_body["sources"]) == 8
+    assert added_body["sources"][-1]["kind"] == "dipole"
+    assert added_body["sources"][-1]["angle_deg"] == 90
+    expect(page.locator("#add-dipole-source")).to_be_disabled()
+
+    angle_input = page.locator(".angle-field input").first
+    angle_input.evaluate("input => { input.value = '450'; }")
+    with page.expect_request("**/api/scene") as angle_request:
+        angle_input.dispatch_event("change")
+    assert angle_request.value.post_data_json["sources"][0]["angle_deg"] == 90
+    expect(angle_input).to_have_value("90")
+
+    x_input = page.locator('.coordinate-field input[data-source-field="x"]').first
+    x_input.evaluate("input => { input.value = '9'; }")
+    with page.expect_request("**/api/scene") as coordinate_request:
+        x_input.dispatch_event("change")
+    assert coordinate_request.value.post_data_json["sources"][0]["x"] == 2.8
+    expect(x_input).to_have_value("2.8")
+
+    page.locator("#preset").select_option("electric_dipole")
+    expect(page.locator("#scene-title")).to_have_text("Browser fixture")
+    expect(page.locator("#source-status")).to_have_text("")
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_source_removal_preserves_required_electric_polarities(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    scene["sources"] = [
+        {
+            "x": -0.8,
+            "y": 0.0,
+            "kind": "positive",
+            "strength": 1.0,
+            "strength_unit": "nC",
+        },
+        {
+            "x": 0.8,
+            "y": 0.0,
+            "kind": "negative",
+            "strength": -1.0,
+            "strength_unit": "nC",
+        },
+    ]
+    requests: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        body = route.request.post_data_json
+        requests.append(body)
+        response_scene = json.loads(json.dumps(scene))
+        if isinstance(body.get("sources"), list):
+            response_scene["sources"] = [
+                {**source, "strength_unit": "nC"} for source in body["sources"]
+            ]
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(response_scene))
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator(".source-editor")).to_have_count(2)
+    remove_buttons = page.locator(".remove-source")
+    expect(remove_buttons).to_have_count(2)
+    expect(remove_buttons.nth(0)).to_be_disabled()
+    expect(remove_buttons.nth(1)).to_be_disabled()
+
+    with page.expect_request("**/api/scene"):
+        page.locator("#add-positive-source").click()
+    expect(page.locator(".source-editor")).to_have_count(3)
+    expect(page.locator(".remove-source").nth(0)).to_be_enabled()
+    expect(page.locator(".remove-source").nth(1)).to_be_disabled()
+
+    with page.expect_request("**/api/scene") as remove_request:
+        page.locator(".remove-source").nth(0).click()
+    kinds = [source["kind"] for source in remove_request.value.post_data_json["sources"]]
+    assert kinds.count("positive") == 1
+    assert kinds.count("negative") == 1
+    expect(page.locator(".remove-source").nth(0)).to_be_disabled()
+    expect(page.locator(".remove-source").nth(1)).to_be_disabled()
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_dipole_canvas_arrow_uses_angle_and_reverses_negative_strength(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_halbach_scene(2)
+    sources = scene["sources"]
+    assert isinstance(sources, list)
+    sources[0].update({"angle_deg": 30.0, "strength": 1.0})
+    sources[1].update({"angle_deg": 30.0, "strength": -1.0})
+
+    _instrument_canvas(page)
+    page.route(
+        "**/api/scene",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(scene),
+        ),
+    )
+    page.goto(frontend_url)
+    page.locator("#preset").select_option("halbach_array")
+    expect(page.locator("#scene-title")).to_have_text("Halbach fixture")
+
+    canvas_calls = page.evaluate(
+        """() => ({
+          rotations: window.__vectorVizCanvasCalls.rotations.slice(-4),
+          arrows: window.__vectorVizCanvasCalls.texts
+            .map(({text}) => text)
+            .filter((text) => text === '→')
+            .slice(-2),
+        })"""
+    )
+    assert canvas_calls["arrows"] == ["→", "→"]
+    assert canvas_calls["rotations"] == pytest.approx(
+        [-math.radians(30), math.radians(30), -math.radians(210), math.radians(210)]
+    )
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_drag_and_keyboard_requests_never_exceed_source_coordinate_contract(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    request_bodies: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        body = route.request.post_data_json
+        request_bodies.append(body)
+        response_scene = json.loads(json.dumps(scene))
+        if isinstance(body.get("sources"), list):
+            response_scene["sources"] = [
+                {**source, "strength_unit": "nC"} for source in body["sources"]
+            ]
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(response_scene))
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    points = page.evaluate(
+        """async () => {
+          const canvas = document.querySelector('#field-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const {calculatePlotRect, createCoordinateTransform} =
+            await import('/coordinates.js');
+          const domain = {x: [-2, 4], y: [-3, 1]};
+          const transform = createCoordinateTransform(
+            domain,
+            calculatePlotRect(rect.width, rect.height, domain),
+          );
+          const source = transform.worldToCanvas(1, -1);
+          const outsideApiBounds = transform.worldToCanvas(4, -3);
+          return {
+            source: {x: rect.left + source[0], y: rect.top + source[1]},
+            target: {
+              x: rect.left + outsideApiBounds[0],
+              y: rect.top + outsideApiBounds[1],
+            },
+          };
+        }"""
+    )
+
+    page.mouse.move(points["source"]["x"], points["source"]["y"])
+    page.mouse.down()
+    with page.expect_request("**/api/scene") as drag_request:
+        page.mouse.move(points["target"]["x"], points["target"]["y"])
+        page.mouse.up()
+    dragged = drag_request.value.post_data_json["sources"][0]
+    assert dragged["x"] == pytest.approx(2.8)
+    assert dragged["y"] == pytest.approx(-2.8)
+
+    coordinate_input = page.locator('.coordinate-field input[data-source-field="x"]').first
+    coordinate_input.focus()
+    page.locator("#field-canvas").focus()
+    page.keyboard.press("ArrowRight")
+    with page.expect_request("**/api/scene") as keyboard_request:
+        page.keyboard.press("ArrowDown")
+    keyboard_source = keyboard_request.value.post_data_json["sources"][0]
+    assert keyboard_source["x"] == pytest.approx(2.8)
+    assert keyboard_source["y"] == pytest.approx(-2.8)
+    assert all(
+        -2.8 <= source[axis] <= 2.8
+        for body in request_bodies
+        for source in body.get("sources", [])
+        for axis in ("x", "y")
+    )
     assert page_errors == []
