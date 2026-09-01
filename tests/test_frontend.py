@@ -61,6 +61,40 @@ def _browser_scene() -> dict[str, object]:
     }
 
 
+def _browser_loop_scene() -> dict[str, object]:
+    scene = json.loads(json.dumps(_browser_scene()))
+    scalar = scene["scalar"]
+    metadata = scene["metadata"]
+    assert isinstance(scalar, dict)
+    assert isinstance(metadata, dict)
+    scalar.update({"label": "|B|", "unit": "T"})
+    scene["sources"] = [
+        {
+            "x": -1.0,
+            "y": 0.0,
+            "kind": "wire_out",
+            "strength": 1.0,
+            "strength_unit": "A",
+        },
+        {
+            "x": 1.0,
+            "y": 0.0,
+            "kind": "wire_into",
+            "strength": 1.0,
+            "strength_unit": "A",
+        },
+    ]
+    metadata.update(
+        {
+            "title": "Current loop fixture",
+            "projection_note": "Invariant meridional plane",
+            "field_model": "test loop",
+            "seed_mode": "test coverage",
+        }
+    )
+    return scene
+
+
 @pytest.fixture(scope="session")
 def frontend_url() -> Iterator[str]:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -133,7 +167,7 @@ def _route_scene(page: Page, scene: dict[str, object]) -> None:
 def _instrument_canvas(page: Page) -> None:
     page.add_init_script(
         """(() => {
-            const calls = {putImages: [], drawImages: [], paints: []};
+            const calls = {putImages: [], drawImages: [], paints: [], texts: []};
             Object.defineProperty(window, '__vectorVizCanvasCalls', {value: calls});
             const prototype = CanvasRenderingContext2D.prototype;
             const paths = new WeakMap();
@@ -189,6 +223,12 @@ def _instrument_canvas(page: Page) -> None:
                 return original.apply(this, args);
               };
             }
+
+            const originalFillText = prototype.fillText;
+            prototype.fillText = function (value, x, y, ...args) {
+              calls.texts.push({text: String(value), x: Number(x), y: Number(y)});
+              return originalFillText.call(this, value, x, y, ...args);
+            };
         })();"""
     )
 
@@ -477,6 +517,89 @@ def test_scalar_lines_arrows_sources_and_probe_share_one_transform(
     page.mouse.down()
     expect(page.locator("#field-canvas")).to_have_attribute("data-dragging", "true")
     page.mouse.up()
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_current_loop_markers_are_fixed_response_only_sources(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    ordinary_scene = _browser_scene()
+    loop_scene = _browser_loop_scene()
+    request_bodies: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        body = route.request.post_data_json
+        request_bodies.append(body)
+        response_scene = loop_scene if body["preset"] == "current_loop" else ordinary_scene
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(response_scene),
+        )
+
+    _instrument_canvas(page)
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+
+    page.locator("#preset").select_option("current_loop")
+    expect(page.locator("#scene-title")).to_have_text("Current loop fixture")
+    expect(page.locator("#field-canvas")).to_have_attribute("data-draggable", "false")
+    expect(page.locator("#field-canvas")).to_have_attribute(
+        "aria-label", "Current loop fixture二维可视化，共 1 条场线、0 个可移动场源。"
+    )
+    expect(page.locator(".source-label")).to_have_text(["电流出屏", "电流入屏"])
+    expect(page.locator(".source-strength")).to_have_text(["1 A", "1 A"])
+    expect(page.locator("#source-editor-list input")).to_have_count(0)
+    expect(page.locator("#reset-sources")).to_be_disabled()
+    expect(page.locator(".fixed-sources-note")).to_contain_text("不可移动")
+
+    rendered_symbols = page.evaluate(
+        """() => window.__vectorVizCanvasCalls.texts
+          .map(({text}) => text)
+          .filter((text) => text === '⊙' || text === '⊗')"""
+    )
+    assert rendered_symbols[-2:] == ["⊙", "⊗"]
+
+    with page.expect_request("**/api/scene") as request_info:
+        page.locator("#run-button").click()
+    request_body = request_info.value.post_data_json
+    assert request_body["preset"] == "current_loop"
+    assert set(request_body) == {"preset", "density", "resolution"}
+    expect(page.locator("#loading-overlay")).to_be_hidden()
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    expect(page.locator("#scene-title")).to_have_text("Current loop fixture")
+
+    target = page.evaluate(
+        """async () => {
+            const canvas = document.querySelector('#field-canvas');
+            const rect = canvas.getBoundingClientRect();
+            const {calculatePlotRect, createCoordinateTransform} =
+              await import('/coordinates.js');
+            const domain = {x: [-2, 4], y: [-3, 1]};
+            const transform = createCoordinateTransform(
+              domain,
+              calculatePlotRect(rect.width, rect.height, domain),
+            );
+            const [x, y] = transform.worldToCanvas(-1, 0);
+            return {x: rect.left + x, y: rect.top + y};
+        }"""
+    )
+    baseline_requests = len(request_bodies)
+    page.mouse.move(target["x"], target["y"])
+    page.mouse.down()
+    assert page.locator("#field-canvas").get_attribute("data-dragging") is None
+    page.mouse.move(target["x"] + 30, target["y"] + 20)
+    page.mouse.up()
+    page.locator("#field-canvas").focus()
+    page.keyboard.press("ArrowRight")
+    page.wait_for_timeout(550)
+
+    assert len(request_bodies) == baseline_requests
+    expect(page.locator(".source-strength")).to_have_text(["1 A", "1 A"])
     assert page_errors == []
 
 

@@ -60,6 +60,7 @@
                 <select id="preset" name="preset">
                   <option value="electric_dipole">电偶极子</option>
                   <option value="magnetic_dipole">磁偶极子</option>
+                  <option value="current_loop">圆形电流线圈</option>
                   <option value="uniform">匀强场</option>
                 </select>
               </div>
@@ -110,7 +111,7 @@
               <div class="source-heading-row">
                 <div>
                   <h2 id="source-heading">场源位置</h2>
-                  <p>拖动画布标记，或直接输入坐标。</p>
+                  <p id="source-help">拖动画布标记，或直接输入坐标。</p>
                 </div>
                 <button class="text-button" id="reset-sources" type="button" disabled>
                   重置
@@ -126,7 +127,7 @@
             <span class="guide-icon" aria-hidden="true">⌖</span>
             <div>
               <strong>画布交互</strong>
-              <p>拖动场源改变位置；移动指针可探测坐标与场强。</p>
+              <p id="interaction-help">拖动场源改变位置；移动指针可探测坐标与场强。</p>
             </div>
           </div>
 

@@ -14,7 +14,10 @@ import {
     positive: "nC",
     negative: "nC",
     dipole: "A·m²",
+    wire_out: "A",
+    wire_into: "A",
   });
+  const EDITABLE_SOURCE_PRESETS = new Set(["electric_dipole", "magnetic_dipole"]);
 
   const elements = {
     canvas: document.querySelector("#field-canvas"),
@@ -29,6 +32,8 @@ import {
     retryButton: document.querySelector("#retry-button"),
     resetSources: document.querySelector("#reset-sources"),
     sourceEditorList: document.querySelector("#source-editor-list"),
+    sourceHelp: document.querySelector("#source-help"),
+    interactionHelp: document.querySelector("#interaction-help"),
     sceneTitle: document.querySelector("#scene-title"),
     projectionNote: document.querySelector("#projection-note"),
     scaleBadge: document.querySelector("#scale-badge"),
@@ -103,13 +108,17 @@ import {
     output.textContent = formatter(value);
   }
 
+  function sourcesAreEditable() {
+    return EDITABLE_SOURCE_PRESETS.has(elements.preset.value);
+  }
+
   function currentRequestBody() {
     const body = {
       preset: elements.preset.value,
       density: Number(elements.density.value),
       resolution: Number(elements.resolution.value),
     };
-    if (elements.preset.value !== "uniform" && state.sourceOverrides?.length) {
+    if (sourcesAreEditable() && state.sourceOverrides?.length) {
       body.sources = state.sourceOverrides.map(({ x, y, kind, strength }) => ({
         x: finiteNumber(x),
         y: finiteNumber(y),
@@ -174,22 +183,36 @@ import {
 
     scene.lines = Array.isArray(scene.lines) ? scene.lines : [];
     scene.sources = Array.isArray(scene.sources) ? scene.sources : [];
-    if (
-      !scene.sources.every((source) => {
-        if (
-          !source ||
-          !Number.isFinite(source.x) ||
-          !Number.isFinite(source.y) ||
-          !Number.isFinite(source.strength) ||
-          SOURCE_STRENGTH_UNITS[source.kind] !== source.strength_unit
-        ) {
-          return false;
-        }
-        if (source.kind === "positive") return source.strength > 0;
-        if (source.kind === "negative") return source.strength < 0;
-        return source.kind === "dipole";
-      })
-    ) {
+    const validSources = scene.sources.every((source) => {
+      if (
+        !source ||
+        !Number.isFinite(source.x) ||
+        !Number.isFinite(source.y) ||
+        !Number.isFinite(source.strength) ||
+        SOURCE_STRENGTH_UNITS[source.kind] !== source.strength_unit
+      ) {
+        return false;
+      }
+      if (source.kind === "positive") return source.strength > 0;
+      if (source.kind === "negative") return source.strength < 0;
+      if (source.kind === "dipole") return true;
+      return (
+        (source.kind === "wire_out" || source.kind === "wire_into") &&
+        source.strength >= 0
+      );
+    });
+    const wireSources = scene.sources.filter(
+      ({ kind }) => kind === "wire_out" || kind === "wire_into",
+    );
+    const expectsLoopMarkers = elements.preset.value === "current_loop";
+    const validLoopMarkers = expectsLoopMarkers
+      ? wireSources.length === 2 &&
+        scene.sources.length === 2 &&
+        wireSources.some(({ kind }) => kind === "wire_out") &&
+        wireSources.some(({ kind }) => kind === "wire_into") &&
+        wireSources[0].strength === wireSources[1].strength
+      : wireSources.length === 0;
+    if (!validSources || !validLoopMarkers) {
       throw new Error("场源缺少有效坐标、强度或 strength_unit");
     }
     scene.metadata = scene.metadata && typeof scene.metadata === "object" ? scene.metadata : {};
@@ -253,15 +276,14 @@ import {
 
       state.scene = scene;
       state.presentationStatus = "ready";
-      state.sourceOverrides =
-        elements.preset.value === "uniform"
-          ? null
-          : scene.sources.map((source) => ({
+      state.sourceOverrides = sourcesAreEditable()
+        ? scene.sources.map((source) => ({
               x: finiteNumber(source.x),
               y: finiteNumber(source.y),
               kind: String(source.kind ?? "source"),
               strength: finiteNumber(source.strength, 1),
-            }));
+            }))
+        : null;
       state.selectedSource = null;
       renderSourceEditors();
       updateSceneDetails();
@@ -308,7 +330,7 @@ import {
     elements.colorbarMax.textContent = formatValue(scale.maximum);
     elements.colorbarMin.textContent = formatValue(scale.minimum);
     elements.colorbarLabel.textContent = [scalar.label || "场强", unit].filter(Boolean).join(" · ");
-    const draggableSourceCount = elements.preset.value === "uniform" ? 0 : scene.sources.length;
+    const draggableSourceCount = sourcesAreEditable() ? scene.sources.length : 0;
     elements.canvas.dataset.draggable = String(draggableSourceCount > 0);
     elements.canvas.setAttribute(
       "aria-label",
@@ -320,6 +342,7 @@ import {
     return {
       electric_dipole: "电偶极子场",
       magnetic_dipole: "磁偶极子场",
+      current_loop: "圆形电流线圈磁场",
       uniform: "匀强场",
     }[value] || "物理场";
   }
@@ -533,6 +556,12 @@ import {
 
   function sourceStyle(source) {
     const kind = String(source.kind || "").toLowerCase();
+    if (kind === "wire_out") {
+      return { fill: "#ffb45f", symbol: "⊙", className: "wire" };
+    }
+    if (kind === "wire_into") {
+      return { fill: "#ffb45f", symbol: "⊗", className: "wire" };
+    }
     if (kind.includes("dipole") || kind.includes("magnet")) {
       return { fill: "#ffe08a", symbol: "↕", className: "neutral" };
     }
@@ -578,15 +607,54 @@ import {
     });
   }
 
+  function createSourceName(source, index) {
+    const name = document.createElement("span");
+    name.className = "source-name";
+    const swatch = document.createElement("i");
+    const style = sourceStyle(source);
+    swatch.className = `source-swatch ${style.className}`;
+    swatch.setAttribute("aria-hidden", "true");
+    const sourceLabel = document.createElement("span");
+    sourceLabel.className = "source-label";
+    sourceLabel.textContent = readableSourceName(source, index);
+    const sourceStrength = document.createElement("span");
+    sourceStrength.className = "source-strength";
+    sourceStrength.textContent = `${formatValue(source.strength)} ${source.strength_unit}`;
+    name.append(swatch, sourceLabel, sourceStrength);
+    return name;
+  }
+
   function renderSourceEditors() {
     elements.sourceEditorList.replaceChildren();
     const sources = state.scene?.sources || [];
-    const sourcesAreFixed = elements.preset.value === "uniform";
-    elements.resetSources.disabled = sources.length === 0 || sourcesAreFixed;
-    if (sourcesAreFixed) {
+    const editable = sourcesAreEditable();
+    elements.resetSources.disabled = sources.length === 0 || !editable;
+    elements.sourceHelp.textContent = editable
+      ? "拖动画布标记，或直接输入坐标。"
+      : "固定预设只显示只读几何标记。";
+    elements.interactionHelp.textContent = editable
+      ? "拖动场源改变位置；移动指针可探测坐标与场强。"
+      : "移动指针可探测坐标与场强；固定标记不可移动。";
+    if (!editable && sources.length) {
+      const fixed = document.createElement("p");
+      fixed.className = "fixed-sources-note";
+      fixed.textContent = "两个标记是同一圆环的截面位置，电流与位置由预设固定、不可移动。";
+      elements.sourceEditorList.append(fixed);
+      sources.forEach((source, index) => {
+        const row = document.createElement("div");
+        row.className = "fixed-source";
+        row.append(createSourceName(source, index));
+        elements.sourceEditorList.append(row);
+      });
+      return;
+    }
+    if (!editable) {
       const fixed = document.createElement("p");
       fixed.className = "empty-sources";
-      fixed.textContent = "匀强场的方向与强度由预设固定。";
+      fixed.textContent =
+        elements.preset.value === "uniform"
+          ? "匀强场的方向与强度由预设固定。"
+          : "固定几何标记将在场景加载后显示。";
       elements.sourceEditorList.append(fixed);
       return;
     }
@@ -601,26 +669,19 @@ import {
     sources.forEach((source, index) => {
       const row = document.createElement("div");
       row.className = "source-editor";
-      const name = document.createElement("span");
-      name.className = "source-name";
-      const swatch = document.createElement("i");
-      const style = sourceStyle(source);
-      swatch.className = `source-swatch ${style.className}`;
-      swatch.setAttribute("aria-hidden", "true");
-      const sourceLabel = document.createElement("span");
-      sourceLabel.className = "source-label";
-      sourceLabel.textContent = readableSourceName(source, index);
-      const sourceStrength = document.createElement("span");
-      sourceStrength.className = "source-strength";
-      sourceStrength.textContent = `${formatValue(source.strength)} ${source.strength_unit}`;
-      name.append(swatch, sourceLabel, sourceStrength);
-      row.append(name, coordinateInput(index, "x"), coordinateInput(index, "y"));
+      row.append(
+        createSourceName(source, index),
+        coordinateInput(index, "x"),
+        coordinateInput(index, "y"),
+      );
       elements.sourceEditorList.append(row);
     });
   }
 
   function readableSourceName(source, index) {
     const kind = String(source.kind || "").toLowerCase();
+    if (kind === "wire_out") return "电流出屏";
+    if (kind === "wire_into") return "电流入屏";
     if (kind.includes("dipole") || kind.includes("magnet")) return "磁偶极子";
     if (kind === "positive") return `正电荷 ${index + 1}`;
     if (kind === "negative") return `负电荷 ${index + 1}`;
@@ -666,6 +727,7 @@ import {
   }
 
   function updateSource(index, axis, value) {
+    if (!sourcesAreEditable()) return;
     state.scene.sources[index][axis] = value;
     state.sourceOverrides = state.scene.sources.map((source) => ({
       x: finiteNumber(source.x),
@@ -682,7 +744,7 @@ import {
   }
 
   function sourceAt(canvasX, canvasY) {
-    if (!state.scene || elements.preset.value === "uniform") return null;
+    if (!state.scene || !sourcesAreEditable()) return null;
     let closest = null;
     let closestDistance = 18;
     state.scene.sources.forEach((source, index) => {
@@ -697,7 +759,7 @@ import {
   }
 
   function handlePointerDown(event) {
-    if (!state.scene || !state.scene.sources.length || elements.preset.value === "uniform") return;
+    if (!state.scene || !state.scene.sources.length || !sourcesAreEditable()) return;
     const [canvasX, canvasY] = pointerPosition(event);
     const sourceIndex = sourceAt(canvasX, canvasY);
     if (sourceIndex === null) return;
@@ -764,7 +826,13 @@ import {
   }
 
   function handleCanvasKeydown(event) {
-    if (state.selectedSource === null || !state.scene?.sources[state.selectedSource]) return;
+    if (
+      !sourcesAreEditable() ||
+      state.selectedSource === null ||
+      !state.scene?.sources[state.selectedSource]
+    ) {
+      return;
+    }
     const deltas = {
       ArrowLeft: [-1, 0],
       ArrowRight: [1, 0],

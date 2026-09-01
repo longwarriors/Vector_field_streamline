@@ -410,6 +410,23 @@ input[type="range"]::-moz-range-thumb {
   line-height: 1.5;
 }
 
+.fixed-sources-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.55;
+}
+
+.fixed-source {
+  display: grid;
+  align-items: center;
+  min-height: 48px;
+  padding: 9px 10px;
+  background: rgba(154, 190, 201, 0.05);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
 .source-editor {
   display: grid;
   grid-template-columns: 1fr 72px 72px;
@@ -470,6 +487,11 @@ input[type="range"]::-moz-range-thumb {
 .source-swatch.neutral {
   background: #ffe08a;
   box-shadow: 0 0 0 3px rgba(255, 224, 138, 0.12);
+}
+
+.source-swatch.wire {
+  background: #ffb45f;
+  box-shadow: 0 0 0 3px rgba(255, 180, 95, 0.14);
 }
 
 .coordinate-field {
