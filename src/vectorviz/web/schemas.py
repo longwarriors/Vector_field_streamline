@@ -4,7 +4,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-PresetName = Literal["electric_dipole", "magnetic_dipole", "current_loop", "uniform"]
+PresetName = Literal[
+    "electric_dipole",
+    "magnetic_dipole",
+    "halbach_array",
+    "current_loop",
+    "uniform",
+]
 SourceInputKind = Literal["positive", "negative", "dipole", "uniform"]
 SourcePayloadKind = Literal[
     "positive",
@@ -34,17 +40,31 @@ class SourceInput(BaseModel):
             "Charge kinds require a matching nonzero sign."
         ),
     )
+    angle_deg: float | None = Field(
+        default_factory=lambda: None,
+        ge=0.0,
+        lt=360.0,
+        allow_inf_nan=False,
+        description=(
+            "Dipole moment angle in degrees, counterclockwise from +x toward +y. "
+            "Valid only for dipole sources: dipoles cannot use null and omitted dipoles "
+            "default to 90; non-dipole sources must omit this field."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
-    def default_strength_for_charge_kind(cls, data: Any) -> Any:
-        if (
-            isinstance(data, dict)
-            and data.get("kind") == "negative"
-            and "strength" not in data
-        ):
-            return {**data, "strength": -1.0}
-        return data
+    def apply_kind_dependent_defaults(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+        if values.get("kind") != "dipole" and "angle_deg" in values:
+            raise ValueError("angle_deg is only valid for dipole sources")
+        if values.get("kind") == "negative" and "strength" not in values:
+            values["strength"] = -1.0
+        if values.get("kind") == "dipole" and "angle_deg" not in values:
+            values["angle_deg"] = 90.0
+        return values
 
     @model_validator(mode="after")
     def validate_charge_strength_sign(self) -> "SourceInput":
@@ -58,6 +78,10 @@ class SourceInput(BaseModel):
                 "negative source strength must be less than 0; "
                 "zero and positive values are invalid"
             )
+        if self.kind == "dipole" and self.angle_deg is None:
+            raise ValueError("dipole angle_deg cannot be null; omit it to use 90 degrees")
+        if self.kind != "dipole" and self.angle_deg is not None:
+            raise ValueError("angle_deg is only valid for dipole sources")
         return self
 
 
@@ -78,8 +102,8 @@ class SceneRequest(BaseModel):
         kinds = {source.kind for source in self.sources}
         if self.preset == "electric_dipole" and not kinds <= {"positive", "negative"}:
             raise ValueError("electric_dipole only accepts positive and negative sources")
-        if self.preset == "magnetic_dipole" and kinds != {"dipole"}:
-            raise ValueError("magnetic_dipole accepts dipole sources only")
+        if self.preset in {"magnetic_dipole", "halbach_array"} and kinds != {"dipole"}:
+            raise ValueError(f"{self.preset} accepts dipole sources only")
         if self.preset == "uniform":
             raise ValueError("uniform preset does not accept source overrides")
         if self.preset == "current_loop":
@@ -118,6 +142,17 @@ class SourcePayload(BaseModel):
     kind: SourcePayloadKind
     strength: float
     strength_unit: SourceStrengthUnit
+    angle_deg: float | None = Field(
+        default=None,
+        ge=0.0,
+        lt=360.0,
+        allow_inf_nan=False,
+        description=(
+            "Dipole moment angle in degrees, counterclockwise from +x toward +y. "
+            "Valid only for dipole sources: dipoles cannot use null and omitted dipoles "
+            "default to 90; non-dipole sources must omit this field."
+        ),
+    )
 
 
 class MetadataPayload(BaseModel):

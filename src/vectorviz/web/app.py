@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from vectorviz import __version__
@@ -29,6 +33,11 @@ PRESETS = [
         description="理想点磁偶极子的对称平面磁力线。",
     ),
     PresetPayload(
+        id="halbach_array",
+        label="Halbach 阵列",
+        description="八个面内磁偶极子依次旋转 90°，形成一侧增强的磁场。",
+    ),
+    PresetPayload(
         id="current_loop",
         label="圆形电流线圈",
         description="固定理想细圆环在 z=0 子午面中的真实磁力线。",
@@ -41,6 +50,10 @@ PRESETS = [
 ]
 
 
+def _json_safe_float(value: float) -> float | str:
+    return value if math.isfinite(value) else repr(value)
+
+
 def create_app() -> FastAPI:
     """Create an application instance for servers and API tests."""
 
@@ -50,6 +63,16 @@ def create_app() -> FastAPI:
         version=__version__,
     )
 
+    @application.exception_handler(RequestValidationError)
+    async def request_validation_error(
+        _request: Request, error: RequestValidationError
+    ) -> JSONResponse:
+        detail = jsonable_encoder(
+            error.errors(),
+            custom_encoder={float: _json_safe_float},
+        )
+        return JSONResponse(status_code=422, content={"detail": detail})
+
     @application.get("/api/health", tags=["system"])
     def health() -> dict[str, str]:
         return {"status": "ok", "version": __version__}
@@ -58,7 +81,12 @@ def create_app() -> FastAPI:
     def presets() -> list[PresetPayload]:
         return PRESETS
 
-    @application.post("/api/scene", response_model=SceneResponse, tags=["scenes"])
+    @application.post(
+        "/api/scene",
+        response_model=SceneResponse,
+        response_model_exclude_none=True,
+        tags=["scenes"],
+    )
     def scene(request: SceneRequest) -> SceneResponse:
         try:
             return build_scene(request)

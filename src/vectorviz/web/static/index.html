@@ -60,6 +60,7 @@
                 <select id="preset" name="preset">
                   <option value="electric_dipole">电偶极子</option>
                   <option value="magnetic_dipole">磁偶极子</option>
+                  <option value="halbach_array">Halbach 阵列</option>
                   <option value="current_loop">圆形电流线圈</option>
                   <option value="uniform">匀强场</option>
                 </select>
@@ -117,6 +118,18 @@
                   重置
                 </button>
               </div>
+              <div class="source-actions" id="source-actions" hidden>
+                <button class="source-action" id="add-positive-source" type="button">
+                  + 正电荷
+                </button>
+                <button class="source-action" id="add-negative-source" type="button">
+                  + 负电荷
+                </button>
+                <button class="source-action" id="add-dipole-source" type="button" hidden>
+                  + 磁偶极子
+                </button>
+              </div>
+              <p class="source-status" id="source-status" role="status" aria-live="polite"></p>
               <div id="source-editor-list" class="source-editor-list">
                 <p class="empty-sources">场景加载后可调整场源。</p>
               </div>

@@ -39,6 +39,8 @@ SOURCE_RADIUS = 0.16
 CURRENT_LOOP_RADIUS = 1.0
 CURRENT_LOOP_CURRENT = 1.0
 CURRENT_LOOP_EXCLUSION_RADIUS = 0.16
+HALBACH_SOURCE_COUNT = 8
+HALBACH_X_EXTENT = 2.1
 
 DEFAULT_TRACE_OPTIONS = TraceOptions(
     max_arc_length=18.0,
@@ -134,6 +136,18 @@ def _default_sources(preset: str) -> list[SourceInput]:
         ]
     if preset == "magnetic_dipole":
         return [SourceInput(x=0.0, y=0.0, kind="dipole", strength=1.0)]
+    if preset == "halbach_array":
+        positions = np.linspace(-HALBACH_X_EXTENT, HALBACH_X_EXTENT, HALBACH_SOURCE_COUNT)
+        return [
+            SourceInput(
+                x=float(position),
+                y=0.0,
+                kind="dipole",
+                strength=1.0,
+                angle_deg=float(90 * index % 360),
+            )
+            for index, position in enumerate(positions)
+        ]
     return []
 
 
@@ -209,16 +223,23 @@ def _circle_seeds(
 def _magnetic_seeds(
     centers: NDArray[np.float64],
     strengths: NDArray[np.float64],
+    directions: NDArray[np.float64],
     total: int,
 ) -> NDArray[np.float64]:
     counts = _allocate_seed_counts(strengths, total)
     groups: list[NDArray[np.float64]] = []
     radius = SOURCE_RADIUS + 2.0e-3
-    for center, strength, count in zip(centers, strengths, counts, strict=True):
+    for center, strength, direction, count in zip(
+        centers, strengths, directions, counts, strict=True
+    ):
         # Seed only the hemisphere where B points away from the excluded source.
-        angles = np.linspace(-1.43, 1.43, int(count))
-        axis_sign = 1.0 if strength >= 0 else -1.0
-        offsets = radius * np.column_stack((np.sin(angles), axis_sign * np.cos(angles)))
+        angles = np.array((0.0,)) if count == 1 else np.linspace(-1.43, 1.43, int(count))
+        axis = direction if strength >= 0.0 else -direction
+        perpendicular = np.array((axis[1], -axis[0]))
+        offsets = radius * (
+            np.cos(angles)[:, np.newaxis] * axis
+            + np.sin(angles)[:, np.newaxis] * perpendicular
+        )
         groups.append(center + offsets)
     return np.concatenate(groups, axis=0)
 
@@ -322,32 +343,57 @@ def _build_model(request: SceneRequest) -> _SceneModel:
             seed_mode="从正电荷排除面的覆盖播种；线密度默认不代表场强。",
         )
 
-    if request.preset == "magnetic_dipole":
+    if request.preset in {"magnetic_dipole", "halbach_array"}:
         active = [source for source in inputs if source.kind == "dipole"]
         centers = np.array([[source.x, source.y] for source in active], dtype=float)
         strengths = np.array([source.strength for source in active], dtype=float)
+        angles = np.deg2rad([source.angle_deg for source in active])
+        directions = np.column_stack((np.cos(angles), np.sin(angles)))
         _require_seed_budget(
             request.preset,
             "磁偶极子",
             len(active),
             request.density,
         )
-        moments = np.column_stack((np.zeros_like(strengths), strengths, np.zeros_like(strengths)))
+        planar_moments = strengths[:, np.newaxis] * directions
+        moments = np.column_stack((planar_moments, np.zeros_like(strengths)))
         positions = np.column_stack((centers, np.zeros(len(centers))))
         field = _PlanarMagneticDipoleField(MagneticDipoleField(moments, positions))
+        is_halbach = request.preset == "halbach_array"
+        is_default_halbach = is_halbach and request.sources is None
         return _SceneModel(
             field=field,
             sources=payloads,
             exclusions=(SphericalExclusion(centers, SOURCE_RADIUS),),
-            seeds=_magnetic_seeds(centers, strengths, request.density),
+            seeds=_magnetic_seeds(centers, strengths, directions, request.density),
             direction=TraceDirection.FORWARD,
             trace_options=DEFAULT_TRACE_OPTIONS,
             scalar_label="|B|",
             scalar_unit="T",
-            title="磁偶极子的磁力线",
-            field_model="三维理想磁偶极场在 z=0 对称平面上的限制",
-            projection_note="偶极矩位于切片内且法向场为零，所示曲线是真实磁力线。",
-            seed_mode="从偶极子北半排除面覆盖播种；线密度默认不代表磁感应强度。",
+            title=(
+                "线性 Halbach 阵列的一侧增强磁场"
+                if is_default_halbach
+                else "可编辑面内磁偶极子阵列"
+                if is_halbach
+                else "磁偶极子的磁力线"
+            ),
+            field_model=(
+                "八个面内理想点磁偶极子的线性 Halbach 阵列"
+                if is_default_halbach
+                else "可编辑面内理想点磁偶极子阵列"
+                if is_halbach
+                else "三维理想磁偶极场在 z=0 对称平面上的限制"
+            ),
+            projection_note=(
+                "所有偶极矩与源位置都位于 z=0 不变平面，所示曲线是真实磁力线。"
+                if is_halbach
+                else "偶极矩位于切片内且法向场为零，所示曲线是真实磁力线。"
+            ),
+            seed_mode=(
+                "从每个偶极子的实际磁矩外向半球覆盖播种；线密度默认不代表磁感应强度。"
+                if is_halbach
+                else "从偶极子实际磁矩的外向半球覆盖播种；线密度默认不代表磁感应强度。"
+            ),
         )
 
     field = UniformField((1.0, 0.28))
