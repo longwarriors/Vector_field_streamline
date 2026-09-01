@@ -102,10 +102,13 @@ Web 层把用户友好的预设名称转换成核心对象：
 ```text
 electric_dipole -> PointChargeField(批量异号电荷)
 magnetic_dipole -> MagneticDipoleField(...) 的 z=0 不变平面适配器
+current_loop    -> CircularLoopField(...) 的 z=0 子午面适配器
 uniform         -> UniformField(...)
 ```
 
 `resolution` 控制标量背景采样；`density` 控制播种数量或间距。这两个参数不能互相代替。完整 JSON 契约见 [HTTP API](api.md#http-api)。
+
+圆环是三维理想细导线模型；二维 Web 追踪器使用它的真实不变子午面。三维环面排除管在该平面上的截面是两个圆盘，因此 Web 层传给二维追踪器的是两个 `SphericalExclusion`，而不是维数不匹配的 `ToroidalExclusion`。响应中的两个 wire 标记仅表示同一圆环与子午面的交点，不是两个独立场源。
 
 ## 缓存边界 { #cache-boundaries }
 

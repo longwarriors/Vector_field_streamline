@@ -117,7 +117,7 @@ uv run playwright install chromium
 uv run pytest tests/test_frontend.py --no-cov
 ```
 
-默认 `uv run pytest` 仍包含这些浏览器测试。`browser` marker 仅供兼容矩阵在没有下载 Chromium 时排除；权威质量作业不得排除它。当前四项已自动验证请求失败不展示旧结果、公共坐标变换、log/mask 无虚假热点，以及 resize 后探针一致性。“改变显示图层不再次请求”留到 v0.3.0 图层开关存在时实现和验收，不提前制造空 UI。
+默认 `uv run pytest` 仍包含这些浏览器测试。`browser` marker 仅供兼容矩阵在没有下载 Chromium 时排除；权威质量作业不得排除它。当前五项已自动验证请求失败不展示旧结果、公共坐标变换、log/mask 无虚假热点、resize 后探针一致性，以及圆环 wire 标记只读且不会回传为请求源。“改变显示图层不再次请求”留到 v0.3.0 图层开关存在时实现和验收，不提前制造空 UI。
 
 ## 测试分组
 

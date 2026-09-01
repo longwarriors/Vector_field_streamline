@@ -41,6 +41,8 @@ uv run vectorviz --reload
 
 默认监听 `http://127.0.0.1:8000`。`vectorviz` 是 `pyproject.toml` 声明的正式项目入口；`--reload` 适合开发调试。
 
+前端提供电偶极子、磁偶极子、圆形电流线圈和匀强场四个预设。电荷与偶极子标记可编辑；圆环的 ⊙/⊗ 只表示同一导体穿过子午面的两个固定交点，不能拖动。
+
 ## 检查 API
 
 ```powershell
