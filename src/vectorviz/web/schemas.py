@@ -4,9 +4,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-PresetName = Literal["electric_dipole", "magnetic_dipole", "uniform"]
-SourceKind = Literal["positive", "negative", "dipole", "uniform"]
-SourceStrengthUnit = Literal["nC", "A·m²"]
+PresetName = Literal["electric_dipole", "magnetic_dipole", "current_loop", "uniform"]
+SourceInputKind = Literal["positive", "negative", "dipole", "uniform"]
+SourcePayloadKind = Literal[
+    "positive",
+    "negative",
+    "dipole",
+    "uniform",
+    "wire_out",
+    "wire_into",
+]
+SourceStrengthUnit = Literal["nC", "A·m²", "A"]
 
 
 class SourceInput(BaseModel):
@@ -16,7 +24,7 @@ class SourceInput(BaseModel):
 
     x: float = Field(ge=-2.8, le=2.8)
     y: float = Field(ge=-2.8, le=2.8)
-    kind: SourceKind
+    kind: SourceInputKind
     strength: float = Field(
         default_factory=lambda: 1.0,
         ge=-10.0,
@@ -74,6 +82,8 @@ class SceneRequest(BaseModel):
             raise ValueError("magnetic_dipole accepts dipole sources only")
         if self.preset == "uniform":
             raise ValueError("uniform preset does not accept source overrides")
+        if self.preset == "current_loop":
+            raise ValueError("current_loop preset does not accept source overrides")
         return self
 
 
@@ -105,7 +115,7 @@ class LinePayload(BaseModel):
 class SourcePayload(BaseModel):
     x: float
     y: float
-    kind: SourceKind
+    kind: SourcePayloadKind
     strength: float
     strength_unit: SourceStrengthUnit
 

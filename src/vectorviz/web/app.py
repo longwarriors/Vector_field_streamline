@@ -29,6 +29,11 @@ PRESETS = [
         description="理想点磁偶极子的对称平面磁力线。",
     ),
     PresetPayload(
+        id="current_loop",
+        label="圆形电流线圈",
+        description="固定理想细圆环在 z=0 子午面中的真实磁力线。",
+    ),
+    PresetPayload(
         id="uniform",
         label="匀强电场",
         description="用于验证积分器的直线基准场。",

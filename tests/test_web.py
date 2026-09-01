@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from vectorviz import __version__
+from vectorviz import CircularLoopField, __version__
 from vectorviz.web import app as web_app
 from vectorviz.web.app import STATIC_DIR, create_app
-from vectorviz.web.scene import _allocate_seed_counts, _build_model, build_scene
-from vectorviz.web.schemas import SceneRequest, SourceInput
+from vectorviz.web.scene import (
+    _allocate_seed_counts,
+    _build_model,
+    _PlanarCircularLoopField,
+    build_scene,
+)
+from vectorviz.web.schemas import SceneRequest, SourceInput, SourcePayload
 
 
 @pytest.mark.parametrize(
@@ -28,6 +34,7 @@ from vectorviz.web.schemas import SceneRequest, SourceInput
     [
         ("electric_dipole", {"positive", "negative"}, {"nC"}, "|E|", "V/m"),
         ("magnetic_dipole", {"dipole"}, {"A·m²"}, "|B|", "T"),
+        ("current_loop", {"wire_out", "wire_into"}, {"A"}, "|B|", "T"),
         # A uniform field has no localized source marker.
         ("uniform", set(), set(), "|E|", "V/m"),
     ],
@@ -96,6 +103,141 @@ def test_electric_scene_honors_source_override() -> None:
     ]
     assert len(scene.lines) == 6
     assert sum(scene.metadata.termination_counts.values()) == 6
+
+
+def test_current_loop_uses_response_only_markers_and_closed_loop_tracing() -> None:
+    request = SceneRequest(preset="current_loop", density=6, resolution=32)
+
+    model = _build_model(request)
+    scene = build_scene(request)
+
+    assert [source.model_dump() for source in scene.sources] == [
+        {
+            "x": -1.0,
+            "y": 0.0,
+            "kind": "wire_out",
+            "strength": 1.0,
+            "strength_unit": "A",
+        },
+        {
+            "x": 1.0,
+            "y": 0.0,
+            "kind": "wire_into",
+            "strength": 1.0,
+            "strength_unit": "A",
+        },
+    ]
+    assert model.seeds.shape == (request.density, 2)
+    assert np.all(model.exclusions[0].margin(model.seeds) > 0.0)
+    sorted_seed_x = np.sort(model.seeds[:, 0])
+    np.testing.assert_allclose(sorted_seed_x, -sorted_seed_x[::-1], rtol=0.0, atol=0.0)
+    assert model.trace_options.closure_tolerance is not None
+    assert scene.metadata.termination_counts.get("closed_loop", 0) >= 2
+    assert scene.metadata.termination_counts.get("max_arc_length", 0) == 0
+    assert sum(scene.metadata.termination_counts.values()) == request.density
+    assert len(scene.lines) == request.density
+    domain_exit_lines = [line for line in scene.lines if line.termination == "domain_exit"]
+    assert domain_exit_lines
+    for line in domain_exit_lines:
+        points = np.asarray(line.points)
+        assert np.min(points[:, 1]) < -0.1
+        assert np.max(points[:, 1]) > 0.1
+        assert np.min(points[:, 1]) == pytest.approx(-np.max(points[:, 1]))
+        assert np.count_nonzero(points[:, 1] == 0.0) == 1
+        segments = np.diff(points, axis=0)
+        vectors = model.field.evaluate(0.5 * (points[:-1] + points[1:]))
+        tangent_cosine = np.einsum("ij,ij->i", segments, vectors) / (
+            np.linalg.norm(segments, axis=1) * np.linalg.norm(vectors, axis=1)
+        )
+        assert np.min(tangent_cosine) > 0.99
+    assert scene.metadata.field_model.startswith("三维理想圆形电流线圈")
+    assert "子午面" in scene.metadata.projection_note
+    assert "等通量" not in scene.metadata.seed_mode
+
+
+def test_current_loop_planar_adapter_matches_the_invariant_3d_field() -> None:
+    loop = CircularLoopField(1.0, 1.0, normal=(0.0, 1.0, 0.0))
+    planar = _PlanarCircularLoopField(loop)
+    points = np.array(((0.4, 0.3), (-0.4, 0.3), (0.4, -0.3)))
+    embedded = np.column_stack((points, np.zeros(points.shape[0])))
+
+    vectors = planar.evaluate(points)
+
+    np.testing.assert_allclose(vectors, loop.evaluate(embedded)[:, :2], rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(vectors[1], (-vectors[0, 0], vectors[0, 1]))
+    np.testing.assert_allclose(vectors[2], (-vectors[0, 0], vectors[0, 1]))
+
+
+def test_current_loop_masks_both_finite_radius_conductor_cross_sections() -> None:
+    scene = build_scene(SceneRequest(preset="current_loop", density=6, resolution=64))
+    mask = np.asarray(scene.scalar.mask).reshape(scene.scalar.ny, scene.scalar.nx)
+    x = np.linspace(scene.domain.x[0], scene.domain.x[1], scene.scalar.nx)
+    y = np.linspace(scene.domain.y[1], scene.domain.y[0], scene.scalar.ny)
+
+    for wire_x in (-1.0, 1.0):
+        x_index = int(np.argmin(np.abs(x - wire_x)))
+        y_index = int(np.argmin(np.abs(y)))
+        assert mask[y_index, x_index]
+
+
+def test_current_loop_odd_seed_budget_adds_one_axis_line() -> None:
+    request = SceneRequest(preset="current_loop", density=7, resolution=32)
+
+    model = _build_model(request)
+
+    assert model.seeds.shape == (request.density, 2)
+    axis_seeds = model.seeds[model.seeds[:, 0] == 0.0]
+    np.testing.assert_allclose(axis_seeds, ((0.0, -2.9999),), rtol=0.0, atol=1.0e-15)
+    nonaxis_x = np.sort(model.seeds[model.seeds[:, 0] != 0.0, 0])
+    np.testing.assert_allclose(nonaxis_x, -nonaxis_x[::-1], rtol=0.0, atol=0.0)
+    assert np.all(model.exclusions[0].margin(model.seeds) > 0.0)
+
+
+def test_source_input_and_payload_publish_separate_kind_vocabularies(
+    client: TestClient,
+) -> None:
+    input_kinds = set(SourceInput.model_json_schema()["properties"]["kind"]["enum"])
+    payload_kinds = set(SourcePayload.model_json_schema()["properties"]["kind"]["enum"])
+
+    assert input_kinds == {"positive", "negative", "dipole", "uniform"}
+    assert payload_kinds == input_kinds | {"wire_out", "wire_into"}
+    openapi_schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    assert set(openapi_schemas["SourceInput"]["properties"]["kind"]["enum"]) == input_kinds
+    assert set(openapi_schemas["SourcePayload"]["properties"]["kind"]["enum"]) == payload_kinds
+
+
+@pytest.mark.parametrize("wire_kind", ["wire_out", "wire_into"])
+def test_wire_marker_kinds_cannot_be_submitted_as_sources(
+    client: TestClient,
+    wire_kind: str,
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": "current_loop",
+            "sources": [{"x": -1.0, "y": 0.0, "kind": wire_kind}],
+        },
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail[0]["loc"] == ["body", "sources", 0, "kind"]
+    assert "positive" in detail[0]["msg"]
+
+
+def test_current_loop_rejects_even_legacy_source_overrides(client: TestClient) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": "current_loop",
+            "sources": [{"x": 0.0, "y": 0.0, "kind": "dipole"}],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["msg"] == (
+        "Value error, current_loop preset does not accept source overrides"
+    )
 
 
 def _electric_sources(positive_count: int) -> list[SourceInput]:
@@ -194,6 +336,7 @@ def test_health_and_preset_endpoints(client: TestClient) -> None:
     assert {preset["id"] for preset in payload} == {
         "electric_dipole",
         "magnetic_dipole",
+        "current_loop",
         "uniform",
     }
     assert all(preset["label"] and preset["description"] for preset in payload)
@@ -488,6 +631,9 @@ def test_static_index_and_assets_are_served(client: TestClient) -> None:
     assert "text/html" in index.headers["content-type"]
     assert "VectorViz" in index.text
     assert "field-canvas" in index.text
+    option_values = re.findall(r'<option value="([^"]+)">', index.text)
+    advertised_presets = [item["id"] for item in client.get("/api/presets").json()]
+    assert option_values == advertised_presets
 
     for asset in ("/app.js", "/coordinates.js", "/color-scale.js", "/styles.css"):
         response = client.get(asset)

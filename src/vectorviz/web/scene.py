@@ -10,8 +10,18 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vectorviz.core import Domain, SphericalExclusion, VectorField
-from vectorviz.fields import MagneticDipoleField, PointChargeField, UniformField
-from vectorviz.tracing import FieldLineTracer, TraceDirection, TraceOptions
+from vectorviz.fields import (
+    CircularLoopField,
+    MagneticDipoleField,
+    PointChargeField,
+    UniformField,
+)
+from vectorviz.tracing import (
+    FieldLineTracer,
+    TerminationReason,
+    TraceDirection,
+    TraceOptions,
+)
 
 from .schemas import (
     DomainPayload,
@@ -26,6 +36,32 @@ from .schemas import (
 
 DOMAIN = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
 SOURCE_RADIUS = 0.16
+CURRENT_LOOP_RADIUS = 1.0
+CURRENT_LOOP_CURRENT = 1.0
+CURRENT_LOOP_EXCLUSION_RADIUS = 0.16
+
+DEFAULT_TRACE_OPTIONS = TraceOptions(
+    max_arc_length=18.0,
+    max_step=0.09,
+    rtol=2.0e-6,
+    atol=1.0e-8,
+    null_threshold=1.0e-14,
+    output_step=0.045,
+    method="DOP853",
+)
+
+CURRENT_LOOP_TRACE_OPTIONS = TraceOptions(
+    max_arc_length=18.0,
+    max_step=0.09,
+    rtol=2.0e-6,
+    atol=1.0e-8,
+    null_threshold=1.0e-14,
+    output_step=0.045,
+    method="DOP853",
+    closure_tolerance=0.005,
+    closure_min_arc_length=0.6,
+    closure_tangent_cosine=0.99,
+)
 
 
 class _PlanarMagneticDipoleField(VectorField):
@@ -49,6 +85,30 @@ class _PlanarMagneticDipoleField(VectorField):
         return self._field.evaluate(embedded)[..., :2]
 
 
+class _PlanarCircularLoopField(VectorField):
+    """The invariant z=0 meridional plane of a y-axis circular loop."""
+
+    def __init__(self, field: CircularLoopField) -> None:
+        expected_normal = np.array((0.0, 1.0, 0.0))
+        if not np.array_equal(field.center, np.zeros(3)) or not np.array_equal(
+            field.normal, expected_normal
+        ):
+            raise ValueError("the z=0 meridional adapter requires a centered +y-axis loop")
+        self._field = field
+
+    @property
+    def dimension(self) -> int:
+        return 2
+
+    def evaluate(self, points: object) -> NDArray[np.float64]:
+        coordinates = np.asarray(points, dtype=float)
+        if coordinates.ndim == 0 or coordinates.shape[-1] != 2:
+            raise ValueError(f"points must have shape (..., 2); got {coordinates.shape}.")
+        embedded = np.zeros((*coordinates.shape[:-1], 3), dtype=float)
+        embedded[..., :2] = coordinates
+        return self._field.evaluate(embedded)[..., :2]
+
+
 @dataclass(frozen=True, slots=True)
 class _SceneModel:
     field: VectorField
@@ -56,12 +116,14 @@ class _SceneModel:
     exclusions: tuple[SphericalExclusion, ...]
     seeds: NDArray[np.float64]
     direction: TraceDirection
+    trace_options: TraceOptions
     scalar_label: str
     scalar_unit: str
     title: str
     field_model: str
     projection_note: str
     seed_mode: str
+    reflect_y_symmetric_domain_exits: bool = False
 
 
 def _default_sources(preset: str) -> list[SourceInput]:
@@ -161,7 +223,70 @@ def _magnetic_seeds(
     return np.concatenate(groups, axis=0)
 
 
+def _current_loop_seeds(total: int) -> NDArray[np.float64]:
+    """Cover distinct loop-flux contours symmetrically in the meridional plane."""
+
+    pair_count = total // 2
+    radii = np.linspace(0.12, 0.82, pair_count)
+    paired = np.zeros((2 * pair_count, 2), dtype=float)
+    paired[0::2, 0] = -radii
+    paired[1::2, 0] = radii
+    if total % 2 == 0:
+        return paired
+    axis_seed = np.array(((0.0, float(DOMAIN.lower[1]) + 1.0e-4),))
+    return np.concatenate((axis_seed, paired), axis=0)
+
+
 def _build_model(request: SceneRequest) -> _SceneModel:
+    if request.preset == "current_loop":
+        loop = CircularLoopField(
+            CURRENT_LOOP_CURRENT,
+            CURRENT_LOOP_RADIUS,
+            normal=(0.0, 1.0, 0.0),
+        )
+        wire_centers = np.array(
+            ((-CURRENT_LOOP_RADIUS, 0.0), (CURRENT_LOOP_RADIUS, 0.0)),
+            dtype=float,
+        )
+        markers = (
+            SourcePayload(
+                x=-CURRENT_LOOP_RADIUS,
+                y=0.0,
+                kind="wire_out",
+                strength=CURRENT_LOOP_CURRENT,
+                strength_unit="A",
+            ),
+            SourcePayload(
+                x=CURRENT_LOOP_RADIUS,
+                y=0.0,
+                kind="wire_into",
+                strength=CURRENT_LOOP_CURRENT,
+                strength_unit="A",
+            ),
+        )
+        return _SceneModel(
+            field=_PlanarCircularLoopField(loop),
+            sources=markers,
+            exclusions=(
+                SphericalExclusion(wire_centers, CURRENT_LOOP_EXCLUSION_RADIUS),
+            ),
+            seeds=_current_loop_seeds(request.density),
+            direction=TraceDirection.FORWARD,
+            trace_options=CURRENT_LOOP_TRACE_OPTIONS,
+            scalar_label="|B|",
+            scalar_unit="T",
+            title="圆形电流线圈的磁力线",
+            field_model="三维理想圆形电流线圈在 z=0 子午面上的限制",
+            projection_note=(
+                "z=0 子午面是该轴对称场的不变平面，所示曲线是真实三维磁力线。"
+            ),
+            seed_mode=(
+                "在圆环两侧的环内赤道段镜像等距覆盖播种；奇数预算另含轴线。"
+                "线密度不代表磁通或磁感应强度。"
+            ),
+            reflect_y_symmetric_domain_exits=True,
+        )
+
     inputs = list(
         _default_sources(request.preset) if request.sources is None else request.sources
     )
@@ -188,6 +313,7 @@ def _build_model(request: SceneRequest) -> _SceneModel:
             exclusions=(SphericalExclusion(centers, SOURCE_RADIUS),),
             seeds=seeds,
             direction=TraceDirection.FORWARD,
+            trace_options=DEFAULT_TRACE_OPTIONS,
             scalar_label="|E|",
             scalar_unit="V/m",
             title="电偶极子的电场线",
@@ -215,6 +341,7 @@ def _build_model(request: SceneRequest) -> _SceneModel:
             exclusions=(SphericalExclusion(centers, SOURCE_RADIUS),),
             seeds=_magnetic_seeds(centers, strengths, request.density),
             direction=TraceDirection.FORWARD,
+            trace_options=DEFAULT_TRACE_OPTIONS,
             scalar_label="|B|",
             scalar_unit="T",
             title="磁偶极子的磁力线",
@@ -232,6 +359,7 @@ def _build_model(request: SceneRequest) -> _SceneModel:
         exclusions=(),
         seeds=np.column_stack((x, y)),
         direction=TraceDirection.FORWARD,
+        trace_options=DEFAULT_TRACE_OPTIONS,
         scalar_label="|E|",
         scalar_unit="V/m",
         title="匀强电场",
@@ -274,19 +402,10 @@ def _sample_scalar(model: _SceneModel, resolution: int) -> ScalarPayload:
 
 
 def _trace_lines(model: _SceneModel) -> tuple[list[LinePayload], Counter[str]]:
-    options = TraceOptions(
-        max_arc_length=18.0,
-        max_step=0.09,
-        rtol=2.0e-6,
-        atol=1.0e-8,
-        null_threshold=1.0e-14,
-        output_step=0.045,
-        method="DOP853",
-    )
     tracer = FieldLineTracer(
         model.field,
         domain=DOMAIN,
-        options=options,
+        options=model.trace_options,
         exclusions=model.exclusions,
     )
     lines: list[LinePayload] = []
@@ -299,6 +418,17 @@ def _trace_lines(model: _SceneModel) -> tuple[list[LinePayload], Counter[str]]:
         terminations[branch.termination.value] += 1
         finite = np.all(np.isfinite(result.points), axis=1)
         points = result.points[finite]
+        if (
+            model.reflect_y_symmetric_domain_exits
+            and branch.termination is TerminationReason.DOMAIN_EXIT
+            and seed[1] == 0.0
+        ):
+            # Across the loop plane, (Bx, By)(x, -y) = (-Bx, By)(x, y).
+            # Reversing the reflected forward branch therefore preserves the
+            # displayed +B ordering while completing the missing half-line.
+            lower_to_seed = points[:0:-1].copy()
+            lower_to_seed[:, 1] *= -1.0
+            points = np.concatenate((lower_to_seed, points), axis=0)
         if points.shape[0] < 2:
             continue
         lines.append(
