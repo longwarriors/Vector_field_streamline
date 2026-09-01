@@ -170,6 +170,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 
 - `electric_dipole`
 - `magnetic_dipole`
+- `halbach_array`
 - `current_loop`
 - `uniform`
 
@@ -198,13 +199,21 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 | `preset` | 否 | `/api/presets` 返回的稳定标识符；默认 `electric_dipole` |
 | `density` | 否 | 种子总预算，整数范围 6–40，默认 18，不代表物理场强；每个参与播种的源至少分配 1 个种子 |
 | `resolution` | 否 | 两个方向共同使用的标量网格分辨率，整数范围 32–144 |
-| `sources` | 否 | 电偶极/磁偶极预设的 1–8 个自定义点源；若省略则使用预设源，显式空列表、未知字段以及固定的 `current_loop`/`uniform` 预设 override 会被拒绝 |
+| `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及固定的 `current_loop`/`uniform` 预设 override 会被拒绝 |
 
-`sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m。请求模型 `SourceInput.kind` 只接受 `positive`、`negative`、`dipole`、`uniform`；响应专用的 `wire_out`/`wire_into` 不能提交。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。磁偶极子的 `strength` 单位为 A·m²，符号表示当前固定 $y$ 方向偶极矩的正反向；0 表示允许的零偶极矩，只有全部偶极矩都为 0 时整个磁场才退化为零场。单位由预设决定，请求不得提交 `strength_unit`。
+`sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m，范围均为 $[-2.8,2.8]$。请求模型 `SourceInput.kind` 只接受 `positive`、`negative`、`dipole`、`uniform`；响应专用的 `wire_out`/`wire_into` 不能提交。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。单位由预设决定，请求不得提交 `strength_unit`。
+
+磁偶极子的 `strength` 单位为 A·m²，`angle_deg` 是从 $+x$ 朝 $+y$ 逆时针量取的面内角度，必须满足 $0\le\theta<360^\circ$。省略角度时使用 $90^\circ$，以兼容此前正强度指向 $+y$ 的行为；显式 `null`、非有限值和越界角度都非法。实际三维磁矩为
+
+$$
+\mathbf m=s\left(\cos\theta,\sin\theta,0\right),
+$$
+
+其中 $s$ 是有符号 `strength`，所以负值会把实际方向再翻转 $180^\circ$；$s=0$ 仍表示允许的零偶极矩。`angle_deg` 只能出现在 `dipole` 中，电荷即使提交 `null` 也会返回 422。这个参数化存在 $(s,\theta)$ 与 $(-s,\theta+180^\circ)$ 的等价表示，是为兼容 pre-1.0 已有的有符号强度契约而保留。
 
 服务端必须为密度、分辨率、源数量和数值范围设置上限，防止一次交互请求耗尽内存或 CPU。
 
-`density` 是一次场景请求的总种子预算，不是“每个源各放多少条”。电偶极预设只从非零正电荷出发，因此这些正电荷参与预算；磁偶极预设的每个偶极子都参与预算。若参与播种的源数超过 `density`，服务端返回 422，`detail` 会给出当前数量和所需最小值，例如 `electric_dipole 有 7 个正电荷参与播种，density 至少为 7`。预算充足时，每个播种源先得到 1 个种子，其余名额再按源强绝对值分配。圆环预设不把两个 wire 标记当作播种源：它在两侧环内赤道段按几何半径镜像覆盖，奇数预算再增加一条轴线，仍严格消耗 `density` 个种子；这不是等通量播种。响应始终满足 `len(lines) <= density` 与 `sum(termination_counts.values()) == density`；当每个种子都得到至少两个有限轨迹点时，前一个不等式取等号。若种子位于零场或非有限场等无法形成曲线的位置，终止计数仍会记录该次追踪，但 `lines` 会排除只有一个点的结果。
+`density` 是一次场景请求的总种子预算，不是“每个源各放多少条”。电偶极预设只从非零正电荷出发，因此这些正电荷参与预算；磁偶极和 Halbach 预设的每个偶极子都参与预算，包括强度为 0 的源。若参与播种的源数超过 `density`，服务端返回 422，`detail` 会给出当前数量和所需最小值，例如 `electric_dipole 有 7 个正电荷参与播种，density 至少为 7`。默认 Halbach 阵列有 8 个源，因此 `density` 至少为 8；浏览器在所有 POST 路径上预判预算，并把较小的滑块值自动抬到 8。预算充足时，每个播种源先得到 1 个种子，其余名额再按源强绝对值分配；非零磁偶极的播种半球随实际有符号磁矩一起旋转，零强度偶极没有物理磁矩轴，仍占一个种子预算并以其 `angle_deg` 作为约定播种轴；若全部强度均为 0，剩余预算在各源间均分。圆环预设不把两个 wire 标记当作播种源：它在两侧环内赤道段按几何半径镜像覆盖，奇数预算再增加一条轴线，仍严格消耗 `density` 个种子；这不是等通量播种。响应始终满足 `len(lines) <= density` 与 `sum(termination_counts.values()) == density`；当每个种子都得到至少两个有限轨迹点时，前一个不等式取等号。若种子位于零场或非有限场等无法形成曲线的位置，终止计数仍会记录该次追踪，但 `lines` 会排除只有一个点的结果。
 
 成功响应结构如下。为便于阅读，示意片段把网格缩成 $2\times2$，并只展示 18 条轨迹中的 1 条；实际端点接受的 `resolution` 不低于 32，数组会相应更长。
 
@@ -281,7 +290,9 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 
 #### `sources`
 
-源图层独立于标量网格。前端据 `kind` 选择符号或形状，并把 `strength` 与逐源 `strength_unit` 一同显示；不得从颜色像素反推源参数。电荷响应的单位为 `nC`，磁偶极矩响应的单位为 `A·m²`。
+源图层独立于标量网格。前端据 `kind` 选择符号或形状，并把 `strength` 与逐源 `strength_unit` 一同显示；不得从颜色像素反推源参数。电荷响应的单位为 `nC`，磁偶极矩响应的单位为 `A·m²`。`dipole` 响应总是显式返回规范范围内的 `angle_deg`；其他 kind 不返回该字段。前端画的是结合 `strength` 符号后的实际磁矩箭头，而不是只按参数角度画箭头。
+
+`halbach_array` 的默认响应包含 8 个等间距 `dipole`：位置沿 $x\in[-2.1,2.1]$ 排列，`strength=1 A·m²`，角度序列为 $0^\circ,90^\circ,180^\circ,270^\circ$ 并重复两次。它是理想点偶极近似的教学预设，只承诺有限阵列的一侧场增强，不等同于有限尺寸永磁体，也不声称弱侧严格为零。用户一旦增删、移动或旋转源，响应元数据会把场景称为“可编辑面内磁偶极子阵列”，不再把任意排列冒充标准 Halbach 几何。
 
 `current_loop` 固定返回两个只读标记：`wire_out` 画作 ⊙（电流出屏），`wire_into` 画作 ⊗（电流入屏）。两者是**同一个环形导体与 z=0 子午面的两个交点**，不是两根独立导线；二者的 `strength` 完全相同，表示同一个非负回路电流幅值，单位 `A`。电流方向只由 `kind` 承载，不使用一正一负的有符号电流。`strength_unit` 与 `wire_*` 都是只读响应元数据，不得混入后续 `SourceInput` 请求；前端也不得拖动或用键盘移动这两个固定标记。
 

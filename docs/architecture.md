@@ -102,11 +102,14 @@ Web 层把用户友好的预设名称转换成核心对象：
 ```text
 electric_dipole -> PointChargeField(批量异号电荷)
 magnetic_dipole -> MagneticDipoleField(...) 的 z=0 不变平面适配器
+halbach_array    -> 单个批量 MagneticDipoleField（默认八个点偶极源）的可编辑组合
 current_loop    -> CircularLoopField(...) 的 z=0 子午面适配器
 uniform         -> UniformField(...)
 ```
 
 `resolution` 控制标量背景采样；`density` 控制播种数量或间距。这两个参数不能互相代替。完整 JSON 契约见 [HTTP API](api.md#http-api)。
+
+磁偶极与 Halbach 场景都只把 HTTP 中的面内角度转换成三维磁矩，再复用核心的批量 `MagneticDipoleField`；Web 层不复制磁偶极公式。Halbach 默认几何由八个等间距点偶极组成，相邻方向转过 90°。用户编辑后它成为普通的可编辑面内偶极阵列，响应元数据也不再把任意排列冒充标准 Halbach 几何。
 
 圆环是三维理想细导线模型；二维 Web 追踪器使用它的真实不变子午面。三维环面排除管在该平面上的截面是两个圆盘，因此 Web 层传给二维追踪器的是两个 `SphericalExclusion`，而不是维数不匹配的 `ToroidalExclusion`。响应中的两个 wire 标记仅表示同一圆环与子午面的交点，不是两个独立场源。
 
@@ -118,7 +121,7 @@ uniform         -> UniformField(...)
 2. **曲线缓存**：场缓存键、种子、积分选项和终止政策；
 3. **显示缓存**：视口、色图、线宽、图层可见性和相机。
 
-改变显示状态不使前两层失效；改变播种只使曲线缓存失效；改变源强或源位置才使场缓存失效。
+改变显示状态不使前两层失效；改变播种只使曲线缓存失效；改变源集合、源强、源位置或偶极矩方向角会使场缓存失效。
 
 ## 扩展点
 

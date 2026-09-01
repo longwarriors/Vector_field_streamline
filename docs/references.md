@@ -33,6 +33,10 @@
 
 7. BIPM, [*The International System of Units (SI Brochure)*, 9th ed.](https://doi.org/10.59161/AUEZ1291)，以及[安培定义附录](https://www.bipm.org/documents/20126/41489676/SI-App2-ampere.pdf/0987a90e-051b-dd7f-827d-3f7b32751a61)。用于 SI 常数和 2019 年后 $\mu_0$ 的地位。
 
+8. J. C. Mallinson, [“One-Sided Fluxes—A Magnetic Curiosity?”](https://doi.org/10.1109/TMAG.1973.1067714), *IEEE Transactions on Magnetics* **9** (1973), 678–682。推导连续旋转磁化的理想单侧磁通；本项目的有限八点偶极阵列只是该思想的教学离散近似。
+
+9. K. Halbach, [“Design of Permanent Multipole Magnets with Oriented Rare Earth Cobalt Material”](https://doi.org/10.1016/0029-554X(80)90094-4), *Nuclear Instruments and Methods* **169** (1980), 1–10。定向永磁多极结构的经典设计论文；有限点偶极模型不等同于论文中的实际磁块几何。
+
 ## 数值积分与向量场可视化
 
 1. J. R. Dormand, P. J. Prince, [“A family of embedded Runge–Kutta formulae”](https://doi.org/10.1016/0771-050X(80)90013-3), *Journal of Computational and Applied Mathematics* **6** (1980), 19–26。

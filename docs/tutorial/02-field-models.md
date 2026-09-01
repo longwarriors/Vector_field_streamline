@@ -110,7 +110,28 @@ print(value)  # T
 
 浏览器把偶极矩和偶极子位置都放在 $z=0$ 平面内。这个平面的法向场分量为零，所以前端画到的曲线是真实三维磁力线留在该平面内的部分。
 
-浏览器 API 中磁偶极 `strength` 的单位是 A·m²，当前映射为 $y$ 方向偶极矩；它允许正、负和 0，分别表示方向、反向与零偶极矩。单源为 0 时退化为零场；多源场中某一个 0 只表示该源没有贡献。这与电荷 `kind` 的非零符号约束不同。
+浏览器 API 中磁偶极 `strength` 的单位是 A·m²，`angle_deg` 从 $+x$ 朝 $+y$ 逆时针量取。实际磁矩映射为
+
+$$
+\mathbf m=s(\cos\theta,\sin\theta,0),
+$$
+
+其中 $s$ 是有符号 `strength`。省略角度时取 $90^\circ$，因此兼容原来正强度沿 $+y$、负强度沿 $-y$ 的行为；负强度也等价于把显示的实际方向再翻转 $180^\circ$。强度 0 表示该源没有场贡献，但仍占一个播种源预算。这与电荷 `kind` 的非零符号约束不同。
+
+## 线性 Halbach 教学预设
+
+连续平面磁化若保持幅值不变而让方向随位置旋转，可以使两侧的场相长与相消，从而得到理想的单侧磁通结构；旋转方向决定哪一侧较弱。[^mallinson-one-sided] 实际分段阵列用有限个不同磁化方向近似连续旋转，Halbach 的永磁多极设计奠定了这类分段结构的工程基础。[^halbach-multipole]
+
+VectorViz 的 `halbach_array` 不是有限尺寸永磁体求解器，而是八个理想点磁偶极子的教学组合：源沿 $x\in[-2.1,2.1]$ 等距排列，强度均为 $1\ \mathrm{A\,m^2}$，角度按
+
+$$
+0^\circ,90^\circ,180^\circ,270^\circ,
+0^\circ,90^\circ,180^\circ,270^\circ
+$$
+
+旋转。有限长度、离散化和点偶极近似都会留下边缘泄漏，因此这里准确的说法是“$+y$ 一侧增强、$-y$ 一侧减弱”，不是弱侧严格为零。数值测试在避开源 mask 的两条对称采样带上比较 $\operatorname{mean}|\mathbf B|^2$；当前默认几何的强弱比约为 13.5，并以大于 8 作为留有边缘效应余量的回归门槛。场线仍采用覆盖播种，线条数量不能当作磁通。
+
+该预设允许增删、移动和旋转偶极子，便于观察排列被破坏后的变化。编辑后的场仍是严格计算的点偶极叠加，但不一定还是 Halbach 排列；API 元数据会相应改称“可编辑面内磁偶极子阵列”。
 
 ## 圆电流线圈：从积分模型到解析模型
 
@@ -257,6 +278,8 @@ vectors = field.evaluate(points)  # points.shape == vectors.shape == (..., D)
 [^openstax-electric-field]: OpenStax, [*University Physics*, Vol. 2, §5.4 Electric Field](https://openstax.org/books/university-physics-volume-2/pages/5-4-electric-field)，点电荷场和叠加原理。
 [^feynman-electric-dipole]: R. P. Feynman, R. B. Leighton, M. Sands, [Vol. II, Ch. 6, §6-2](https://www.feynmanlectures.caltech.edu/II_06.html)，电偶极远场。
 [^feynman-magnetic-dipole]: R. P. Feynman, R. B. Leighton, M. Sands, [Vol. II, Ch. 14](https://www.feynmanlectures.caltech.edu/II_14.html)，电流环、Biot–Savart 定律与磁偶极近似。
+[^mallinson-one-sided]: J. C. Mallinson, [“One-Sided Fluxes—A Magnetic Curiosity?”](https://doi.org/10.1109/TMAG.1973.1067714), *IEEE Transactions on Magnetics* 9 (1973), 678–682。论文直接求解恒幅旋转磁化的平面结构，并说明旋转方向如何选择弱场侧。
+[^halbach-multipole]: K. Halbach, [“Design of Permanent Multipole Magnets with Oriented Rare Earth Cobalt Material”](https://doi.org/10.1016/0029-554X(80)90094-4), *Nuclear Instruments and Methods* 169 (1980), 1–10。
 [^openstax-current-loop]: OpenStax, [§12.1 Biot–Savart Law](https://openstax.org/books/university-physics-volume-2/pages/12-1-the-biot-savart-law) 与 [§12.4 Magnetic Field of a Current Loop](https://openstax.org/books/university-physics-volume-2/pages/12-4-magnetic-field-of-a-current-loop)。
 [^nasa-loop]: J. C. Simpson et al., [“Simple Analytic Expressions for the Magnetic Field of a Circular Current Loop”](https://ntrs.nasa.gov/citations/20010038494), NASA Technical Reports Server, 2001。
 [^scipy-elliptic]: SciPy，[`ellipk`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipk.html)、[`ellipe`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipe.html) 与 [`ellipkm1`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipkm1.html)；前两者使用参数 $m$，后者直接使用 $p=1-m$。
