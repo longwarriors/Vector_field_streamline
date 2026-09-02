@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-02
+
+### Changed
+
+- 单磁偶极预设的 `seed_mode` 按签字决定从 `feature` 改为 `coverage`：它与默认 Halbach 一样是在选定曲线上等距覆盖；`feature` 枚举值保留给将来的特征播种。
+- 文档明确核心奇点政策：`PointChargeField`、`MagneticDipoleField` 与 `CircularLoopField` 的奇点集合只由源几何决定，零强度源同样返回 `NaN`；零强度源在场景层构建场之前剔除。
+
+### Added
+
+- 架构测试验证导入科学核心不会加载 `vectorviz.web`；播种规划器与响应模型的参数校验分支补齐测试。
+
 ## [0.3.0] - 2026-09-02
 
 ### Added
@@ -57,7 +68,8 @@
 - `density` 定义为整个场景的种子总预算，并在服务端与浏览器提交前共同校验。
 - 场景元数据区分真实不变平面场线与投影流线，并公开播种说明和终止统计。
 
-[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/longwarriors/Vector_field_streamline/tree/v0.2.1

@@ -1618,7 +1618,7 @@ wheels = [
 
 [[package]]
 name = "vector-field-streamline"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },

@@ -148,7 +148,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 ```json
 {
   "status": "ok",
-  "version": "0.3.0"
+  "version": "0.3.1"
 }
 ```
 
