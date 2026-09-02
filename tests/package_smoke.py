@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from importlib.metadata import version
 from pathlib import Path
 
 
@@ -15,9 +16,10 @@ def main() -> None:
         try:
             os.chdir(temporary_directory)
 
-            from vectorviz import FieldLineTracer, UniformField
+            from vectorviz import FieldLineTracer, UniformField, __version__
             from vectorviz.web.app import STATIC_DIR, create_app
 
+            assert version("vector-field-streamline") == __version__
             assert FieldLineTracer.__module__ == "vectorviz.tracing"
             assert UniformField.__module__ == "vectorviz.fields"
             for asset in (
@@ -29,7 +31,9 @@ def main() -> None:
                 "styles.css",
             ):
                 assert Path(STATIC_DIR, asset).is_file()
-            assert create_app().title == "VectorViz API"
+            app = create_app()
+            assert app.title == "VectorViz API"
+            assert app.version == __version__
         finally:
             os.chdir(original_directory)
 

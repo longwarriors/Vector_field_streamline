@@ -686,11 +686,20 @@ def client() -> TestClient:
         yield test_client
 
 
-def test_health_and_preset_endpoints(client: TestClient) -> None:
+def test_health_reports_runtime_version(client: TestClient) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json() == {"status": "ok", "version": __version__}
 
+
+def test_openapi_reports_runtime_version(client: TestClient) -> None:
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    assert response.json()["info"]["version"] == __version__
+
+
+def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
     presets = client.get("/api/presets")
     assert presets.status_code == 200
     payload = presets.json()

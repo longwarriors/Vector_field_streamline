@@ -49,6 +49,7 @@ nav:
   - 参考资料: references.md
   - API 参考: api.md
   - 开发指南: development.md
+  - 开发路线: roadmap.md
 
 plugins:
   - search:
