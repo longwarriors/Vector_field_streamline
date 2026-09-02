@@ -64,6 +64,8 @@ vectors = field.evaluate(points)
 
 所有物理场内部应采用一致单位。输入源参数的单位与坐标系不得只存在于图标题里。
 
+奇点集合只由源几何决定：`PointChargeField` 与 `MagneticDipoleField` 在源位置、`CircularLoopField` 在导线上都返回显式 `NaN`，即使该源的电荷、磁矩或电流为 0。零强度源在 Web 场景层构建场之前就被剔除；核心不会把源点软化成普通采样点。
+
 #### `CircularLoopField`
 
 ```python
@@ -226,7 +228,7 @@ $$
 五个预设的策略分别是：
 
 - 电荷与自定义多磁偶极使用逐源几何覆盖，`seed_mode: "coverage"`；
-- 单个 active 磁偶极沿随参数角度旋转的赤道线按距离覆盖并双向追踪，`seed_mode: "feature"`；负强度会反转实际磁矩，但不会改变同一条赤道几何；
+- 单个 active 磁偶极沿随参数角度旋转的赤道线按距离等距覆盖并双向追踪，`seed_mode: "coverage"`；负强度会反转实际磁矩，但不会改变同一条赤道几何；
 - 默认 Halbach 在 $x\in[-2.1,2.1]$、$y=\pm0.45$ m 的两条平行轨道上等距覆盖并双向追踪；上轨分到 $\lceil density/2\rceil$ 个 job，下轨分到 $\lfloor density/2\rfloor$ 个，`seed_mode: "coverage"`；
 - 圆环在环内赤道段调用公开的 `CircularLoopField.flux_function()`，以求根方式选择等 $\psi$ 的镜像轮廓；奇数预算再增加一条轴线特征线，整体 `seed_mode: "equal_flux"`；
 - 匀强场仍从左边界等距覆盖播种，`seed_mode: "coverage"`。
@@ -326,7 +328,7 @@ $$
 
 `projection_note` 不能省略。它说明曲线是二维真实场线、投影流线还是三维曲线切片。定义见[二维切片何时包含真实场线](tutorial/04-slices-and-validation.md#true-vs-projected)。
 
-`field_model`、`seed_mode`、`seed_description` 与各项计数都是前端直接展示的科学解释。`seed_mode` 是 `coverage`、`equal_flux`、`feature` 三值枚举；`seed_description` 是不可为空的具体说明。兼容客户端对未来未知 mode 应原样显示，而不是拒绝场景；v0.3.0 前缓存的自由文本 `seed_mode` 在缺少说明时也可原样展示。终止原因使用 `TerminationReason` 的字符串值；客户端可翻译已知值，但遇到未知键必须原样显示。
+`field_model`、`seed_mode`、`seed_description` 与各项计数都是前端直接展示的科学解释。`seed_mode` 是 `coverage`、`equal_flux`、`feature` 三值枚举；`seed_description` 是不可为空的具体说明。当前没有预设使用 `feature`，它为将来从临界点、分离线等特征位置出发的策略保留。兼容客户端对未来未知 mode 应原样显示，而不是拒绝场景；v0.3.0 前缓存的自由文本 `seed_mode` 在缺少说明时也可原样展示。终止原因使用 `TerminationReason` 的字符串值；客户端可翻译已知值，但遇到未知键必须原样显示。
 
 `termination_counts` 表示所有 job 的末端/主分支原因，和恒等于 `density`；`start_termination_counts` 只汇总 `BOTH` job 的起点端原因，和等于双向 job 数。`suppressed_count` 是已计算但因电荷源对已有正向代表而未画出的可渲染线数，`rendered_line_count` 是实际响应线数。抑制不从尝试预算或终止统计中扣除。
 

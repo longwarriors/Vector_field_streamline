@@ -850,7 +850,7 @@ def test_zero_strength_dipoles_are_markers_but_not_active_sources() -> None:
     np.testing.assert_allclose(offsets[:, 0], np.zeros(request.density), atol=2.0e-15)
     assert np.all(np.linalg.norm(offsets, axis=1) >= SOURCE_RADIUS + 2.0e-3)
     assert all(job.direction is web_scene.TraceDirection.BOTH for job in model.trace_jobs)
-    assert model.seed_mode is SeedMode.FEATURE
+    assert model.seed_mode is SeedMode.COVERAGE
     assert np.all(np.isfinite(model.field.evaluate(zero_position)))
 
 

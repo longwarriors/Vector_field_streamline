@@ -350,9 +350,9 @@ def _build_model(request: SceneRequest) -> _SceneModel:
                     SOURCE_SEED_RADIUS,
                 )
             )
-            seed_mode = SeedMode.FEATURE
+            seed_mode = SeedMode.COVERAGE
             seed_description = (
-                "沿随磁矩旋转的赤道线双向覆盖播种；线密度默认不代表磁感应强度。"
+                "沿随磁矩旋转的赤道线等距覆盖播种并双向追踪；线密度默认不代表磁感应强度。"
             )
         else:
             _require_seed_budget(

@@ -194,3 +194,28 @@ def test_composite_field_rejects_empty_invalid_and_ambiguous_inputs() -> None:
 def test_field_contract_rejects_wrong_coordinate_dimension(field: object) -> None:
     with pytest.raises(ValueError, match="shape"):
         field.evaluate((1.0,))  # type: ignore[union-attr]
+
+
+def test_source_geometry_is_singular_regardless_of_strength() -> None:
+    """Zero-strength point sources keep their explicit NaN at the source point.
+
+    The scene layer removes zero-strength sources before building a field; the
+    core deliberately never turns a zero charge or moment into a regular sample,
+    matching the zero-current circular loop policy.
+    """
+
+    charges = PointChargeField(
+        (0.0, 1.0),
+        ((0.0, 0.0), (2.0, 0.0)),
+        permittivity=1.0 / (4.0 * np.pi),
+    )
+    dipoles = MagneticDipoleField(
+        ((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        ((0.0, 0.0, 0.0), (0.0, 0.0, 2.0)),
+        permeability=4.0 * np.pi,
+    )
+
+    assert np.all(np.isnan(charges.evaluate((0.0, 0.0))))
+    np.testing.assert_allclose(charges.evaluate((1.0, 0.0)), (-1.0, 0.0))
+    assert np.all(np.isnan(dipoles.evaluate((0.0, 0.0, 0.0))))
+    np.testing.assert_allclose(dipoles.evaluate((0.0, 0.0, 1.0)), (0.0, 0.0, 2.0))

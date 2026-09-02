@@ -49,7 +49,10 @@ class PointChargeField(VectorField):
     a single coordinate vector or an ``(n, dimension)`` array. A scalar charge
     is broadcast over multiple positions. Evaluation at a source position is
     returned as ``NaN`` because the ideal field is undefined there; the model
-    never hides that singularity with softening.
+    never hides that singularity with softening. The singular set is fixed by
+    the source geometry, not by the charge value: a zero charge keeps its
+    ``NaN`` at the source point, so callers that want a zero source to vanish
+    must drop it before building the field.
     """
 
     def __init__(
@@ -122,7 +125,13 @@ class PointChargeField(VectorField):
 
 
 class MagneticDipoleField(VectorField):
-    r"""Magnetic flux density of one or more ideal point dipoles in 3D."""
+    r"""Magnetic flux density of one or more ideal point dipoles in 3D.
+
+    Each dipole position is an explicit ``NaN`` singularity regardless of its
+    moment, matching :class:`PointChargeField` and :class:`CircularLoopField`:
+    the source geometry defines the singular set, not the strength. Remove a
+    zero-moment dipole before constructing the field if it should not exist.
+    """
 
     def __init__(
         self,
