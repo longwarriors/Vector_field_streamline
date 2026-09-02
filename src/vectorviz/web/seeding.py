@@ -219,7 +219,7 @@ def _ray_limit(
             limits.append(float((high - coordinate) / component))
         elif component < 0.0:
             limits.append(float((low - coordinate) / component))
-    if not limits:
+    if not limits:  # pragma: no cover - perpendicular unit vectors are never zero
         raise ValueError("equatorial direction must be nonzero")
     return min(limits)
 
@@ -313,7 +313,7 @@ def _loop_flux_at_radius(loop: CircularLoopField, radius: float) -> float:
     point = np.array(loop.center, dtype=float, copy=True)
     point[0] += radius
     flux = float(np.asarray(loop.flux_function(point)))
-    if not np.isfinite(flux):
+    if not np.isfinite(flux):  # pragma: no cover - finite off the wire by construction
         raise ValueError("loop flux must be finite throughout the seed interval")
     return flux
 
@@ -360,7 +360,7 @@ def current_loop_equal_flux_jobs(
 
     inner_flux = _loop_flux_at_radius(loop, inner)
     outer_flux = _loop_flux_at_radius(loop, outer)
-    if inner_flux == outer_flux:
+    if inner_flux == outer_flux:  # pragma: no cover - psi is strictly monotonic on the equator
         raise ValueError("loop flux must vary across the seed interval")
     targets = np.linspace(inner_flux, outer_flux, pair_count)
     for target in targets:

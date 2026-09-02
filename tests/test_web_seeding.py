@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, dataclass
 
 import numpy as np
 import pytest
@@ -411,3 +411,171 @@ def test_every_planner_returns_exactly_the_finite_requested_budget(jobs: object)
 
     assert len(planned) == 8
     assert np.all(np.isfinite(_seed_array(planned)))
+
+
+@dataclass
+class _UnvalidatedSource:
+    """A source-like object that bypasses request validation on purpose."""
+
+    x: float
+    y: float
+    kind: str
+    strength: float
+    angle_deg: float | None = None
+
+
+_DOMAIN = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
+_DIPOLE = SourceInput(x=0.0, y=0.0, kind="dipole", strength=1.0, angle_deg=90.0)
+_LOOP = CircularLoopField(1.0, 1.0, normal=(0.0, 1.0, 0.0))
+
+
+@pytest.mark.parametrize(
+    ("factory", "exception", "match"),
+    [
+        (lambda: TraceJob((0.0, np.nan), TraceDirection.FORWARD), ValueError, "two finite"),
+        (lambda: TraceJob((0.0, 0.0, 0.0), TraceDirection.FORWARD), ValueError, "two finite"),
+        (lambda: TraceJob((0.0, 0.0), TraceDirection.FORWARD, True), TypeError, "integer or None"),
+        (lambda: TraceJob((0.0, 0.0), TraceDirection.FORWARD, -1), ValueError, "non-negative"),
+        (lambda: allocate_seed_counts((1.0,), True), TypeError, "must be an integer"),
+        (lambda: allocate_seed_counts((1.0,), 0), ValueError, "must be positive"),
+        (lambda: halbach_rail_jobs("4"), TypeError, "must be an integer"),
+        (lambda: halbach_rail_jobs(4, x_extent=np.inf), ValueError, "finite positive"),
+        (
+            lambda: electric_source_jobs(
+                [(0, SourceInput(x=0.0, y=0.0, kind="positive"))], 4, 0.0
+            ),
+            ValueError,
+            "finite positive",
+        ),
+        (
+            lambda: electric_source_jobs(
+                [(True, SourceInput(x=0.0, y=0.0, kind="positive"))], 4, 0.2
+            ),
+            TypeError,
+            "source index must be an integer",
+        ),
+        (
+            lambda: electric_source_jobs(
+                [("0", SourceInput(x=0.0, y=0.0, kind="positive"))], 4, 0.2
+            ),
+            TypeError,
+            "source index must be an integer",
+        ),
+        (
+            lambda: electric_source_jobs(
+                [(-1, SourceInput(x=0.0, y=0.0, kind="positive"))], 4, 0.2
+            ),
+            ValueError,
+            "source index must be non-negative",
+        ),
+        (lambda: electric_source_jobs([], 4, 0.2), ValueError, "at least one seeding source"),
+        (
+            lambda: electric_source_jobs(
+                [(0, SourceInput(x=0.0, y=0.0, kind="dipole"))], 4, 0.2
+            ),
+            ValueError,
+            "matching nonzero kind",
+        ),
+        (
+            lambda: electric_source_jobs(
+                [(0, _UnvalidatedSource(np.nan, 0.0, "positive", 1.0))], 4, 0.2
+            ),
+            ValueError,
+            "must be finite",
+        ),
+        (
+            lambda: magnetic_source_jobs(
+                [(0, SourceInput(x=0.0, y=0.0, kind="dipole", strength=0.0))], 4, 0.2
+            ),
+            ValueError,
+            "nonzero dipoles",
+        ),
+        (
+            lambda: magnetic_source_jobs(
+                [(0, _UnvalidatedSource(0.0, 0.0, "dipole", 1.0, None))], 4, 0.2
+            ),
+            ValueError,
+            "angle_deg must be finite",
+        ),
+        (
+            lambda: single_dipole_equatorial_jobs(0, _DIPOLE, 4, _DOMAIN, 0.2, domain_inset=-1.0),
+            ValueError,
+            "domain_inset",
+        ),
+        (
+            lambda: single_dipole_equatorial_jobs(0, _DIPOLE, 4, Domain((0.0,), (1.0,)), 0.2),
+            ValueError,
+            "two-dimensional",
+        ),
+        (
+            lambda: single_dipole_equatorial_jobs(
+                0, SourceInput(x=0.0, y=0.0, kind="dipole", strength=0.0), 4, _DOMAIN, 0.2
+            ),
+            ValueError,
+            "nonzero dipole",
+        ),
+        (
+            lambda: single_dipole_equatorial_jobs(
+                0, _UnvalidatedSource(0.0, 0.0, "dipole", 1.0, None), 4, _DOMAIN, 0.2
+            ),
+            ValueError,
+            "angle_deg must be finite",
+        ),
+        (
+            lambda: single_dipole_equatorial_jobs(0, _DIPOLE, 4, _DOMAIN, 0.2, domain_inset=3.0),
+            ValueError,
+            "no seedable domain",
+        ),
+        (
+            lambda: single_dipole_equatorial_jobs(
+                0,
+                SourceInput(x=2.8, y=0.0, kind="dipole"),
+                4,
+                Domain((-1.0, -1.0), (1.0, 1.0)),
+                0.2,
+            ),
+            ValueError,
+            "inside the inset domain",
+        ),
+        (
+            lambda: single_dipole_equatorial_jobs(
+                0, SourceInput(x=2.8, y=0.0, kind="dipole", angle_deg=90.0), 4, _DOMAIN, 0.2
+            ),
+            ValueError,
+            "extend beyond seed_radius",
+        ),
+        (lambda: current_loop_equal_flux_jobs(object(), 4, -2.9), TypeError, "CircularLoopField"),
+        (lambda: current_loop_equal_flux_jobs(_LOOP, 4, np.nan), ValueError, "axis_y must be finite"),
+        (
+            lambda: current_loop_equal_flux_jobs(_LOOP, 4, -2.9, inner_radius=0.9, outer_radius=0.5),
+            ValueError,
+            "inner_radius < outer_radius",
+        ),
+        (
+            lambda: current_loop_equal_flux_jobs(
+                CircularLoopField(1.0, 1.0, normal=(0.0, 0.0, 1.0)), 4, -2.9
+            ),
+            ValueError,
+            "parallel to the web y-axis",
+        ),
+    ],
+)
+def test_seed_planners_reject_invalid_inputs(
+    factory: object, exception: type[Exception], match: str
+) -> None:
+    with pytest.raises(exception, match=match):
+        factory()  # type: ignore[operator]
+
+
+def test_single_seed_budgets_fall_back_to_one_deterministic_job() -> None:
+    dipole = SourceInput(x=1.0, y=0.0, kind="dipole", strength=1.0, angle_deg=90.0)
+
+    equatorial = single_dipole_equatorial_jobs(0, dipole, 1, _DOMAIN, 0.2)
+    loop = current_loop_equal_flux_jobs(_LOOP, 1, -2.9)
+
+    # The longer -x ray receives the only equatorial seed; the loop keeps its axis job.
+    assert len(equatorial) == 1
+    assert equatorial[0].seed[0] < 1.0
+    assert equatorial[0].direction is TraceDirection.BOTH
+    assert len(loop) == 1
+    assert loop[0].seed == (0.0, -2.9)

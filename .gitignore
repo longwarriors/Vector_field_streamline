@@ -13,3 +13,5 @@ dist/
 site/
 .idea/
 .codex-tmp/
+.claude/settings.local.json
+.claude/worktrees/

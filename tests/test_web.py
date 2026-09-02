@@ -8,6 +8,7 @@ import re
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -1865,3 +1866,54 @@ def test_cli_passes_server_options_to_uvicorn(
         "reload": expected_reload,
         "factory": expected_reload,
     }
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"kind": "dipole", "strength_unit": "nC", "angle_deg": 90.0},
+        {"kind": "dipole", "strength_unit": "A·m²", "angle_deg": None},
+        {"kind": "positive", "angle_deg": 10.0},
+        {"kind": "positive", "strength_unit": "A·m²"},
+        {"kind": "positive", "strength": -1.0},
+        {"kind": "negative", "strength": 1.0},
+        {"kind": "wire_out", "strength_unit": "nC"},
+        {"kind": "wire_into", "strength_unit": "A", "strength": -1.0},
+    ],
+)
+def test_source_payload_rejects_kind_unit_and_sign_mismatches(update: dict[str, object]) -> None:
+    payload: dict[str, object] = {
+        "x": 0.0,
+        "y": 0.0,
+        "kind": "positive",
+        "strength": 1.0,
+        "strength_unit": "nC",
+    }
+    payload.update(update)
+
+    with pytest.raises(ValueError):
+        SourcePayload.model_validate(payload)
+
+
+def test_domain_payload_rejects_inverted_bounds() -> None:
+    with pytest.raises(ValueError, match="strictly less"):
+        web_schemas.DomainPayload(
+            x=(1.0, -1.0),
+            y=(-1.0, 1.0),
+            coordinate_system="cartesian",
+            unit="m",
+        )
+
+
+def test_source_input_after_validator_guards_attribute_based_inputs() -> None:
+    accepted = SourceInput.model_validate(
+        SimpleNamespace(x=0.0, y=0.0, kind="positive", strength=1.0, angle_deg=None),
+        from_attributes=True,
+    )
+    assert accepted == SourceInput(x=0.0, y=0.0, kind="positive")
+
+    with pytest.raises(ValueError, match="only valid for dipole"):
+        SourceInput.model_validate(
+            SimpleNamespace(x=0.0, y=0.0, kind="positive", strength=1.0, angle_deg=5.0),
+            from_attributes=True,
+        )
