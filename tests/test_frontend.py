@@ -55,8 +55,12 @@ def _browser_scene() -> dict[str, object]:
             "title": "Browser fixture",
             "projection_note": "Browser semantic fixture",
             "field_model": "test",
-            "seed_mode": "test",
+            "seed_mode": "coverage",
+            "seed_description": "Fixture coverage around active sources.",
             "termination_counts": {"domain_exit": 1},
+            "start_termination_counts": {},
+            "suppressed_count": 0,
+            "rendered_line_count": 1,
         },
     }
 
@@ -115,7 +119,8 @@ def _browser_loop_scene() -> dict[str, object]:
             "title": "Current loop fixture",
             "projection_note": "Invariant meridional plane",
             "field_model": "test loop",
-            "seed_mode": "test coverage",
+            "seed_mode": "equal_flux",
+            "seed_description": "Fixture equal-ψ loop seeds.",
         }
     )
     return scene
@@ -144,7 +149,8 @@ def _browser_halbach_scene(count: int = 8) -> dict[str, object]:
             "title": "Halbach fixture",
             "projection_note": "Eight editable in-plane dipoles",
             "field_model": "test Halbach",
-            "seed_mode": "one seed group per dipole",
+            "seed_mode": "coverage",
+            "seed_description": "Fixture two-rail coverage seeds.",
         }
     )
     return scene
@@ -889,6 +895,47 @@ def test_current_loop_odd_density_is_submitted_from_browser(
 
 
 @pytest.mark.browser
+def test_electric_plus_one_minus_five_override_does_not_raise_density(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    scene["sources"] = [
+        {"x": -0.8, "y": 0.0, "kind": "positive", "strength": 1.0, "strength_unit": "nC"},
+        {"x": 0.8, "y": 0.0, "kind": "negative", "strength": -5.0, "strength_unit": "nC"},
+    ]
+    requests: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        body = route.request.post_data_json
+        requests.append(body)
+        response_scene = json.loads(json.dumps(scene))
+        if isinstance(body.get("sources"), list):
+            response_scene["sources"] = [
+                {**source, "strength_unit": "nC"} for source in body["sources"]
+            ]
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(response_scene))
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    page.locator("#density").evaluate(
+        "input => { input.value = '6'; input.dispatchEvent(new Event('input', {bubbles: true})); }"
+    )
+    first_x = page.locator('.coordinate-field input[data-source-field="x"]').first
+    first_x.evaluate("input => { input.value = '-0.9'; }")
+    with page.expect_request("**/api/scene") as override_request:
+        first_x.dispatch_event("change")
+
+    body = override_request.value.post_data_json
+    assert body["density"] == 6
+    assert [source["strength"] for source in body["sources"]] == [1, -5]
+    expect(page.locator("#density")).to_have_value("6")
+    assert page_errors == []
+
+
+@pytest.mark.browser
 def test_frontend_loads_presets_before_initial_scene(
     browser_page: tuple[Page, list[str]],
     frontend_url: str,
@@ -971,16 +1018,71 @@ def test_frontend_displays_seed_mode_and_termination_counts(
     metadata.update(
         {
             "field_model": "finite-volume fixture model",
-            "seed_mode": "free-form fixture seed policy",
+            "seed_mode": "equal_flux",
+            "seed_description": "Equal-flux fixture description from the server.",
             "termination_counts": {"domain_exit": 3, "future_reason": 2},
+            "start_termination_counts": {"exclusion_hit": 4, "future_start": 1},
+            "suppressed_count": 2,
+            "rendered_line_count": 1,
         }
     )
     _open_ready_scene(page, frontend_url, scene)
 
     expect(page.locator("#field-model")).to_have_text("finite-volume fixture model")
-    expect(page.locator("#seed-mode")).to_have_text("free-form fixture seed policy")
+    expect(page.locator("#seed-mode")).to_have_text("等通量播种")
+    expect(page.locator("#seed-description")).to_have_text(
+        "Equal-flux fixture description from the server."
+    )
     expect(page.locator("#termination-counts")).to_contain_text("离开计算域 3")
     expect(page.locator("#termination-counts")).to_contain_text("future_reason 2")
+    expect(page.locator("#start-termination-counts")).to_contain_text("命中排除区 4")
+    expect(page.locator("#start-termination-counts")).to_contain_text("future_start 1")
+    expect(page.locator("#rendered-line-count")).to_have_text("1")
+    expect(page.locator("#suppressed-count")).to_have_text("2")
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_frontend_unknown_seed_mode_falls_back_to_raw_token(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    metadata = scene["metadata"]
+    assert isinstance(metadata, dict)
+    metadata.update(
+        {
+            "seed_mode": "future_flux_v2",
+            "seed_description": "A future server-owned seeding description.",
+        }
+    )
+
+    _open_ready_scene(page, frontend_url, scene)
+
+    expect(page.locator("#seed-mode")).to_have_text("future_flux_v2")
+    expect(page.locator("#seed-description")).to_have_text(
+        "A future server-owned seeding description."
+    )
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_frontend_accepts_legacy_free_text_seed_mode_without_description(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    metadata = scene["metadata"]
+    assert isinstance(metadata, dict)
+    metadata["seed_mode"] = "旧缓存：从正电荷排除面覆盖播种。"
+    metadata.pop("seed_description")
+
+    _open_ready_scene(page, frontend_url, scene)
+
+    expect(page.locator("#seed-mode")).to_have_text("旧缓存：从正电荷排除面覆盖播种。")
+    expect(page.locator("#seed-description")).to_have_text("—")
     assert page_errors == []
 
 
@@ -1008,6 +1110,7 @@ def test_frontend_ignores_unknown_additive_scene_fields(
     domain["future_domain_field"] = True
     metadata["future_metadata_field"] = [1, 2, 3]
     lines[0]["future_line_field"] = "accepted"
+    lines[0]["start_termination"] = "future_start_reason"
     sources[0]["future_source_field"] = "accepted"
 
     _open_ready_scene(page, frontend_url, scene)
@@ -1048,6 +1151,11 @@ def test_frontend_rejects_scalar_mask_value_mismatch(
         "nonpositive log vmin",
         "missing lines",
         "missing sources",
+        "missing start termination counts",
+        "invalid suppressed count",
+        "missing rendered count",
+        "rendered count mismatch",
+        "known seed mode missing description",
     ],
 )
 def test_frontend_rejects_missing_or_invalid_required_scene_fields(
@@ -1058,7 +1166,9 @@ def test_frontend_rejects_missing_or_invalid_required_scene_fields(
     page, page_errors = browser_page
     scene = _browser_scene()
     scalar = scene["scalar"]
+    metadata = scene["metadata"]
     assert isinstance(scalar, dict)
+    assert isinstance(metadata, dict)
     if invalid_case == "missing vmin":
         scalar.pop("vmin")
     elif invalid_case == "non-increasing bounds":
@@ -1067,8 +1177,18 @@ def test_frontend_rejects_missing_or_invalid_required_scene_fields(
         scalar.update({"scale": "log", "vmin": 0.0})
     elif invalid_case == "missing lines":
         scene.pop("lines")
-    else:
+    elif invalid_case == "missing sources":
         scene.pop("sources")
+    elif invalid_case == "missing start termination counts":
+        metadata.pop("start_termination_counts")
+    elif invalid_case == "invalid suppressed count":
+        metadata["suppressed_count"] = -1
+    elif invalid_case == "missing rendered count":
+        metadata.pop("rendered_line_count")
+    elif invalid_case == "rendered count mismatch":
+        metadata["rendered_line_count"] = 2
+    else:
+        metadata.pop("seed_description")
     _route_scene(page, scene)
     page.goto(frontend_url)
 
@@ -1432,6 +1552,19 @@ def test_source_control_module_encodes_angle_budget_and_request_contract(
               {kind: 'negative'},
               {kind: 'positive'},
             ]),
+            signedStrengthSeedCount: controls.seedingSourceCount('electric_dipole', [
+              {kind: 'positive', strength: 1},
+              {kind: 'negative', strength: -5},
+            ]),
+            defaultElectricSeedCount: controls.seedingSourceCount(
+              'electric_dipole', null,
+            ),
+            defaultMagneticSeedCount: controls.seedingSourceCount(
+              'magnetic_dipole', null,
+            ),
+            defaultHalbachSeedCount: controls.seedingSourceCount(
+              'halbach_array', null,
+            ),
             nonzeroDipoleSeedCount: controls.seedingSourceCount('magnetic_dipole', [
               {kind: 'dipole', strength: 0},
               {kind: 'dipole', strength: -0},
@@ -1535,7 +1668,11 @@ def test_source_control_module_encodes_angle_budget_and_request_contract(
         "charge": {"x": 2.8, "y": -2.8, "kind": "positive", "strength": 1},
         "reversedMoment": 210,
         "seedCount": 8,
-        "electricSeedCount": 2,
+        "electricSeedCount": 3,
+        "signedStrengthSeedCount": 2,
+        "defaultElectricSeedCount": 2,
+        "defaultMagneticSeedCount": 1,
+        "defaultHalbachSeedCount": 0,
         "nonzeroDipoleSeedCount": 1,
         "zeroDipoleIsActive": False,
         "zeroChargeIsActive": True,
@@ -1590,14 +1727,16 @@ def test_halbach_sources_are_editable_but_cannot_bypass_api_contracts(
     page.goto(frontend_url)
     expect(page.locator("#connection-label")).to_have_text("已同步")
 
-    page.locator("#density").evaluate("input => { input.value = '6'; }")
+    page.locator("#density").evaluate(
+        "input => { input.value = '6'; input.dispatchEvent(new Event('input', {bubbles: true})); }"
+    )
     page.locator("#preset").select_option("halbach_array")
     expect(page.locator("#scene-title")).to_have_text("Halbach fixture")
-    assert requests[-1]["density"] == 8
+    assert requests[-1]["density"] == 6
     assert "sources" not in requests[-1]
-    expect(page.locator("#density")).to_have_value("8")
-    expect(page.locator("#density-output")).to_have_text("8")
-    expect(page.locator("#source-status")).to_contain_text("8 个播种源")
+    expect(page.locator("#density")).to_have_value("6")
+    expect(page.locator("#density-output")).to_have_text("6")
+    expect(page.locator("#source-status")).to_have_text("")
     expect(page.locator(".source-editor")).to_have_count(8)
     expect(page.locator(".source-label")).to_have_text(
         [f"磁偶极子 {index}" for index in range(1, 9)]
@@ -1609,7 +1748,19 @@ def test_halbach_sources_are_editable_but_cannot_bypass_api_contracts(
     with page.expect_request("**/api/scene") as unchanged_request:
         page.locator("#run-button").click()
     assert "sources" not in unchanged_request.value.post_data_json
+    assert unchanged_request.value.post_data_json["density"] == 6
     expect(page.locator("#scene-title")).to_have_text("Halbach fixture")
+
+    angle_input = page.locator(".angle-field input").first
+    angle_input.evaluate("input => { input.value = '450'; }")
+    with page.expect_request("**/api/scene") as angle_request:
+        angle_input.dispatch_event("change")
+    assert angle_request.value.post_data_json["sources"][0]["angle_deg"] == 90
+    assert angle_request.value.post_data_json["density"] == 8
+    expect(angle_input).to_have_value("90")
+    expect(page.locator("#density")).to_have_value("8")
+    expect(page.locator("#density-output")).to_have_text("8")
+    expect(page.locator("#source-status")).to_contain_text("8 个播种源")
 
     first_remove = page.locator(".remove-source").first
     with page.expect_request("**/api/scene") as delete_request:
@@ -1626,13 +1777,6 @@ def test_halbach_sources_are_editable_but_cannot_bypass_api_contracts(
     assert added_body["sources"][-1]["kind"] == "dipole"
     assert added_body["sources"][-1]["angle_deg"] == 90
     expect(page.locator("#add-dipole-source")).to_be_disabled()
-
-    angle_input = page.locator(".angle-field input").first
-    angle_input.evaluate("input => { input.value = '450'; }")
-    with page.expect_request("**/api/scene") as angle_request:
-        angle_input.dispatch_event("change")
-    assert angle_request.value.post_data_json["sources"][0]["angle_deg"] == 90
-    expect(angle_input).to_have_value("90")
 
     x_input = page.locator('.coordinate-field input[data-source-field="x"]').first
     x_input.evaluate("input => { input.value = '9'; }")

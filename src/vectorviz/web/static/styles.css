@@ -650,6 +650,11 @@ input[type="range"]::-moz-range-thumb {
   line-height: 1.45;
 }
 
+.scene-metadata .trace-outcomes strong {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
 .viewer-panel {
   min-width: 0;
 }

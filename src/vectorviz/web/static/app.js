@@ -36,6 +36,11 @@ import {
     "magnetic_dipole",
     "halbach_array",
   ]);
+  const SEED_MODE_LABELS = Object.freeze({
+    coverage: "覆盖播种",
+    equal_flux: "等通量播种",
+    feature: "特征播种",
+  });
 
   const elements = {
     canvas: document.querySelector("#field-canvas"),
@@ -74,7 +79,11 @@ import {
     fieldUnit: document.querySelector("#field-unit"),
     fieldModel: document.querySelector("#field-model"),
     seedMode: document.querySelector("#seed-mode"),
+    seedDescription: document.querySelector("#seed-description"),
     terminationCounts: document.querySelector("#termination-counts"),
+    startTerminationCounts: document.querySelector("#start-termination-counts"),
+    renderedLineCount: document.querySelector("#rendered-line-count"),
+    suppressedCount: document.querySelector("#suppressed-count"),
     probe: document.querySelector("#probe"),
     probePosition: document.querySelector("#probe-position"),
     probeValue: document.querySelector("#probe-value"),
@@ -294,6 +303,18 @@ import {
     if (!Array.isArray(scene.lines) || !Array.isArray(scene.sources)) {
       throw new Error("场景 lines 与 sources 必须为数组");
     }
+    if (
+      !scene.lines.every(
+        (line) =>
+          line &&
+          typeof line === "object" &&
+          (line.start_termination === undefined ||
+            line.start_termination === null ||
+            (typeof line.start_termination === "string" && line.start_termination.length > 0)),
+      )
+    ) {
+      throw new Error("场线 start_termination 必须是非空文本或 null");
+    }
     const validSources = scene.sources.every((source) => {
       if (
         !source ||
@@ -338,6 +359,17 @@ import {
     }
     const metadata = scene.metadata;
     const terminationCounts = metadata?.termination_counts;
+    const startTerminationCounts = metadata?.start_termination_counts;
+    const validCountMap = (counts) =>
+      counts &&
+      typeof counts === "object" &&
+      !Array.isArray(counts) &&
+      Object.values(counts).every((count) => Number.isInteger(count) && count >= 0);
+    const hasSeedDescription = Object.hasOwn(metadata || {}, "seed_description");
+    const knownSeedMode = Object.hasOwn(SEED_MODE_LABELS, metadata?.seed_mode);
+    const validSeedDescription = hasSeedDescription
+      ? typeof metadata.seed_description === "string" && metadata.seed_description.length > 0
+      : !knownSeedMode;
     if (
       !metadata ||
       typeof metadata !== "object" ||
@@ -346,12 +378,15 @@ import {
       typeof metadata.projection_note !== "string" ||
       typeof metadata.field_model !== "string" ||
       typeof metadata.seed_mode !== "string" ||
-      !terminationCounts ||
-      typeof terminationCounts !== "object" ||
-      Array.isArray(terminationCounts) ||
-      !Object.values(terminationCounts).every(
-        (count) => Number.isInteger(count) && count >= 0,
-      )
+      metadata.seed_mode.length === 0 ||
+      !validSeedDescription ||
+      !validCountMap(terminationCounts) ||
+      !validCountMap(startTerminationCounts) ||
+      !Number.isInteger(metadata.suppressed_count) ||
+      metadata.suppressed_count < 0 ||
+      !Number.isInteger(metadata.rendered_line_count) ||
+      metadata.rendered_line_count < 0 ||
+      metadata.rendered_line_count !== scene.lines.length
     ) {
       throw new Error("场景 metadata 缺少有效的模型、播种或终止统计");
     }
@@ -383,7 +418,11 @@ import {
     elements.fieldUnit.textContent = "—";
     elements.fieldModel.textContent = "—";
     elements.seedMode.textContent = "—";
+    elements.seedDescription.textContent = "—";
     elements.terminationCounts.textContent = "—";
+    elements.startTerminationCounts.textContent = "—";
+    elements.renderedLineCount.textContent = "—";
+    elements.suppressedCount.textContent = "—";
     elements.colorbar.hidden = true;
     elements.probe.hidden = true;
     renderSourceEditors();
@@ -399,6 +438,9 @@ import {
     elements.scaleBadge.textContent = "场待重算";
     elements.lineCount.textContent = "—";
     elements.terminationCounts.textContent = "待重算";
+    elements.startTerminationCounts.textContent = "待重算";
+    elements.renderedLineCount.textContent = "—";
+    elements.suppressedCount.textContent = "—";
     elements.canvas.setAttribute(
       "aria-label",
       "场源位置已改变；旧数值场已隐藏，等待重新计算。",
@@ -448,7 +490,7 @@ import {
       updateSceneDetails();
       render();
       setConnectionStatus("ready", "已同步");
-      elements.liveStatus.textContent = `${scene.metadata.title || "场景"}已加载，共 ${scene.lines.length} 条场线。`;
+      elements.liveStatus.textContent = `${scene.metadata.title || "场景"}已加载，渲染 ${scene.metadata.rendered_line_count} 条场线，抑制 ${scene.metadata.suppressed_count} 次尝试。`;
     } catch (error) {
       if (error.name !== "AbortError" && sequence === state.requestSequence) {
         invalidateSceneView("error");
@@ -499,17 +541,26 @@ import {
     elements.projectionNote.textContent =
       scene.metadata.projection_note || "曲线沿局部场方向积分；颜色表示场强大小。";
     elements.scaleBadge.textContent = `${scaleType === "log" ? "对数" : "线性"}色标 · ${scalar.label || "场强"}`;
-    elements.lineCount.textContent = scene.lines.length.toLocaleString("zh-CN");
+    elements.lineCount.textContent = scene.metadata.rendered_line_count.toLocaleString("zh-CN");
     elements.gridSize.textContent = `${scalar.nx}²`.replace(
       `${scalar.nx}²`,
       scalar.nx === scalar.ny ? `${scalar.nx}²` : `${scalar.nx}×${scalar.ny}`,
     );
     elements.fieldUnit.textContent = unit;
     elements.fieldModel.textContent = scene.metadata.field_model;
-    elements.seedMode.textContent = scene.metadata.seed_mode;
+    elements.seedMode.textContent =
+      SEED_MODE_LABELS[scene.metadata.seed_mode] || scene.metadata.seed_mode;
+    elements.seedDescription.textContent = scene.metadata.seed_description ?? "—";
     elements.terminationCounts.textContent = formatTerminationCounts(
       scene.metadata.termination_counts,
     );
+    elements.startTerminationCounts.textContent = formatTerminationCounts(
+      scene.metadata.start_termination_counts,
+    );
+    elements.renderedLineCount.textContent =
+      scene.metadata.rendered_line_count.toLocaleString("zh-CN");
+    elements.suppressedCount.textContent =
+      scene.metadata.suppressed_count.toLocaleString("zh-CN");
 
     const scale = resolveScale(scalar);
     elements.colorbar.hidden = false;
@@ -520,7 +571,7 @@ import {
     elements.canvas.dataset.draggable = String(draggableSourceCount > 0);
     elements.canvas.setAttribute(
       "aria-label",
-      `${title}二维可视化，共 ${scene.lines.length} 条场线、${draggableSourceCount} 个可移动场源。`,
+      `${title}二维可视化，共 ${scene.metadata.rendered_line_count} 条场线、${draggableSourceCount} 个可移动场源。`,
     );
   }
 

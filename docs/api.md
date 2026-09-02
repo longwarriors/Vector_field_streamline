@@ -146,7 +146,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 ```json
 {
   "status": "ok",
-  "version": "0.2.2"
+  "version": "0.3.0"
 }
 ```
 
@@ -193,7 +193,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
   "resolution": 96,
   "sources": [
     {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 1.0},
-    {"x": 1.0, "y": 0.0, "kind": "negative", "strength": -1.0}
+    {"x": 1.0, "y": 0.0, "kind": "negative", "strength": -5.0}
   ]
 }
 ```
@@ -221,11 +221,23 @@ $$
 
 服务端必须为密度、分辨率、源数量和数值范围设置上限，防止一次交互请求耗尽内存或 CPU。
 
-`density` 是一次场景请求的**整数**种子总预算，不是“每个源各放多少条”，范围为 6–40；浏览器滑块步长为 1，因此圆环的奇数预算轴线分支可达。电偶极预设只从正电荷出发，因此这些正电荷参与预算；磁偶极和 Halbach 只让非零 active 偶极参与预算。若参与播种的源数超过 `density`，服务端返回 422，`detail` 会给出当前数量和所需最小值，例如 `electric_dipole 有 7 个正电荷参与播种，density 至少为 7`。默认 Halbach 阵列有 8 个 active 源，因此 `density` 至少为 8；浏览器在所有 POST 路径上预判预算，并把较小值自动抬到所需下限。预算充足时，每个播种源先得到 1 个种子，其余名额再按源强绝对值分配；非零磁偶极的播种半球随实际有符号磁矩一起旋转。圆环预设不把两个 wire 标记当作播种源：它在两侧环内赤道段按几何半径镜像覆盖，奇数预算再增加一条轴线，仍严格消耗 `density` 个种子；这不是等通量播种。
+`density` 是一次场景请求的**整数 trace-job 总预算**，不是“每个源各放多少条”，范围为 6–40；浏览器滑块步长为 1，因此圆环的奇数预算轴线分支可达。电偶极的全部正、负电荷都参与预算：每个源先得到 1 个 job，其余按 $|q|$ 用稳定最大余数法分配；正电荷正向追踪，负电荷反向追踪。自定义磁偶极和 Halbach 场景只让非零 active 偶极参与逐源预算；若参与数量超过 `density`，服务端返回 422，例如 `electric_dipole 有 8 个电荷参与播种，density 至少为 8`。默认 Halbach 使用两条独立轨道，所以最低密度仍是 API 下限 6，不受八个显示偶极数量约束。浏览器在所有 POST 路径上执行相同预判并自动抬高不足的预算。
 
-每个种子对应一次 trace job；无论结果是否足以渲染，都恰好给 `metadata.termination_counts` 的某个原因加 1。因此当前响应满足 `len(lines) <= density` 与 `sum(termination_counts.values()) == density`；当每个种子都得到至少两个有限轨迹点时，前一个不等式取等号。终止计数的键允许出现未来新增的原因，值必须是非负整数。
+五个预设的策略分别是：
 
-成功响应结构如下。为便于阅读，示意片段把网格缩成 $2\times2$，并只展示 18 条轨迹中的 1 条；实际端点接受的 `resolution` 不低于 32，数组会相应更长。
+- 电荷与自定义多磁偶极使用逐源几何覆盖，`seed_mode: "coverage"`；
+- 单个 active 磁偶极沿随参数角度旋转的赤道线按距离覆盖并双向追踪，`seed_mode: "feature"`；负强度会反转实际磁矩，但不会改变同一条赤道几何；
+- 默认 Halbach 在 $x\in[-2.1,2.1]$、$y=\pm0.45$ m 的两条平行轨道上等距覆盖并双向追踪；上轨分到 $\lceil density/2\rceil$ 个 job，下轨分到 $\lfloor density/2\rfloor$ 个，`seed_mode: "coverage"`；
+- 圆环在环内赤道段调用公开的 `CircularLoopField.flux_function()`，以求根方式选择等 $\psi$ 的镜像轮廓；奇数预算再增加一条轴线特征线，整体 `seed_mode: "equal_flux"`；
+- 匀强场仍从左边界等距覆盖播种，`seed_mode: "coverage"`。
+
+每个 job 无论是否最终渲染，都恰好给 `metadata.termination_counts` 的一个原因加 1，所以 `sum(termination_counts.values()) == density`。对 `BOTH` job，`termination` 和 `termination_counts` 记录点序末端的正向分支，`start_termination` 与 `start_termination_counts` 另记点序起点的反向分支；非双向场景的起点端统计为空对象。双向曲线的点始终从反向端经过种子排到正向端，因此 `direction` 为 `1`。
+
+电荷场会先完成全部 job，再按实际终止源对去重。若某条可渲染正电荷 $P\to N$ 轨迹已出现，随后终止于同一 $P$ 的负电荷反向 $N\to P$ 轨迹会被抑制；没有正向代表的源对以及负源到计算域边界的轨迹都保留。这里不做浮点几何相似判定。`suppressed_count` 记录被抑制的可渲染轨迹数，`rendered_line_count` 精确等于 `len(lines)`；若还存在不足两个有限点的退化结果，则 `rendered_line_count + suppressed_count <= density`。
+
+固定回归场景 $+1\ \mathrm{nC}$（$x=-0.85$ m）、$-5\ \mathrm{nC}$（$x=0.85$ m）、`density=18` 会分配 4 个正向和 14 个反向 job。实际终止为 9 次 `exclusion_hit`（4 条 $P\to N$ 加 5 条 $N\to P$）与 9 次 `domain_exit`；去重只抑制后 5 条返线，故最终 `suppressed_count=5`、`rendered_line_count=13`。九条从边界进入负源的线全部保留。
+
+成功响应结构如下。为便于阅读，示意片段把网格缩成 $2\times2$，并只展示渲染轨迹中的 1 条；实际端点接受的 `resolution` 不低于 32，数组会相应更长。
 
 ```json
 {
@@ -265,7 +277,7 @@ $$
       "x": 1.0,
       "y": 0.0,
       "kind": "negative",
-      "strength": -1.0,
+      "strength": -5.0,
       "strength_unit": "nC"
     }
   ],
@@ -273,8 +285,12 @@ $$
     "title": "电偶极子的电场线",
     "projection_note": "该平面法向场分量为零，所示曲线是真实场线，不是投影流线。",
     "field_model": "三维点电荷场在 z=0 对称平面上的限制",
-    "seed_mode": "从正电荷排除面的覆盖播种；线密度默认不代表场强。",
-    "termination_counts": {"exclusion_hit": 11, "domain_exit": 7}
+    "seed_mode": "coverage",
+    "seed_description": "正负电荷按绝对强度共享总预算，并从各自排除面沿场的外向方向覆盖播种；线密度不代表场强。",
+    "termination_counts": {"exclusion_hit": 9, "domain_exit": 9},
+    "start_termination_counts": {},
+    "suppressed_count": 5,
+    "rendered_line_count": 13
   }
 }
 ```
@@ -296,7 +312,7 @@ $$
 
 #### `lines`
 
-每条线是按轨迹顺序排列的坐标点。`direction` 为 `1` 或 `-1`，表示相对场方向；`termination` 记录该 trace job 所选分支的终止原因。方向元数据不是要求前端把点序颠倒。后续可以增加场强和弧长，但客户端应忽略未知字段以保持向前兼容。
+每条线是按轨迹顺序排列的坐标点。`direction` 为 `1` 或 `-1`，表示点序相对场方向；`termination` 记录点序末端采用的主分支终止原因。`start_termination` 是可选的加法字段，只在双向轨迹中记录点序起点端的反向分支原因。方向元数据不是要求前端把点序颠倒。后续可以增加场强和弧长，但客户端应忽略未知字段以保持向前兼容。
 
 #### `sources`
 
@@ -310,7 +326,9 @@ $$
 
 `projection_note` 不能省略。它说明曲线是二维真实场线、投影流线还是三维曲线切片。定义见[二维切片何时包含真实场线](tutorial/04-slices-and-validation.md#true-vs-projected)。
 
-`field_model`、`seed_mode` 与 `termination_counts` 都是当前前端直接展示的科学解释。v0.2.2 的 `seed_mode` 仍是自由文本，不应按固定枚举解析；枚举和独立说明字段属于 v0.3.0 计划。终止原因使用 `TerminationReason` 的字符串值；客户端可翻译已知值，但遇到未知键必须原样显示，而不是拒绝整个向前兼容响应。
+`field_model`、`seed_mode`、`seed_description` 与各项计数都是前端直接展示的科学解释。`seed_mode` 是 `coverage`、`equal_flux`、`feature` 三值枚举；`seed_description` 是不可为空的具体说明。兼容客户端对未来未知 mode 应原样显示，而不是拒绝场景；v0.3.0 前缓存的自由文本 `seed_mode` 在缺少说明时也可原样展示。终止原因使用 `TerminationReason` 的字符串值；客户端可翻译已知值，但遇到未知键必须原样显示。
+
+`termination_counts` 表示所有 job 的末端/主分支原因，和恒等于 `density`；`start_termination_counts` 只汇总 `BOTH` job 的起点端原因，和等于双向 job 数。`suppressed_count` 是已计算但因电荷源对已有正向代表而未画出的可渲染线数，`rendered_line_count` 是实际响应线数。抑制不从尝试预算或终止统计中扣除。
 
 源拖动期间，屏幕上的源位置已经变化而服务端场仍属于上一次请求。浏览器此时只保留坐标网格和新源位置，隐藏旧热图、色标与场线并标记“场待重算”；松开指针后只提交一次最终位置。数值编辑发生源间距冲突时回滚且不发场景请求。这个 UI 状态约束不改变 `POST /api/scene`：服务端仍会独立验证每个请求。
 
@@ -321,6 +339,9 @@ $$
 
 !!! warning "v0.2.2 标量编码修正"
     masked 格点从一个伪造的有限填充值改为 JSON `null`，未遮罩格点从色标裁剪值改为原始有限值。依赖旧 `values: list[float]` 假设的 pre-1.0 客户端必须同时读取 `mask`/`null`；`vmin` 与 `vmax` 从此只表示显示建议，不能当作数据截断边界。
+
+!!! warning "v0.3.0 播种元数据修正"
+    `metadata.seed_mode` 从自由文本改为封闭枚举，具体说明移入必需的 `seed_description`；同时新增必需的双端终止和渲染/抑制计数。`LinePayload.start_termination` 是可选加法字段。由于项目仍处于 pre-1.0，这次服务端契约修正随版本与 CHANGELOG 一同发布；前端仍保留对旧自由文本说明和未来未知 mode token 的显示回退。
 
 !!! note "pre-1.0 圆环几何迁移预告"
     `wire_out`/`wire_into` 是 v0.2.x–v0.3.x 为固定单圆环提供的响应专用标记。v0.4.x 引入多导体与导入几何时，导体几何将迁移到独立的 `conductors` 集合，并折并这两个临时 kind。`conductors` 目前尚未实现；这里提前记录的是 pre-1.0 契约演进方向，不是现有响应字段。

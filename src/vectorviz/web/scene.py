@@ -19,8 +19,10 @@ from vectorviz.fields import (
 from vectorviz.tracing import (
     FieldLineTracer,
     TerminationReason,
+    TraceBranch,
     TraceDirection,
     TraceOptions,
+    TraceResult,
 )
 
 from .schemas import (
@@ -30,8 +32,17 @@ from .schemas import (
     ScalarPayload,
     SceneRequest,
     SceneResponse,
+    SeedMode,
     SourceInput,
     SourcePayload,
+)
+from .seeding import (
+    TraceJob,
+    current_loop_equal_flux_jobs,
+    electric_source_jobs,
+    halbach_rail_jobs,
+    magnetic_source_jobs,
+    single_dipole_equatorial_jobs,
 )
 
 DOMAIN = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
@@ -119,16 +130,23 @@ class _SceneModel:
     field: VectorField
     sources: tuple[SourcePayload, ...]
     exclusions: tuple[SphericalExclusion, ...]
-    seeds: NDArray[np.float64]
-    direction: TraceDirection
+    trace_jobs: tuple[TraceJob, ...]
     trace_options: TraceOptions
     scalar_label: str
     scalar_unit: str
     title: str
     field_model: str
     projection_note: str
-    seed_mode: str
+    seed_mode: SeedMode
+    seed_description: str
     reflect_y_symmetric_domain_exits: bool = False
+    suppress_electric_return_pairs: bool = False
+
+    @property
+    def seeds(self) -> NDArray[np.float64]:
+        """Return a compatibility snapshot of the planned seed coordinates."""
+
+        return np.asarray([job.seed for job in self.trace_jobs], dtype=float).reshape(-1, 2)
 
 
 def _default_sources(preset: str) -> list[SourceInput]:
@@ -180,32 +198,6 @@ def _require_source_separation(
                 )
 
 
-def _allocate_seed_counts(strengths: NDArray[np.float64], total: int) -> NDArray[np.int64]:
-    source_count = int(strengths.size)
-    if source_count == 0:
-        raise ValueError("at least one seeding source is required")
-    if source_count > total:
-        raise ValueError("seed budget must provide at least one seed per seeding source")
-
-    counts = np.ones(source_count, dtype=np.int64)
-    remaining = total - source_count
-    if remaining == 0:
-        return counts
-
-    weights = np.abs(strengths)
-    if not np.any(weights):
-        weights = np.ones_like(weights)
-    quotas = weights / np.sum(weights) * remaining
-    extras = np.floor(quotas).astype(np.int64)
-    counts += extras
-    unassigned = remaining - int(np.sum(extras))
-    if unassigned:
-        fractions = quotas - extras
-        order = np.argsort(-fractions, kind="stable")
-        counts[order[:unassigned]] += 1
-    return counts
-
-
 def _require_seed_budget(
     preset: str,
     source_label: str,
@@ -216,58 +208,6 @@ def _require_seed_budget(
         raise ValueError(
             f"{preset} 有 {source_count} 个{source_label}参与播种，density 至少为 {source_count}"
         )
-
-
-def _circle_seeds(
-    centers: NDArray[np.float64],
-    strengths: NDArray[np.float64],
-    total: int,
-) -> NDArray[np.float64]:
-    counts = _allocate_seed_counts(strengths, total)
-    groups: list[NDArray[np.float64]] = []
-    radius = SOURCE_SEED_RADIUS
-    for center, count in zip(centers, counts, strict=True):
-        angles = np.linspace(0.0, 2.0 * np.pi, int(count), endpoint=False)
-        offsets = radius * np.column_stack((np.cos(angles), np.sin(angles)))
-        groups.append(center + offsets)
-    return np.concatenate(groups, axis=0)
-
-
-def _magnetic_seeds(
-    centers: NDArray[np.float64],
-    strengths: NDArray[np.float64],
-    directions: NDArray[np.float64],
-    total: int,
-) -> NDArray[np.float64]:
-    counts = _allocate_seed_counts(strengths, total)
-    groups: list[NDArray[np.float64]] = []
-    radius = SOURCE_SEED_RADIUS
-    for center, strength, direction, count in zip(
-        centers, strengths, directions, counts, strict=True
-    ):
-        # Seed only the hemisphere where B points away from the excluded source.
-        angles = np.array((0.0,)) if count == 1 else np.linspace(-1.43, 1.43, int(count))
-        axis = direction if strength >= 0.0 else -direction
-        perpendicular = np.array((axis[1], -axis[0]))
-        offsets = radius * (
-            np.cos(angles)[:, np.newaxis] * axis + np.sin(angles)[:, np.newaxis] * perpendicular
-        )
-        groups.append(center + offsets)
-    return np.concatenate(groups, axis=0)
-
-
-def _current_loop_seeds(total: int) -> NDArray[np.float64]:
-    """Cover distinct loop-flux contours symmetrically in the meridional plane."""
-
-    pair_count = total // 2
-    radii = np.linspace(0.12, 0.82, pair_count)
-    paired = np.zeros((2 * pair_count, 2), dtype=float)
-    paired[0::2, 0] = -radii
-    paired[1::2, 0] = radii
-    if total % 2 == 0:
-        return paired
-    axis_seed = np.array(((0.0, float(DOMAIN.lower[1]) + 1.0e-4),))
-    return np.concatenate((axis_seed, paired), axis=0)
 
 
 def _build_model(request: SceneRequest) -> _SceneModel:
@@ -301,17 +241,23 @@ def _build_model(request: SceneRequest) -> _SceneModel:
             field=_PlanarCircularLoopField(loop),
             sources=markers,
             exclusions=(SphericalExclusion(wire_centers, CURRENT_LOOP_EXCLUSION_RADIUS),),
-            seeds=_current_loop_seeds(request.density),
-            direction=TraceDirection.FORWARD,
+            trace_jobs=tuple(
+                current_loop_equal_flux_jobs(
+                    loop,
+                    request.density,
+                    axis_y=float(DOMAIN.lower[1]) + 1.0e-4,
+                )
+            ),
             trace_options=CURRENT_LOOP_TRACE_OPTIONS,
             scalar_label="|B|",
             scalar_unit="T",
             title="圆形电流线圈的磁力线",
             field_model="三维理想圆形电流线圈在 z=0 子午面上的限制",
             projection_note=("z=0 子午面是该轴对称场的不变平面，所示曲线是真实三维磁力线。"),
-            seed_mode=(
-                "在圆环两侧的环内赤道段镜像等距覆盖播种；奇数预算另含轴线。"
-                "线密度不代表磁通或磁感应强度。"
+            seed_mode=SeedMode.EQUAL_FLUX,
+            seed_description=(
+                "相邻非轴线代表相等磁通间隔；奇数预算另含一条不带等通量权重的"
+                "轴线特征线。线数不表示磁感应强度本身。"
             ),
             reflect_y_symmetric_domain_exits=True,
         )
@@ -332,27 +278,31 @@ def _build_model(request: SceneRequest) -> _SceneModel:
         if not np.any(signed_strengths > 0) or not np.any(signed_strengths < 0):
             raise ValueError("electric dipole needs at least one positive and one negative source")
         field = PointChargeField(signed_strengths * 1.0e-9, centers)
-        positive = signed_strengths > 0
         _require_seed_budget(
             request.preset,
-            "正电荷",
-            int(np.count_nonzero(positive)),
+            "电荷",
+            len(active),
             request.density,
         )
-        seeds = _circle_seeds(centers[positive], signed_strengths[positive], request.density)
         return _SceneModel(
             field=field,
             sources=payloads,
             exclusions=(SphericalExclusion(centers, SOURCE_RADIUS),),
-            seeds=seeds,
-            direction=TraceDirection.FORWARD,
+            trace_jobs=tuple(
+                electric_source_jobs(indexed_active, request.density, SOURCE_SEED_RADIUS)
+            ),
             trace_options=DEFAULT_TRACE_OPTIONS,
             scalar_label="|E|",
             scalar_unit="V/m",
             title="电偶极子的电场线",
             field_model="三维点电荷场在 z=0 对称平面上的限制",
             projection_note="该平面法向场分量为零，所示曲线是真实场线，不是投影流线。",
-            seed_mode="从正电荷排除面的覆盖播种；线密度默认不代表场强。",
+            seed_mode=SeedMode.COVERAGE,
+            seed_description=(
+                "从所有正负电荷排除面按绝对强度共同分配预算并向外播种；"
+                "同一源对已有正向代表时抑制负向返线。线密度默认不代表场强。"
+            ),
+            suppress_electric_return_pairs=True,
         )
 
     if request.preset in {"magnetic_dipole", "halbach_array"}:
@@ -369,24 +319,61 @@ def _build_model(request: SceneRequest) -> _SceneModel:
         strengths = np.array([source.strength for source in active], dtype=float)
         angles = np.deg2rad([source.angle_deg for source in active])
         directions = np.column_stack((np.cos(angles), np.sin(angles)))
-        _require_seed_budget(
-            request.preset,
-            "磁偶极子",
-            len(active),
-            request.density,
-        )
         planar_moments = strengths[:, np.newaxis] * directions
         moments = np.column_stack((planar_moments, np.zeros_like(strengths)))
         positions = np.column_stack((centers, np.zeros(len(centers))))
         field = _PlanarMagneticDipoleField(MagneticDipoleField(moments, positions))
         is_halbach = request.preset == "halbach_array"
         is_default_halbach = is_halbach and request.sources is None
+        is_single_magnetic = not is_halbach and len(indexed_active) == 1
+        if is_default_halbach:
+            trace_jobs = tuple(
+                halbach_rail_jobs(
+                    request.density,
+                    x_extent=HALBACH_X_EXTENT,
+                    y_offset=0.45,
+                )
+            )
+            seed_mode = SeedMode.COVERAGE
+            seed_description = (
+                "在阵列强、弱场两侧 y=±0.45 m 的平行轨道覆盖播种；"
+                "线密度默认不代表磁感应强度。"
+            )
+        elif is_single_magnetic:
+            source_index, source = indexed_active[0]
+            trace_jobs = tuple(
+                single_dipole_equatorial_jobs(
+                    source_index,
+                    source,
+                    request.density,
+                    DOMAIN,
+                    SOURCE_SEED_RADIUS,
+                )
+            )
+            seed_mode = SeedMode.FEATURE
+            seed_description = (
+                "沿随磁矩旋转的赤道线双向覆盖播种；线密度默认不代表磁感应强度。"
+            )
+        else:
+            _require_seed_budget(
+                request.preset,
+                "磁偶极子",
+                len(active),
+                request.density,
+            )
+            trace_jobs = tuple(
+                magnetic_source_jobs(indexed_active, request.density, SOURCE_SEED_RADIUS)
+            )
+            seed_mode = SeedMode.COVERAGE
+            seed_description = (
+                "从每个偶极子的实际磁矩外向半球覆盖播种；"
+                "线密度默认不代表磁感应强度。"
+            )
         return _SceneModel(
             field=field,
             sources=payloads,
             exclusions=(SphericalExclusion(centers, SOURCE_RADIUS),),
-            seeds=_magnetic_seeds(centers, strengths, directions, request.density),
-            direction=TraceDirection.FORWARD,
+            trace_jobs=trace_jobs,
             trace_options=DEFAULT_TRACE_OPTIONS,
             scalar_label="|B|",
             scalar_unit="T",
@@ -409,11 +396,8 @@ def _build_model(request: SceneRequest) -> _SceneModel:
                 if is_halbach
                 else "偶极矩位于切片内且法向场为零，所示曲线是真实磁力线。"
             ),
-            seed_mode=(
-                "从每个偶极子的实际磁矩外向半球覆盖播种；线密度默认不代表磁感应强度。"
-                if is_halbach
-                else "从偶极子实际磁矩的外向半球覆盖播种；线密度默认不代表磁感应强度。"
-            ),
+            seed_mode=seed_mode,
+            seed_description=seed_description,
         )
 
     field = UniformField((1.0, 0.28))
@@ -423,15 +407,18 @@ def _build_model(request: SceneRequest) -> _SceneModel:
         field=field,
         sources=payloads,
         exclusions=(),
-        seeds=np.column_stack((x, y)),
-        direction=TraceDirection.FORWARD,
+        trace_jobs=tuple(
+            TraceJob((float(seed_x), float(seed_y)), TraceDirection.FORWARD)
+            for seed_x, seed_y in zip(x, y, strict=True)
+        ),
         trace_options=DEFAULT_TRACE_OPTIONS,
         scalar_label="|E|",
         scalar_unit="V/m",
         title="匀强电场",
         field_model="二维常向量场",
         projection_note="这是原生二维向量场，曲线与电场方向处处相切。",
-        seed_mode="从左边界等距覆盖播种；线密度不表示场强。",
+        seed_mode=SeedMode.COVERAGE,
+        seed_description="从左边界等距覆盖播种；线密度不表示场强。",
     )
 
 
@@ -470,21 +457,82 @@ def _sample_scalar(model: _SceneModel, resolution: int) -> ScalarPayload:
     )
 
 
-def _trace_lines(model: _SceneModel) -> tuple[list[LinePayload], Counter[str]]:
+@dataclass(frozen=True, slots=True)
+class _TraceCandidate:
+    job: TraceJob
+    line: LinePayload
+    terminal_source_index: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _TraceSummary:
+    lines: list[LinePayload]
+    termination_counts: Counter[str]
+    start_termination_counts: Counter[str]
+    suppressed_count: int
+
+
+def _trace_branches(
+    result: TraceResult,
+    direction: TraceDirection,
+) -> tuple[TraceBranch, TraceBranch | None]:
+    if direction is TraceDirection.FORWARD:
+        if result.forward is None:  # pragma: no cover - tracer contract guard
+            raise RuntimeError("forward trace did not return a forward branch")
+        return result.forward, None
+    if direction is TraceDirection.BACKWARD:
+        if result.backward is None:  # pragma: no cover - tracer contract guard
+            raise RuntimeError("backward trace did not return a backward branch")
+        return result.backward, None
+    if result.forward is None or result.backward is None:  # pragma: no cover
+        raise RuntimeError("bidirectional trace did not return both branches")
+    return result.forward, result.backward
+
+
+def _electric_terminal_source_index(
+    model: _SceneModel,
+    branch: TraceBranch,
+) -> int | None:
+    if branch.termination is not TerminationReason.EXCLUSION_HIT:
+        return None
+    indexed_charges = [
+        (index, source)
+        for index, source in enumerate(model.sources)
+        if source.kind in {"positive", "negative"}
+    ]
+    if not indexed_charges:  # pragma: no cover - electric model invariant
+        return None
+    terminal = np.asarray(branch.terminal_point, dtype=float)
+    return min(
+        indexed_charges,
+        key=lambda item: abs(
+            float(np.hypot(terminal[0] - item[1].x, terminal[1] - item[1].y))
+            - SOURCE_RADIUS
+        ),
+    )[0]
+
+
+def _is_source_kind(model: _SceneModel, index: int | None, kind: str) -> bool:
+    return index is not None and 0 <= index < len(model.sources) and model.sources[index].kind == kind
+
+
+def _trace_lines(model: _SceneModel) -> _TraceSummary:
     tracer = FieldLineTracer(
         model.field,
         domain=DOMAIN,
         options=model.trace_options,
         exclusions=model.exclusions,
     )
-    lines: list[LinePayload] = []
     terminations: Counter[str] = Counter()
-    for seed in model.seeds:
-        result = tracer.trace(seed, direction=model.direction)
-        branch = result.forward if model.direction is TraceDirection.FORWARD else result.backward
-        if branch is None:
-            continue
+    start_terminations: Counter[str] = Counter()
+    candidates: list[_TraceCandidate] = []
+    for job in model.trace_jobs:
+        seed = np.asarray(job.seed, dtype=float)
+        result = tracer.trace(seed, direction=job.direction)
+        branch, start_branch = _trace_branches(result, job.direction)
         terminations[branch.termination.value] += 1
+        if start_branch is not None:
+            start_terminations[start_branch.termination.value] += 1
         finite = np.all(np.isfinite(result.points), axis=1)
         points = result.points[finite]
         if (
@@ -500,21 +548,70 @@ def _trace_lines(model: _SceneModel) -> tuple[list[LinePayload], Counter[str]]:
             points = np.concatenate((lower_to_seed, points), axis=0)
         if points.shape[0] < 2:
             continue
-        lines.append(
-            LinePayload(
-                points=[(float(point[0]), float(point[1])) for point in points],
-                direction=1 if model.direction is TraceDirection.FORWARD else -1,
-                termination=branch.termination.value,
+        line = LinePayload(
+            points=[(float(point[0]), float(point[1])) for point in points],
+            direction=-1 if job.direction is TraceDirection.BACKWARD else 1,
+            termination=branch.termination.value,
+            start_termination=(
+                start_branch.termination.value if start_branch is not None else None
+            ),
+        )
+        terminal_source_index = (
+            _electric_terminal_source_index(model, branch)
+            if model.suppress_electric_return_pairs
+            else None
+        )
+        candidates.append(
+            _TraceCandidate(
+                job=job,
+                line=line,
+                terminal_source_index=terminal_source_index,
             )
         )
-    return lines, terminations
+
+    covered_pairs: set[tuple[int, int]] = set()
+    if model.suppress_electric_return_pairs:
+        for candidate in candidates:
+            origin = candidate.job.origin_source_index
+            terminal = candidate.terminal_source_index
+            if (
+                candidate.job.direction is TraceDirection.FORWARD
+                and _is_source_kind(model, origin, "positive")
+                and _is_source_kind(model, terminal, "negative")
+            ):
+                assert origin is not None and terminal is not None
+                covered_pairs.add((origin, terminal))
+
+    lines: list[LinePayload] = []
+    suppressed_count = 0
+    for candidate in candidates:
+        origin = candidate.job.origin_source_index
+        terminal = candidate.terminal_source_index
+        suppress = (
+            model.suppress_electric_return_pairs
+            and candidate.job.direction is TraceDirection.BACKWARD
+            and _is_source_kind(model, origin, "negative")
+            and _is_source_kind(model, terminal, "positive")
+            and (terminal, origin) in covered_pairs
+        )
+        if suppress:
+            suppressed_count += 1
+        else:
+            lines.append(candidate.line)
+
+    return _TraceSummary(
+        lines=lines,
+        termination_counts=terminations,
+        start_termination_counts=start_terminations,
+        suppressed_count=suppressed_count,
+    )
 
 
 def build_scene(request: SceneRequest) -> SceneResponse:
     """Compute one complete scene for the browser client."""
 
     model = _build_model(request)
-    lines, terminations = _trace_lines(model)
+    traces = _trace_lines(model)
     return SceneResponse(
         domain=DomainPayload(
             x=(float(DOMAIN.lower[0]), float(DOMAIN.upper[0])),
@@ -523,14 +620,18 @@ def build_scene(request: SceneRequest) -> SceneResponse:
             unit="m",
         ),
         scalar=_sample_scalar(model, request.resolution),
-        lines=lines,
+        lines=traces.lines,
         sources=list(model.sources),
         metadata=MetadataPayload(
             title=model.title,
             projection_note=model.projection_note,
             field_model=model.field_model,
             seed_mode=model.seed_mode,
-            termination_counts=dict(terminations),
+            seed_description=model.seed_description,
+            termination_counts=dict(traces.termination_counts),
+            start_termination_counts=dict(traces.start_termination_counts),
+            suppressed_count=traces.suppressed_count,
+            rendered_line_count=len(traces.lines),
         ),
     )
 

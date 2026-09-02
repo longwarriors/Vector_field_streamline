@@ -2,9 +2,9 @@ export const SOURCE_COORDINATE_LIMIT = 2.8;
 export const SOURCE_COUNT_LIMIT = 8;
 
 const DEFAULT_SEEDING_SOURCE_COUNTS = Object.freeze({
-  electric_dipole: 1,
+  electric_dipole: 2,
   magnetic_dipole: 1,
-  halbach_array: 8,
+  halbach_array: 0,
 });
 const SOURCE_PLACEMENT_CANDIDATES = Object.freeze([
   [-1.8, 0.55],
@@ -55,7 +55,7 @@ export function effectiveDipoleAngleDeg(source) {
 export function seedingSourceCount(preset, sources) {
   if (!Array.isArray(sources)) return DEFAULT_SEEDING_SOURCE_COUNTS[preset] ?? 0;
   if (preset === "electric_dipole") {
-    return sources.filter(({ kind }) => kind === "positive").length;
+    return sources.filter(({ kind }) => kind === "positive" || kind === "negative").length;
   }
   if (preset === "magnetic_dipole" || preset === "halbach_array") {
     return sources.filter(

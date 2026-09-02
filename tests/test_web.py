@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -12,18 +14,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 from vectorviz import CircularLoopField, MagneticDipoleField, __version__
+from vectorviz.tracing import TerminationReason, TraceBranch, TraceDirection, TraceResult
 from vectorviz.web import app as web_app
 from vectorviz.web import scene as web_scene
 from vectorviz.web import schemas as web_schemas
 from vectorviz.web.app import STATIC_DIR, create_app
 from vectorviz.web.scene import (
     SOURCE_RADIUS,
-    _allocate_seed_counts,
     _build_model,
     _PlanarCircularLoopField,
     build_scene,
 )
-from vectorviz.web.schemas import SceneRequest, SourceInput, SourcePayload
+from vectorviz.web.schemas import SceneRequest, SeedMode, SourceInput, SourcePayload
+from vectorviz.web.seeding import TraceJob, allocate_seed_counts
 
 
 @pytest.mark.parametrize(
@@ -78,9 +81,14 @@ def test_scene_presets_are_finite_serializable_and_trace_requested_lines(
     assert {source.kind for source in scene.sources} == source_kinds
     assert {source.strength_unit for source in scene.sources} == source_strength_units
 
-    # Every requested seed should produce a drawable line and a counted reason.
-    assert len(scene.lines) == density
+    # Every trace job contributes one primary termination. Rendered lines can be
+    # fewer only when a duplicate is suppressed or a trace is degenerate.
     assert sum(scene.metadata.termination_counts.values()) == density
+    assert scene.metadata.rendered_line_count == len(scene.lines)
+    assert len(scene.lines) + scene.metadata.suppressed_count <= density
+    assert scene.metadata.seed_mode in SeedMode
+    assert scene.metadata.seed_description
+    assert all(count >= 0 for count in scene.metadata.start_termination_counts.values())
     assert all(len(line.points) >= 2 for line in scene.lines)
     assert all(
         math.isfinite(coordinate)
@@ -154,6 +162,7 @@ def test_response_models_forbid_extra_fields() -> None:
         points=[(0.0, 0.0), (1.0, 0.0)],
         direction=1,
         termination="future_reason",
+        start_termination="future_start_reason",
     )
     source = SourcePayload(
         x=0.0,
@@ -168,7 +177,11 @@ def test_response_models_forbid_extra_fields() -> None:
         projection_note="p",
         field_model="f",
         seed_mode="coverage",
+        seed_description="d",
         termination_counts={"future_reason": 0},
+        start_termination_counts={"future_start_reason": 0},
+        suppressed_count=0,
+        rendered_line_count=1,
     )
     scene = web_schemas.SceneResponse(
         domain=domain,
@@ -187,6 +200,14 @@ def test_response_models_forbid_extra_fields() -> None:
     for payload in (capability, domain, scalar, line, source, metadata, scene, preset):
         with pytest.raises(ValueError, match="Extra inputs are not permitted"):
             type(payload).model_validate({**payload.model_dump(), "unexpected": True})
+
+    with pytest.raises(ValueError, match=r"rendered_line_count must equal len\(lines\)"):
+        web_schemas.SceneResponse.model_validate(
+            {
+                **scene.model_dump(),
+                "metadata": {**metadata.model_dump(), "rendered_line_count": 0},
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -223,25 +244,129 @@ def test_scalar_payload_rejects_invalid_cross_field_invariants(
         web_schemas.ScalarPayload.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    "count_field",
+    ["termination_counts", "start_termination_counts"],
+)
 @pytest.mark.parametrize("invalid_count", [-1, True, 1.0, "1"])
-def test_metadata_rejects_invalid_termination_counts(invalid_count: object) -> None:
+def test_metadata_rejects_invalid_termination_counts(
+    count_field: str,
+    invalid_count: object,
+) -> None:
+    payload: dict[str, object] = {
+        "title": "t",
+        "projection_note": "p",
+        "field_model": "f",
+        "seed_mode": "coverage",
+        "seed_description": "d",
+        "termination_counts": {"future_reason": 0},
+        "start_termination_counts": {"future_reason": 0},
+        "suppressed_count": 0,
+        "rendered_line_count": 1,
+    }
+    payload[count_field] = {"future_reason": invalid_count}
+
     with pytest.raises(ValueError):
-        web_schemas.MetadataPayload(
-            title="t",
-            projection_note="p",
-            field_model="f",
-            seed_mode="coverage",
-            termination_counts={"future_reason": invalid_count},
-        )
+        web_schemas.MetadataPayload.model_validate(payload)
 
     accepted = web_schemas.MetadataPayload(
         title="t",
         projection_note="p",
         field_model="f",
         seed_mode="coverage",
+        seed_description="d",
         termination_counts={"future_reason": 0},
+        start_termination_counts={"future_reason": 0},
+        suppressed_count=0,
+        rendered_line_count=1,
     )
     assert accepted.termination_counts == {"future_reason": 0}
+
+
+@pytest.mark.parametrize("field", ["suppressed_count", "rendered_line_count"])
+@pytest.mark.parametrize("invalid_count", [-1, True, 1.0, "1"])
+def test_metadata_rejects_invalid_scalar_counts(field: str, invalid_count: object) -> None:
+    payload: dict[str, object] = {
+        "title": "t",
+        "projection_note": "p",
+        "field_model": "f",
+        "seed_mode": "coverage",
+        "seed_description": "d",
+        "termination_counts": {},
+        "start_termination_counts": {},
+        "suppressed_count": 0,
+        "rendered_line_count": 0,
+    }
+    payload[field] = invalid_count
+
+    with pytest.raises(ValueError):
+        web_schemas.MetadataPayload.model_validate(payload)
+
+
+def test_seed_mode_is_closed_and_metadata_requires_a_description() -> None:
+    assert {mode.value for mode in SeedMode} == {"coverage", "equal_flux", "feature"}
+    payload = {
+        "title": "t",
+        "projection_note": "p",
+        "field_model": "f",
+        "seed_mode": "coverage",
+        "seed_description": "coverage around active sources",
+        "termination_counts": {},
+        "start_termination_counts": {},
+        "suppressed_count": 0,
+        "rendered_line_count": 0,
+    }
+
+    assert web_schemas.MetadataPayload.model_validate(payload).seed_mode is SeedMode.COVERAGE
+    with pytest.raises(ValueError):
+        web_schemas.MetadataPayload.model_validate({**payload, "seed_mode": "future_mode"})
+    with pytest.raises(ValueError):
+        web_schemas.MetadataPayload.model_validate({**payload, "seed_description": ""})
+
+
+def test_line_payload_accepts_an_optional_nonempty_start_termination() -> None:
+    payload = {
+        "points": [(0.0, 0.0), (1.0, 0.0)],
+        "direction": 1,
+        "termination": "domain_exit",
+    }
+
+    assert web_schemas.LinePayload.model_validate(payload).start_termination is None
+    assert (
+        web_schemas.LinePayload.model_validate(
+            {**payload, "start_termination": "future_reason"}
+        ).start_termination
+        == "future_reason"
+    )
+    with pytest.raises(ValueError):
+        web_schemas.LinePayload.model_validate({**payload, "start_termination": ""})
+
+
+def test_openapi_types_seed_modes_and_line_accounting_metadata(
+    client: TestClient,
+) -> None:
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    metadata = schemas["MetadataPayload"]
+    line = schemas["LinePayload"]
+
+    assert schemas["SeedMode"]["enum"] == ["coverage", "equal_flux", "feature"]
+    assert {
+        "seed_mode",
+        "seed_description",
+        "termination_counts",
+        "start_termination_counts",
+        "suppressed_count",
+        "rendered_line_count",
+    } <= set(metadata["required"])
+    for field in ("termination_counts", "start_termination_counts"):
+        assert metadata["properties"][field]["additionalProperties"] == {
+            "minimum": 0,
+            "type": "integer",
+        }
+    for field in ("suppressed_count", "rendered_line_count"):
+        assert metadata["properties"][field]["type"] == "integer"
+        assert metadata["properties"][field]["minimum"] == 0
+    assert "start_termination" not in line["required"]
 
 
 def test_electric_scene_honors_source_override() -> None:
@@ -261,8 +386,155 @@ def test_electric_scene_honors_source_override() -> None:
     assert [source.model_dump(exclude_none=True) for source in scene.sources] == [
         {**source.model_dump(exclude_none=True), "strength_unit": "nC"} for source in sources
     ]
-    assert len(scene.lines) == 6
     assert sum(scene.metadata.termination_counts.values()) == 6
+    assert scene.metadata.rendered_line_count == len(scene.lines)
+    assert len(scene.lines) + scene.metadata.suppressed_count == 6
+    assert scene.metadata.seed_mode is SeedMode.COVERAGE
+    assert scene.metadata.start_termination_counts == {}
+
+
+def test_unequal_electric_sources_share_budget_and_preserve_boundary_inflow() -> None:
+    request = SceneRequest(
+        preset="electric_dipole",
+        density=18,
+        resolution=32,
+        sources=[
+            SourceInput(x=-0.85, y=0.0, kind="positive", strength=1.0),
+            SourceInput(x=0.85, y=0.0, kind="negative", strength=-5.0),
+        ],
+    )
+
+    model = _build_model(request)
+    scene = build_scene(request)
+
+    assert Counter(job.direction for job in model.trace_jobs) == {
+        TraceDirection.FORWARD: 4,
+        TraceDirection.BACKWARD: 14,
+    }
+    assert scene.metadata.termination_counts == {
+        "exclusion_hit": 9,
+        "domain_exit": 9,
+    }
+    assert sum(scene.metadata.termination_counts.values()) == request.density
+    assert Counter((line.direction, line.termination) for line in scene.lines) == {
+        (1, "exclusion_hit"): 4,
+        (-1, "domain_exit"): 9,
+    }
+    assert scene.metadata.suppressed_count == 5
+    assert scene.metadata.rendered_line_count == 13
+
+
+_TraceScript = dict[
+    tuple[float, float],
+    tuple[list[tuple[float, float]], TerminationReason],
+]
+
+
+def _install_scripted_tracer(
+    monkeypatch: pytest.MonkeyPatch,
+    script: _TraceScript,
+) -> None:
+    class ScriptedTracer:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def trace(self, seed: object, direction: TraceDirection) -> TraceResult:
+            seed_array = np.asarray(seed, dtype=float)
+            key = (float(seed_array[0]), float(seed_array[1]))
+            raw_points, termination = script[key]
+            points = np.asarray(raw_points, dtype=float)
+            if points.shape[0] <= 1:
+                arc_length = np.zeros(points.shape[0], dtype=float)
+            else:
+                arc_length = np.concatenate(
+                    ([0.0], np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1)))
+                )
+            branch = TraceBranch(
+                direction=direction,
+                points=points,
+                arc_length=arc_length,
+                field_magnitude=np.ones(points.shape[0]),
+                termination=termination,
+                message="scripted test trace",
+                nfev=1,
+            )
+            return TraceResult(
+                seed=seed_array,
+                points=points,
+                arc_length=arc_length,
+                field_magnitude=np.ones(points.shape[0]),
+                forward=branch if direction is TraceDirection.FORWARD else None,
+                backward=branch if direction is TraceDirection.BACKWARD else None,
+            )
+
+    monkeypatch.setattr(web_scene, "FieldLineTracer", ScriptedTracer)
+
+
+def test_pair_suppression_is_scoped_to_observed_renderable_source_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _build_model(
+        SceneRequest(
+            preset="electric_dipole",
+            density=6,
+            resolution=32,
+            sources=[
+                SourceInput(x=-2.0, y=0.0, kind="positive", strength=1.0),
+                SourceInput(x=0.0, y=0.0, kind="negative", strength=-1.0),
+                SourceInput(x=2.0, y=0.0, kind="negative", strength=-1.0),
+            ],
+        )
+    )
+    jobs = (
+        TraceJob((-1.838, 0.0), TraceDirection.FORWARD, 0),
+        TraceJob((0.162, 0.0), TraceDirection.BACKWARD, 1),
+        TraceJob((2.162, 0.0), TraceDirection.BACKWARD, 2),
+        TraceJob((2.0, 0.162), TraceDirection.BACKWARD, 2),
+    )
+    _install_scripted_tracer(
+        monkeypatch,
+        {
+            jobs[0].seed: ([jobs[0].seed, (0.16, 0.0)], TerminationReason.EXCLUSION_HIT),
+            jobs[1].seed: ([jobs[1].seed, (-1.84, 0.0)], TerminationReason.EXCLUSION_HIT),
+            jobs[2].seed: ([jobs[2].seed, (-1.84, 0.0)], TerminationReason.EXCLUSION_HIT),
+            jobs[3].seed: ([jobs[3].seed, (3.0, 1.0)], TerminationReason.DOMAIN_EXIT),
+        },
+    )
+
+    traces = web_scene._trace_lines(replace(base, trace_jobs=jobs))
+
+    assert traces.termination_counts == Counter({"exclusion_hit": 3, "domain_exit": 1})
+    assert traces.start_termination_counts == Counter()
+    assert traces.suppressed_count == 1
+    assert Counter((line.direction, line.termination) for line in traces.lines) == {
+        (1, "exclusion_hit"): 1,
+        (-1, "exclusion_hit"): 1,
+        (-1, "domain_exit"): 1,
+    }
+
+
+def test_degenerate_positive_trace_does_not_suppress_a_negative_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _build_model(SceneRequest(preset="electric_dipole", density=6, resolution=32))
+    jobs = (
+        TraceJob((-0.688, 0.0), TraceDirection.FORWARD, 0),
+        TraceJob((0.688, 0.0), TraceDirection.BACKWARD, 1),
+    )
+    _install_scripted_tracer(
+        monkeypatch,
+        {
+            jobs[0].seed: ([jobs[0].seed], TerminationReason.EXCLUSION_HIT),
+            jobs[1].seed: ([jobs[1].seed, (-0.69, 0.0)], TerminationReason.EXCLUSION_HIT),
+        },
+    )
+
+    traces = web_scene._trace_lines(replace(base, trace_jobs=jobs))
+
+    assert traces.termination_counts == Counter({"exclusion_hit": 2})
+    assert traces.suppressed_count == 0
+    assert len(traces.lines) == 1
+    assert traces.lines[0].direction == -1
 
 
 def test_current_loop_uses_response_only_markers_and_closed_loop_tracing() -> None:
@@ -312,7 +584,11 @@ def test_current_loop_uses_response_only_markers_and_closed_loop_tracing() -> No
         assert np.min(tangent_cosine) > 0.99
     assert scene.metadata.field_model.startswith("三维理想圆形电流线圈")
     assert "子午面" in scene.metadata.projection_note
-    assert "等通量" not in scene.metadata.seed_mode
+    assert scene.metadata.seed_mode is SeedMode.EQUAL_FLUX
+    assert "相等磁通间隔" in scene.metadata.seed_description
+    assert "轴线特征线" in scene.metadata.seed_description
+    assert "线数不表示磁感应强度" in scene.metadata.seed_description
+    assert scene.metadata.start_termination_counts == {}
 
 
 def test_current_loop_planar_adapter_matches_the_invariant_3d_field() -> None:
@@ -351,6 +627,19 @@ def test_current_loop_odd_seed_budget_adds_one_axis_line() -> None:
     nonaxis_x = np.sort(model.seeds[model.seeds[:, 0] != 0.0, 0])
     np.testing.assert_allclose(nonaxis_x, -nonaxis_x[::-1], rtol=0.0, atol=0.0)
     assert np.all(model.exclusions[0].margin(model.seeds) > 0.0)
+
+
+def test_current_loop_nonaxis_seed_pairs_are_equally_spaced_in_flux() -> None:
+    request = SceneRequest(preset="current_loop", density=8, resolution=32)
+    model = _build_model(request)
+    loop = CircularLoopField(1.0, 1.0, normal=(0.0, 1.0, 0.0))
+    positive_seeds = model.seeds[model.seeds[:, 0] > 0.0]
+    embedded = np.column_stack((positive_seeds, np.zeros(positive_seeds.shape[0])))
+    flux = np.sort(loop.flux_function(embedded))
+
+    assert positive_seeds.shape == (request.density // 2, 2)
+    np.testing.assert_allclose(np.diff(flux), np.full(flux.size - 1, np.diff(flux)[0]))
+    assert all(job.direction is web_scene.TraceDirection.FORWARD for job in model.trace_jobs)
 
 
 def test_dipole_angle_defaults_to_positive_y_and_is_returned_explicitly(
@@ -524,6 +813,8 @@ def test_magnetic_seed_axes_follow_signed_in_plane_moments() -> None:
     np.testing.assert_allclose(model.seeds, expected, rtol=0.0, atol=2.0e-15)
     radial = model.seeds - centers
     assert np.all(np.einsum("ij,ij->i", model.field.evaluate(model.seeds), radial) > 0.0)
+    assert all(job.direction is web_scene.TraceDirection.FORWARD for job in model.trace_jobs)
+    assert model.seed_mode is SeedMode.COVERAGE
 
 
 def test_zero_strength_dipoles_are_markers_but_not_active_sources() -> None:
@@ -555,13 +846,103 @@ def test_zero_strength_dipoles_are_markers_but_not_active_sources() -> None:
 
     assert [source.strength for source in model.sources] == [0.0, 2.0]
     np.testing.assert_array_equal(model.exclusions[0].centers, active_position[None, :])
-    np.testing.assert_allclose(
-        np.linalg.norm(model.seeds - active_position, axis=1),
-        np.full(request.density, SOURCE_RADIUS + 2.0e-3),
-        rtol=0.0,
-        atol=2.0e-15,
-    )
+    offsets = model.seeds - active_position
+    np.testing.assert_allclose(offsets[:, 0], np.zeros(request.density), atol=2.0e-15)
+    assert np.all(np.linalg.norm(offsets, axis=1) >= SOURCE_RADIUS + 2.0e-3)
+    assert all(job.direction is web_scene.TraceDirection.BOTH for job in model.trace_jobs)
+    assert model.seed_mode is SeedMode.FEATURE
     assert np.all(np.isfinite(model.field.evaluate(zero_position)))
+
+
+def test_single_dipole_both_lines_count_both_ends_and_follow_positive_field() -> None:
+    request = SceneRequest(
+        preset="magnetic_dipole",
+        density=6,
+        resolution=32,
+        sources=[
+            SourceInput(
+                x=0.3,
+                y=-0.2,
+                kind="dipole",
+                strength=1.5,
+                angle_deg=37.0,
+            )
+        ],
+    )
+
+    model = _build_model(request)
+    scene = build_scene(request)
+
+    assert all(job.direction is TraceDirection.BOTH for job in model.trace_jobs)
+    assert sum(scene.metadata.termination_counts.values()) == request.density
+    assert sum(scene.metadata.start_termination_counts.values()) == request.density
+    assert scene.metadata.rendered_line_count == request.density
+    assert scene.metadata.suppressed_count == 0
+    for line in scene.lines:
+        assert line.direction == 1
+        assert line.start_termination is not None
+        points = np.asarray(line.points)
+        segments = np.diff(points, axis=0)
+        vectors = model.field.evaluate(0.5 * (points[:-1] + points[1:]))
+        tangent_cosine = np.einsum("ij,ij->i", segments, vectors) / (
+            np.linalg.norm(segments, axis=1) * np.linalg.norm(vectors, axis=1)
+        )
+        assert np.min(tangent_cosine) > 0.99
+
+
+def test_both_serialization_uses_forward_as_main_and_backward_as_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _build_model(SceneRequest(preset="magnetic_dipole", density=6, resolution=32))
+    job = TraceJob((0.0, 1.0), TraceDirection.BOTH, 0)
+    seed = np.asarray(job.seed)
+    forward = TraceBranch(
+        direction=TraceDirection.FORWARD,
+        points=np.asarray([seed, (1.0, 1.0)]),
+        arc_length=np.asarray([0.0, 1.0]),
+        field_magnitude=np.ones(2),
+        termination=TerminationReason.DOMAIN_EXIT,
+        message="scripted forward",
+        nfev=1,
+    )
+    backward = TraceBranch(
+        direction=TraceDirection.BACKWARD,
+        points=np.asarray([seed, (-1.0, 1.0)]),
+        arc_length=np.asarray([0.0, 1.0]),
+        field_magnitude=np.ones(2),
+        termination=TerminationReason.EXCLUSION_HIT,
+        message="scripted backward",
+        nfev=1,
+    )
+    result = TraceResult(
+        seed=seed,
+        points=np.asarray([(-1.0, 1.0), seed, (1.0, 1.0)]),
+        arc_length=np.asarray([0.0, 1.0, 2.0]),
+        field_magnitude=np.ones(3),
+        forward=forward,
+        backward=backward,
+    )
+
+    class BothTracer:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def trace(self, actual_seed: object, direction: TraceDirection) -> TraceResult:
+            np.testing.assert_array_equal(actual_seed, seed)
+            assert direction is TraceDirection.BOTH
+            return result
+
+    monkeypatch.setattr(web_scene, "FieldLineTracer", BothTracer)
+
+    traces = web_scene._trace_lines(replace(base, trace_jobs=(job,)))
+
+    assert traces.termination_counts == Counter({"domain_exit": 1})
+    assert traces.start_termination_counts == Counter({"exclusion_hit": 1})
+    assert len(traces.lines) == 1
+    assert traces.lines[0].direction == 1
+    assert traces.lines[0].termination == "domain_exit"
+    assert traces.lines[0].start_termination == "exclusion_hit"
+    assert traces.lines[0].points == [(-1.0, 1.0), (0.0, 1.0), (1.0, 1.0)]
 
 
 @pytest.mark.parametrize(
@@ -591,7 +972,7 @@ def test_every_nonzero_dipole_strength_remains_active(strength: float) -> None:
     assert np.all(np.isnan(model.field.evaluate((0.25, -0.5))))
 
 
-def test_halbach_defaults_form_two_quarter_turn_cycles_and_seed_each_dipole_once() -> None:
+def test_halbach_defaults_form_two_quarter_turn_cycles_and_use_two_seed_rails() -> None:
     request = SceneRequest(preset="halbach_array", density=8, resolution=32)
     model = _build_model(request)
 
@@ -609,14 +990,15 @@ def test_halbach_defaults_form_two_quarter_turn_cycles_and_seed_each_dipole_once
         np.diff(centers[:, 0]), np.full(7, centers[1, 0] - centers[0, 0]), rtol=0.0, atol=1e-15
     )
 
-    axes = np.column_stack((np.cos(np.deg2rad(angles)), np.sin(np.deg2rad(angles))))
-    np.testing.assert_allclose(
-        model.seeds, centers + (SOURCE_RADIUS + 2.0e-3) * axes, rtol=0.0, atol=2.0e-15
-    )
+    assert set(model.seeds[:, 1]) == {-0.45, 0.45}
+    assert np.min(model.seeds[:, 0]) >= -2.1
+    assert np.max(model.seeds[:, 0]) <= 2.1
+    assert all(job.direction is web_scene.TraceDirection.BOTH for job in model.trace_jobs)
+    assert model.seed_mode is SeedMode.COVERAGE
 
 
 @pytest.mark.parametrize("density", [6, 7])
-def test_halbach_default_rejects_density_below_its_eight_source_minimum(
+def test_halbach_default_density_is_not_tied_to_its_eight_source_count(
     client: TestClient, density: int
 ) -> None:
     response = client.post(
@@ -624,8 +1006,11 @@ def test_halbach_default_rejects_density_below_its_eight_source_minimum(
         json={"preset": "halbach_array", "density": density, "resolution": 32},
     )
 
-    assert response.status_code == 422
-    assert response.json() == {"detail": "halbach_array 有 8 个磁偶极子参与播种，density 至少为 8"}
+    assert response.status_code == 200
+    payload = response.json()
+    assert sum(payload["metadata"]["termination_counts"].values()) == density
+    assert sum(payload["metadata"]["start_termination_counts"].values()) == density
+    assert payload["metadata"]["seed_mode"] == "coverage"
 
 
 def test_halbach_accepts_dipole_only_source_overrides(client: TestClient) -> None:
@@ -658,6 +1043,8 @@ def test_halbach_accepts_dipole_only_source_overrides(client: TestClient) -> Non
     assert "可编辑" in accepted_metadata["title"]
     assert "Halbach" not in accepted_metadata["field_model"]
     assert "八个" not in accepted_metadata["field_model"]
+    assert accepted_metadata["seed_mode"] == "coverage"
+    assert accepted_metadata["start_termination_counts"] == {}
     assert rejected.status_code == 422
     assert rejected.json()["detail"][0]["msg"] == (
         "Value error, halbach_array accepts dipole sources only"
@@ -757,8 +1144,14 @@ def test_halbach_traces_preserve_seed_budget_and_are_tangent_to_the_field() -> N
 
     assert len(scene.lines) == request.density
     assert sum(scene.metadata.termination_counts.values()) == request.density
+    assert sum(scene.metadata.start_termination_counts.values()) == request.density
+    assert scene.metadata.suppressed_count == 0
+    assert scene.metadata.rendered_line_count == request.density
     residuals: list[float] = []
+    tangent_cosines: list[float] = []
     for line in scene.lines:
+        assert line.direction == 1
+        assert line.start_termination is not None
         points = np.asarray(line.points)
         segments = np.diff(points, axis=0)
         vectors = model.field.evaluate(0.5 * (points[:-1] + points[1:]))
@@ -768,9 +1161,28 @@ def test_halbach_traces_preserve_seed_budget_and_are_tangent_to_the_field() -> N
                 / (np.linalg.norm(segments, axis=1) * np.linalg.norm(vectors, axis=1))
             ).tolist()
         )
+        tangent_cosines.extend(
+            (
+                np.einsum("ij,ij->i", segments, vectors)
+                / (np.linalg.norm(segments, axis=1) * np.linalg.norm(vectors, axis=1))
+            ).tolist()
+        )
 
     assert residuals
     assert max(residuals) < 0.02
+    assert min(tangent_cosines) > 0.99
+
+
+def test_halbach_default_output_reaches_above_the_array() -> None:
+    scene = build_scene(SceneRequest(preset="halbach_array", density=18, resolution=32))
+
+    upper_reaching_lines = [
+        line for line in scene.lines if np.max(np.asarray(line.points)[:, 1]) > 1.0
+    ]
+
+    assert len(scene.lines) == 18
+    assert len(upper_reaching_lines) >= 2
+    assert all(line.direction == 1 and line.start_termination for line in scene.lines)
 
 
 def test_source_input_and_payload_publish_separate_kind_vocabularies(
@@ -837,7 +1249,7 @@ def _electric_sources(positive_count: int) -> list[SourceInput]:
 
 
 def test_seed_budget_boundary_assigns_one_seed_to_each_seeding_source() -> None:
-    sources = _electric_sources(positive_count=6)
+    sources = _electric_sources(positive_count=5)
     sources = [
         source.model_copy(update={"strength": 10.0 if index == 0 else 0.1})
         if source.kind == "positive"
@@ -855,11 +1267,11 @@ def test_seed_budget_boundary_assigns_one_seed_to_each_seeding_source() -> None:
     scene = build_scene(request)
 
     assert model.seeds.shape == (request.density, 2)
-    for source in request.sources[:-1]:
+    for source in request.sources:
         nearby = sum(math.dist(seed, (source.x, source.y)) < 0.17 for seed in model.seeds.tolist())
         assert nearby == 1
-    assert len(scene.lines) == request.density
     assert sum(scene.metadata.termination_counts.values()) == request.density
+    assert scene.metadata.rendered_line_count + scene.metadata.suppressed_count == request.density
 
 
 def test_multisource_scene_keeps_density_as_the_total_seed_budget() -> None:
@@ -872,12 +1284,13 @@ def test_multisource_scene_keeps_density_as_the_total_seed_budget() -> None:
 
     scene = build_scene(request)
 
-    assert len(scene.lines) == request.density
     assert sum(scene.metadata.termination_counts.values()) == request.density
+    assert scene.metadata.rendered_line_count == len(scene.lines)
+    assert scene.metadata.rendered_line_count + scene.metadata.suppressed_count == request.density
 
 
 def test_remaining_seed_budget_uses_largest_remainders() -> None:
-    counts = _allocate_seed_counts(np.array((3.0, 2.0, 1.0)), total=10)
+    counts = allocate_seed_counts(np.array((3.0, 2.0, 1.0)), total=10)
 
     np.testing.assert_array_equal(counts, (5, 3, 2))
 
@@ -953,8 +1366,9 @@ def test_scene_endpoint_returns_browser_contract(client: TestClient) -> None:
     }
     assert {source["strength_unit"] for source in payload["sources"]} == {"nC"}
     assert payload["scalar"]["nx"] == 32
-    assert len(payload["lines"]) == 6
     assert sum(payload["metadata"]["termination_counts"].values()) == 6
+    assert payload["metadata"]["rendered_line_count"] == len(payload["lines"])
+    assert payload["metadata"]["rendered_line_count"] + payload["metadata"]["suppressed_count"] == 6
 
 
 @pytest.mark.parametrize(
@@ -1092,7 +1506,7 @@ def test_scene_endpoint_rejects_insufficient_seed_budget_with_actionable_detail(
     )
 
     assert response.status_code == 422
-    assert response.json() == {"detail": "electric_dipole 有 7 个正电荷参与播种，density 至少为 7"}
+    assert response.json() == {"detail": "electric_dipole 有 8 个电荷参与播种，density 至少为 8"}
 
 
 def test_magnetic_seed_budget_error_names_its_seeding_sources(
@@ -1379,10 +1793,9 @@ def test_minimal_scene_request_and_every_advertised_preset_are_usable(
 
     preset_ids = [item["id"] for item in client.get("/api/presets").json()]
     for preset_id in preset_ids:
-        density = 8 if preset_id == "halbach_array" else 6
         response = client.post(
             "/api/scene",
-            json={"preset": preset_id, "density": density, "resolution": 32},
+            json={"preset": preset_id, "density": 6, "resolution": 32},
         )
         assert response.status_code == 200
         payload = response.json()

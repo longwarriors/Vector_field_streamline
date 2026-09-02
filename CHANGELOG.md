@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-02
+
+### Added
+
+- 场景元数据以 `coverage`、`equal_flux`、`feature` 枚举和独立的 `seed_description` 公开播种策略，并分别报告末端与起点端终止统计。
+- 电荷场从全部正负源按绝对强度分配总种子预算；负源反向轨迹只在已有同源对的正向可渲染代表时抑制，并显式返回 `suppressed_count` 与 `rendered_line_count`。
+- 双向场线响应可用 `start_termination` 描述点序起点端的终止原因，点序始终沿正场方向。
+
+### Changed
+
+- 默认 Halbach 阵列改为在 $y=\pm0.45$ m 的两条完整平行轨道上等距覆盖播种并双向追踪；默认预设的密度预算不再受八个显示源数量约束。
+- 单磁偶极预设改为沿随偶极几何旋转的赤道线按距离覆盖播种并双向追踪；自定义多偶极仍使用逐源外向半球覆盖。
+- 圆环电流预设使用公开磁通函数反解等 $\psi$ 轮廓；偶数预算成对镜像，奇数预算另保留一条轴线特征线。
+
 ## [0.2.2] - 2026-09-02
 
 ### Added
@@ -43,6 +57,7 @@
 - `density` 定义为整个场景的种子总预算，并在服务端与浏览器提交前共同校验。
 - 场景元数据区分真实不变平面场线与投影流线，并公开播种说明和终止统计。
 
-[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/longwarriors/Vector_field_streamline/tree/v0.2.1

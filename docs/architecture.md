@@ -19,6 +19,7 @@ Vector_field_streamline/
 │       └── web/
 │           ├── app.py           # HTTP API 与静态资源入口
 │           ├── schemas.py       # 请求/响应契约
+│           ├── seeding.py       # Web 预设的 TraceJob 播种策略
 │           └── static/          # 无构建浏览器前端
 └── tests/                       # 单元、验证、Web 契约测试
 ```
@@ -33,7 +34,7 @@ Vector_field_streamline/
 | `fields.py` | 批量求值解析场与组合场 | 播种、积分、颜色映射 |
 | `tracing.py` | 方向归一化、双向积分、事件、终止信息 | 物理源公式、浏览器状态 |
 | 验证代码 | 解析解、不变量、残差与收敛诊断 | 修改模型参数以“修好”结果 |
-| `web/` | 输入校验、场景编排、静态资源、JSON 序列化 | 复制 NumPy/SciPy 算法到前端 |
+| `web/` | 输入校验、预设播种、场景编排、静态资源、JSON 序列化 | 修改核心物理公式、把数值算法复制到前端 |
 | 前端 | 参数交互、图层和提示信息 | 物理公式与积分算法 |
 
 ## 核心数据流
@@ -49,8 +50,8 @@ sequenceDiagram
     API->>API: 校验预设、密度与分辨率
     API->>Field: 批量 evaluate(grid_points)
     Field-->>API: vectors (..., D)
-    loop 每个种子
-        API->>Tracer: trace(seed, BOTH)
+    loop 每个 TraceJob
+        API->>Tracer: trace(seed, direction)
         Tracer->>Field: evaluate(points)
         Field-->>Tracer: tangent vectors
         Tracer-->>API: TraceResult
@@ -109,9 +110,11 @@ uniform         -> UniformField(...)
 
 `resolution` 控制标量背景采样；`density` 控制播种数量或间距。这两个参数不能互相代替。完整 JSON 契约见 [HTTP API](api.md#http-api)。
 
-磁偶极与 Halbach 场景都只把 HTTP 中的面内角度转换成三维磁矩，再复用核心的批量 `MagneticDipoleField`；Web 层不复制磁偶极公式。Halbach 默认几何由八个等间距点偶极组成，相邻方向转过 90°。用户编辑后它成为普通的可编辑面内偶极阵列，响应元数据也不再把任意排列冒充标准 Halbach 几何。
+`web/seeding.py` 把每个预设的种子位置、追踪方向和可选源下标封装为不可变 `TraceJob`。它只组合核心公开接口：圆环等 $\psi$ 策略调用 `CircularLoopField.flux_function()` 并用 SciPy 求根，不在 Web 层复制圆环磁场公式。`scene.py` 统一执行 job、组织双端终止信息，并在所有结果已知后做电荷源对抑制；抑制属于展示编排，不改写积分器或尝试预算。
 
-圆环是三维理想细导线模型；二维 Web 追踪器使用它的真实不变子午面。三维环面排除管在该平面上的截面是两个圆盘，因此 Web 层传给二维追踪器的是两个 `SphericalExclusion`，而不是维数不匹配的 `ToroidalExclusion`。响应中的两个 wire 标记仅表示同一圆环与子午面的交点，不是两个独立场源。
+磁偶极与 Halbach 场景都只把 HTTP 中的面内角度转换成三维磁矩，再复用核心的批量 `MagneticDipoleField`；Web 层不复制磁偶极公式。单个 active 磁偶极沿旋转赤道线生成 `BOTH` job；多个 active 偶极使用逐源外向半球覆盖。Halbach 默认几何由八个等间距点偶极组成，相邻方向转过 90°，其专用 `BOTH` job 位于 $y=\pm0.45$ m 两条轨道。用户编辑后它成为普通的可编辑面内偶极阵列，退回逐源覆盖，响应元数据也不再把任意排列冒充标准 Halbach 几何。
+
+圆环是三维理想细导线模型；二维 Web 追踪器使用它的真实不变子午面。三维环面排除管在该平面上的截面是两个圆盘，因此 Web 层传给二维追踪器的是两个 `SphericalExclusion`，而不是维数不匹配的 `ToroidalExclusion`。响应中的两个 wire 标记仅表示同一圆环与子午面的交点，不是两个独立场源。环内非轴 job 由等间隔 $\psi$ 目标反解并成对镜像，奇数预算另含一条轴线特征 job。
 
 ## 缓存边界 { #cache-boundaries }
 

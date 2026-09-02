@@ -1,5 +1,6 @@
 """Validated request and response models for the browser application."""
 
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -29,6 +30,14 @@ SourcePayloadKind = Literal[
     "wire_into",
 ]
 SourceStrengthUnit = Literal["nC", "A·m²", "A"]
+
+
+class SeedMode(StrEnum):
+    """Machine-readable category for a scene's seed placement strategy."""
+
+    COVERAGE = "coverage"
+    EQUAL_FLUX = "equal_flux"
+    FEATURE = "feature"
 
 
 class SourceInput(BaseModel):
@@ -168,6 +177,7 @@ class LinePayload(_ResponsePayload):
     points: list[tuple[FiniteFloat, FiniteFloat]] = Field(min_length=2)
     direction: Literal[-1, 1]
     termination: str = Field(min_length=1)
+    start_termination: str | None = Field(default=None, min_length=1)
 
 
 class SourcePayload(_ResponsePayload):
@@ -216,8 +226,12 @@ class MetadataPayload(_ResponsePayload):
     title: str
     projection_note: str
     field_model: str
-    seed_mode: str
+    seed_mode: SeedMode
+    seed_description: str = Field(min_length=1)
     termination_counts: dict[str, Annotated[StrictInt, Field(ge=0)]]
+    start_termination_counts: dict[str, Annotated[StrictInt, Field(ge=0)]]
+    suppressed_count: Annotated[StrictInt, Field(ge=0)]
+    rendered_line_count: Annotated[StrictInt, Field(ge=0)]
 
 
 class SceneResponse(_ResponsePayload):
@@ -226,6 +240,12 @@ class SceneResponse(_ResponsePayload):
     lines: list[LinePayload]
     sources: list[SourcePayload]
     metadata: MetadataPayload
+
+    @model_validator(mode="after")
+    def validate_rendered_line_count(self) -> "SceneResponse":
+        if self.metadata.rendered_line_count != len(self.lines):
+            raise ValueError("metadata rendered_line_count must equal len(lines)")
+        return self
 
 
 class SourceSeparationCapability(_ResponsePayload):
