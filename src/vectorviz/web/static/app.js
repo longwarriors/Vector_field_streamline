@@ -15,12 +15,15 @@ import {
   normalizeAngleDeg,
   seedingSourceCount,
   serializeSource,
+  snapSourcePosition,
+  sourceSeparationConflict,
 } from "./source-controls.js";
 
 (() => {
   "use strict";
 
   const API_URL = "/api/scene";
+  const PRESETS_URL = "/api/presets";
   const SOURCE_STRENGTH_UNITS = Object.freeze({
     positive: "nC",
     negative: "nC",
@@ -69,6 +72,9 @@ import {
     lineCount: document.querySelector("#line-count"),
     gridSize: document.querySelector("#grid-size"),
     fieldUnit: document.querySelector("#field-unit"),
+    fieldModel: document.querySelector("#field-model"),
+    seedMode: document.querySelector("#seed-mode"),
+    terminationCounts: document.querySelector("#termination-counts"),
     probe: document.querySelector("#probe"),
     probePosition: document.querySelector("#probe-position"),
     probeValue: document.querySelector("#probe-value"),
@@ -89,6 +95,7 @@ import {
     transform: null,
     scale: null,
     presentationStatus: "idle",
+    presetCapabilities: new Map(),
   };
 
   function finiteNumber(value, fallback = 0) {
@@ -132,6 +139,57 @@ import {
     return EDITABLE_SOURCE_PRESETS.has(elements.preset.value);
   }
 
+  function selectedSourceSeparation() {
+    return state.presetCapabilities.get(elements.preset.value)?.exclusive_minimum ?? null;
+  }
+
+  function sourcePositionBounds() {
+    const domain = state.scene?.domain;
+    return {
+      xmin: Math.max(domain?.x?.[0] ?? -SOURCE_COORDINATE_LIMIT, -SOURCE_COORDINATE_LIMIT),
+      xmax: Math.min(domain?.x?.[1] ?? SOURCE_COORDINATE_LIMIT, SOURCE_COORDINATE_LIMIT),
+      ymin: Math.max(domain?.y?.[0] ?? -SOURCE_COORDINATE_LIMIT, -SOURCE_COORDINATE_LIMIT),
+      ymax: Math.min(domain?.y?.[1] ?? SOURCE_COORDINATE_LIMIT, SOURCE_COORDINATE_LIMIT),
+    };
+  }
+
+  function validatePresetCapabilities(payload) {
+    if (!Array.isArray(payload)) throw new Error("预设能力响应不是数组");
+    const capabilities = new Map();
+    for (const preset of payload) {
+      if (!preset || typeof preset !== "object" || typeof preset.id !== "string") {
+        throw new Error("预设能力缺少有效 id");
+      }
+      const separation = preset.source_separation;
+      if (separation === undefined || separation === null) continue;
+      if (
+        typeof separation !== "object" ||
+        typeof separation.exclusive_minimum !== "number" ||
+        !Number.isFinite(separation.exclusive_minimum) ||
+        separation.exclusive_minimum <= 0 ||
+        separation.unit !== "m"
+      ) {
+        throw new Error(`${preset.id} 的场源间距能力无效`);
+      }
+      capabilities.set(preset.id, {
+        exclusive_minimum: separation.exclusive_minimum,
+        unit: separation.unit,
+      });
+    }
+    for (const preset of EDITABLE_SOURCE_PRESETS) {
+      if (!capabilities.has(preset)) {
+        throw new Error(`${preset} 未声明场源间距能力`);
+      }
+    }
+    return capabilities;
+  }
+
+  async function loadPresetCapabilities() {
+    const response = await fetch(PRESETS_URL, {headers: {Accept: "application/json"}});
+    if (!response.ok) throw new Error(await extractError(response));
+    state.presetCapabilities = validatePresetCapabilities(await response.json());
+  }
+
   function currentRequestBody() {
     const serializedSources =
       sourcesAreEditable() && state.sourceOverrides?.length
@@ -150,7 +208,7 @@ import {
     if (density !== requestedDensity) {
       elements.density.value = String(density);
       updateRange(elements.density, elements.densityOutput, (value) => String(value));
-      elements.sourceStatus.textContent = `${requiredDensity} 个播种源每个至少需要 1 条场线，density 已自动调整为 ${density}。`;
+      elements.sourceStatus.textContent = `${requiredDensity} 个播种源每个至少需要 1 个种子，播种预算已自动调整为 ${density}。`;
     }
     const body = {
       preset: elements.preset.value,
@@ -202,21 +260,40 @@ import {
     const nx = Number(scene.scalar?.nx);
     const ny = Number(scene.scalar?.ny);
     const values = scene.scalar?.values;
+    const mask = scene.scalar?.mask;
     if (!Number.isInteger(nx) || !Number.isInteger(ny) || nx < 2 || ny < 2) {
       throw new Error("标量网格尺寸无效");
     }
     if (!Array.isArray(values) || values.length !== nx * ny) {
       throw new Error(`标量网格应包含 ${nx * ny} 个值`);
     }
-    if (
-      scene.scalar.mask !== undefined &&
-      (!Array.isArray(scene.scalar.mask) || scene.scalar.mask.length !== nx * ny)
-    ) {
+    if (!Array.isArray(mask) || mask.length !== nx * ny) {
       throw new Error(`标量遮罩应包含 ${nx * ny} 个布尔值`);
     }
+    const invalidScalarIndex = values.findIndex((value, index) => {
+      if (typeof mask[index] !== "boolean") return true;
+      return mask[index]
+        ? value !== null
+        : typeof value !== "number" || !Number.isFinite(value);
+    });
+    if (invalidScalarIndex !== -1) {
+      throw new Error(`标量值与遮罩在索引 ${invalidScalarIndex} 未严格配对`);
+    }
+    if (
+      (scene.scalar.scale !== "linear" && scene.scalar.scale !== "log") ||
+      typeof scene.scalar.label !== "string" ||
+      typeof scene.scalar.unit !== "string" ||
+      !Number.isFinite(scene.scalar.vmin) ||
+      !Number.isFinite(scene.scalar.vmax) ||
+      scene.scalar.vmax <= scene.scalar.vmin ||
+      (scene.scalar.scale === "log" && scene.scalar.vmin <= 0)
+    ) {
+      throw new Error("标量色标元数据无效");
+    }
 
-    scene.lines = Array.isArray(scene.lines) ? scene.lines : [];
-    scene.sources = Array.isArray(scene.sources) ? scene.sources : [];
+    if (!Array.isArray(scene.lines) || !Array.isArray(scene.sources)) {
+      throw new Error("场景 lines 与 sources 必须为数组");
+    }
     const validSources = scene.sources.every((source) => {
       if (
         !source ||
@@ -259,7 +336,25 @@ import {
     if (!validSources || !validLoopMarkers) {
       throw new Error("场源缺少有效坐标、强度或 strength_unit");
     }
-    scene.metadata = scene.metadata && typeof scene.metadata === "object" ? scene.metadata : {};
+    const metadata = scene.metadata;
+    const terminationCounts = metadata?.termination_counts;
+    if (
+      !metadata ||
+      typeof metadata !== "object" ||
+      Array.isArray(metadata) ||
+      typeof metadata.title !== "string" ||
+      typeof metadata.projection_note !== "string" ||
+      typeof metadata.field_model !== "string" ||
+      typeof metadata.seed_mode !== "string" ||
+      !terminationCounts ||
+      typeof terminationCounts !== "object" ||
+      Array.isArray(terminationCounts) ||
+      !Object.values(terminationCounts).every(
+        (count) => Number.isInteger(count) && count >= 0,
+      )
+    ) {
+      throw new Error("场景 metadata 缺少有效的模型、播种或终止统计");
+    }
     return scene;
   }
 
@@ -286,14 +381,36 @@ import {
     elements.lineCount.textContent = "—";
     elements.gridSize.textContent = "—";
     elements.fieldUnit.textContent = "—";
+    elements.fieldModel.textContent = "—";
+    elements.seedMode.textContent = "—";
+    elements.terminationCounts.textContent = "—";
     elements.colorbar.hidden = true;
     elements.probe.hidden = true;
     renderSourceEditors();
     render();
   }
 
+  function markSceneStale(message = "场源位置已改变，场待重算。") {
+    if (!state.scene) return;
+    state.presentationStatus = "stale";
+    state.scale = null;
+    elements.colorbar.hidden = true;
+    elements.probe.hidden = true;
+    elements.scaleBadge.textContent = "场待重算";
+    elements.lineCount.textContent = "—";
+    elements.terminationCounts.textContent = "待重算";
+    elements.canvas.setAttribute(
+      "aria-label",
+      "场源位置已改变；旧数值场已隐藏，等待重新计算。",
+    );
+    setConnectionStatus("loading", "待重算");
+    elements.liveStatus.textContent = message;
+    render();
+  }
+
   async function loadScene({ preserveSources = true } = {}) {
     window.clearTimeout(state.debounceTimer);
+    state.debounceTimer = null;
     if (!preserveSources) {
       state.sourceOverrides = null;
       elements.sourceStatus.textContent = "";
@@ -347,7 +464,29 @@ import {
 
   function scheduleLoad(delay = 260) {
     window.clearTimeout(state.debounceTimer);
-    state.debounceTimer = window.setTimeout(() => loadScene(), delay);
+    state.debounceTimer = window.setTimeout(() => {
+      state.debounceTimer = null;
+      loadScene();
+    }, delay);
+  }
+
+  const TERMINATION_LABELS = Object.freeze({
+    domain_exit: "离开计算域",
+    null_field: "零场",
+    nonfinite_field: "非有限场",
+    max_arc_length: "达到弧长上限",
+    solver_failure: "求解失败",
+    seed_outside_domain: "种子超出计算域",
+    exclusion_hit: "命中排除区",
+    closed_loop: "闭合回路",
+  });
+
+  function formatTerminationCounts(counts) {
+    const entries = Object.entries(counts);
+    if (!entries.length) return "无";
+    return entries
+      .map(([reason, count]) => `${TERMINATION_LABELS[reason] || reason} ${count}`)
+      .join(" · ");
   }
 
   function updateSceneDetails() {
@@ -366,6 +505,11 @@ import {
       scalar.nx === scalar.ny ? `${scalar.nx}²` : `${scalar.nx}×${scalar.ny}`,
     );
     elements.fieldUnit.textContent = unit;
+    elements.fieldModel.textContent = scene.metadata.field_model;
+    elements.seedMode.textContent = scene.metadata.seed_mode;
+    elements.terminationCounts.textContent = formatTerminationCounts(
+      scene.metadata.termination_counts,
+    );
 
     const scale = resolveScale(scalar);
     elements.colorbar.hidden = false;
@@ -421,6 +565,11 @@ import {
 
     state.plotRect = calculatePlotRect(size.width, size.height, state.scene.domain);
     state.transform = createCoordinateTransform(state.scene.domain, state.plotRect);
+    if (state.presentationStatus === "stale") {
+      drawGridAndAxes();
+      drawSources();
+      return;
+    }
     state.scale = resolveScale(state.scene.scalar);
     drawHeatmap();
     drawGridAndAxes();
@@ -788,7 +937,24 @@ import {
         input.value = formatEditorValue(state.scene.sources[index][axis]);
         return;
       }
+      const source = state.scene.sources[index];
+      const previous = source[axis];
       const bounded = clamp(value, -SOURCE_COORDINATE_LIMIT, SOURCE_COORDINATE_LIMIT);
+      const candidate = {x: source.x, y: source.y, [axis]: bounded};
+      const minimum = selectedSourceSeparation();
+      const conflict = sourceSeparationConflict(
+        elements.preset.value,
+        state.scene.sources,
+        index,
+        candidate,
+        minimum,
+      );
+      if (conflict) {
+        input.value = formatEditorValue(previous);
+        elements.sourceStatus.textContent = `场源间距必须大于 ${formatEditorValue(minimum)} m；已恢复原坐标。`;
+        elements.liveStatus.textContent = "坐标与另一有效场源冲突，未发送计算请求。";
+        return;
+      }
       input.value = formatEditorValue(bounded);
       updateSource(index, axis, bounded);
       scheduleLoad(360);
@@ -853,13 +1019,20 @@ import {
     if (!sourcesAreEditable()) return;
     state.scene.sources[index][axis] = value;
     syncSourceOverrides();
-    render();
+    markSceneStale();
   }
 
   function addSource(kind) {
     if (!state.scene || !sourcesAreEditable()) return;
     if (state.scene.sources.length >= SOURCE_COUNT_LIMIT) return;
-    state.scene.sources.push(createSource(kind, state.scene.sources));
+    state.scene.sources.push(
+      createSource(
+        kind,
+        state.scene.sources,
+        elements.preset.value,
+        selectedSourceSeparation(),
+      ),
+    );
     syncSourceOverrides();
     elements.sourceStatus.textContent = `已添加场源，当前 ${state.sourceOverrides.length} 个。`;
     loadScene();
@@ -899,8 +1072,11 @@ import {
     const [canvasX, canvasY] = pointerPosition(event);
     const sourceIndex = sourceAt(canvasX, canvasY);
     if (sourceIndex === null) return;
+    const needsRequest = state.presentationStatus === "stale";
+    window.clearTimeout(state.debounceTimer);
+    state.debounceTimer = null;
     state.selectedSource = sourceIndex;
-    state.drag = { pointerId: event.pointerId, sourceIndex };
+    state.drag = {pointerId: event.pointerId, sourceIndex, moved: false, needsRequest};
     elements.canvas.setPointerCapture(event.pointerId);
     elements.canvas.dataset.dragging = "true";
     elements.probe.hidden = true;
@@ -912,22 +1088,27 @@ import {
     if (!state.scene) return;
     const [canvasX, canvasY] = pointerPosition(event);
     if (state.drag?.pointerId === event.pointerId) {
-      const [xmin, xmax] = state.scene.domain.x;
-      const [ymin, ymax] = state.scene.domain.y;
       const [worldX, worldY] = canvasToWorld(canvasX, canvasY);
       const source = state.scene.sources[state.drag.sourceIndex];
-      source.x = clamp(
-        worldX,
-        Math.max(xmin, -SOURCE_COORDINATE_LIMIT),
-        Math.min(xmax, SOURCE_COORDINATE_LIMIT),
+      const position = snapSourcePosition(
+        elements.preset.value,
+        state.scene.sources,
+        state.drag.sourceIndex,
+        {x: worldX, y: worldY},
+        selectedSourceSeparation(),
+        sourcePositionBounds(),
       );
-      source.y = clamp(
-        worldY,
-        Math.max(ymin, -SOURCE_COORDINATE_LIMIT),
-        Math.min(ymax, SOURCE_COORDINATE_LIMIT),
-      );
+      if (!position) return;
+      const moved = position.x !== source.x || position.y !== source.y;
+      if (!moved) return;
+      state.drag.moved = true;
+      source.x = position.x;
+      source.y = position.y;
       syncSourceOverrides();
-      render();
+      if (position.snapped) {
+        elements.sourceStatus.textContent = `已按大于 ${formatEditorValue(selectedSourceSeparation())} m 的场源间距吸附。`;
+      }
+      markSceneStale();
       return;
     }
     updateProbe(canvasX, canvasY);
@@ -936,18 +1117,32 @@ import {
   function finishPointerDrag(event) {
     if (!state.drag || state.drag.pointerId !== event.pointerId) return;
     const index = state.drag.sourceIndex;
+    const moved = state.drag.moved;
+    const needsRequest = state.drag.needsRequest;
     state.drag = null;
     delete elements.canvas.dataset.dragging;
     if (elements.canvas.hasPointerCapture(event.pointerId)) {
       elements.canvas.releasePointerCapture(event.pointerId);
     }
     renderSourceEditors();
+    if (!moved) {
+      if (needsRequest) {
+        loadScene();
+        return;
+      }
+      render();
+      return;
+    }
     const source = state.scene.sources[index];
     elements.liveStatus.textContent = `${readableSourceName(source, index)}移动到 x ${formatEditorValue(source.x)}，y ${formatEditorValue(source.y)}，正在重新计算。`;
     loadScene();
   }
 
   function updateProbe(canvasX, canvasY) {
+    if (state.presentationStatus !== "ready") {
+      elements.probe.hidden = true;
+      return;
+    }
     const { left, right, top, bottom } = state.plotRect;
     if (canvasX < left || canvasX > right || canvasY < top || canvasY > bottom) {
       elements.probe.hidden = true;
@@ -990,18 +1185,25 @@ import {
     const fraction = event.shiftKey ? 0.05 : 0.01;
     const xStep = (state.scene.domain.x[1] - state.scene.domain.x[0]) * fraction;
     const yStep = (state.scene.domain.y[1] - state.scene.domain.y[0]) * fraction;
-    source.x = clamp(
-      source.x + xDirection * xStep,
-      Math.max(state.scene.domain.x[0], -SOURCE_COORDINATE_LIMIT),
-      Math.min(state.scene.domain.x[1], SOURCE_COORDINATE_LIMIT),
+    const position = snapSourcePosition(
+      elements.preset.value,
+      state.scene.sources,
+      state.selectedSource,
+      {
+        x: source.x + xDirection * xStep,
+        y: source.y + yDirection * yStep,
+      },
+      selectedSourceSeparation(),
+      sourcePositionBounds(),
     );
-    source.y = clamp(
-      source.y + yDirection * yStep,
-      Math.max(state.scene.domain.y[0], -SOURCE_COORDINATE_LIMIT),
-      Math.min(state.scene.domain.y[1], SOURCE_COORDINATE_LIMIT),
-    );
+    if (!position || (position.x === source.x && position.y === source.y)) return;
+    source.x = position.x;
+    source.y = position.y;
     syncSourceOverrides();
-    render();
+    if (position.snapped) {
+      elements.sourceStatus.textContent = `已按大于 ${formatEditorValue(selectedSourceSeparation())} m 的场源间距吸附。`;
+    }
+    markSceneStale();
     renderSourceEditors();
     scheduleLoad(400);
   }
@@ -1025,6 +1227,19 @@ import {
     return Math.abs(number) >= 1e4 || (Math.abs(number) > 0 && Math.abs(number) < 1e-4)
       ? number.toExponential(4)
       : Number(number.toPrecision(6)).toString();
+  }
+
+  async function bootstrap() {
+    setLoading(true);
+    clearError();
+    try {
+      await loadPresetCapabilities();
+      await loadScene({preserveSources: false});
+    } catch (error) {
+      invalidateSceneView("error");
+      setError(error.message || "无法读取预设能力");
+      setLoading(false);
+    }
   }
 
   elements.form.addEventListener("submit", (event) => event.preventDefault());
@@ -1060,5 +1275,5 @@ import {
 
   updateRange(elements.density, elements.densityOutput, (value) => String(value));
   updateRange(elements.resolution, elements.resolutionOutput, (value) => `${value} × ${value}`);
-  loadScene({ preserveSources: false });
+  bootstrap();
 })();

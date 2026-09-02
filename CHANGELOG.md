@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-02
+
+### Added
+
+- `/api/presets` 为可编辑点源场景公开 `source_separation` capability；active 排除区域的源中心距离必须严格大于 0.322 m，422 会点名冲突源的原请求下标。
+- 浏览器科学详情显示场模型、自由文本播种说明与终止统计；已知终止原因本地化，未知原因保留原始键。
+- CI 新增独立的 macOS + Python 3.13 非浏览器兼容任务，并把它纳入 Pages 部署前置门禁。
+
+### Changed
+
+- 标量响应以 JSON `null` 表示 masked 格点，未遮罩项保留未按 `vmin`/`vmax` 裁剪的原始有限值；响应模型校验数组长度、mask/null 对应关系和色标边界。
+- `density` 继续表示 6–40 的整数种子总预算，浏览器步长改为 1，使圆环奇数预算的轴线分支可达。
+- 零强度磁偶极保留为响应 marker，但不再参与场、播种、排除区域、源间距或预算；全零 `magnetic_dipole`/`halbach_array` 请求返回 422。
+- 数值位置编辑会回滚源间距冲突；拖动会吸附到合法位置，只在松开后请求一次，并在等待新场期间隐藏旧热图、色标和场线。
+
+### Fixed
+
+- 探针不再把色标百分位裁剪值冒充原始场值。
+- 拖动源时不再把拖动前的场与拖动后的源位置混画。
+
 ## [0.2.1] - 2026-09-02
 
 这是对已经交付的 v0.1.1–v0.2.1 工作进行的首个正式发布记录；它不把旧提交重新解释成曾经发布过的 tag。
@@ -23,5 +43,6 @@
 - `density` 定义为整个场景的种子总预算，并在服务端与浏览器提交前共同校验。
 - 场景元数据区分真实不变平面场线与投影流线，并公开播种说明和终止统计。
 
-[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/longwarriors/Vector_field_streamline/tree/v0.2.1

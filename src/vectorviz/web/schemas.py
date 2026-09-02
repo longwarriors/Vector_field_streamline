@@ -1,8 +1,16 @@
 """Validated request and response models for the browser application."""
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FiniteFloat,
+    StrictBool,
+    StrictInt,
+    model_validator,
+)
 
 PresetName = Literal[
     "electric_dipole",
@@ -75,8 +83,7 @@ class SourceInput(BaseModel):
             )
         if self.kind == "negative" and self.strength >= 0.0:
             raise ValueError(
-                "negative source strength must be less than 0; "
-                "zero and positive values are invalid"
+                "negative source strength must be less than 0; zero and positive values are invalid"
             )
         if self.kind == "dipole" and self.angle_deg is None:
             raise ValueError("dipole angle_deg cannot be null; omit it to use 90 degrees")
@@ -111,42 +118,68 @@ class SceneRequest(BaseModel):
         return self
 
 
-class DomainPayload(BaseModel):
-    x: tuple[float, float]
-    y: tuple[float, float]
+class _ResponsePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class DomainPayload(_ResponsePayload):
+    x: tuple[FiniteFloat, FiniteFloat]
+    y: tuple[FiniteFloat, FiniteFloat]
     coordinate_system: Literal["cartesian"]
     unit: Literal["m"]
 
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "DomainPayload":
+        if self.x[0] >= self.x[1] or self.y[0] >= self.y[1]:
+            raise ValueError("domain lower bounds must be strictly less than upper bounds")
+        return self
 
-class ScalarPayload(BaseModel):
-    nx: int
-    ny: int
-    values: list[float]
-    mask: list[bool]
+
+class ScalarPayload(_ResponsePayload):
+    nx: Annotated[StrictInt, Field(gt=0)]
+    ny: Annotated[StrictInt, Field(gt=0)]
+    values: list[FiniteFloat | None]
+    mask: list[StrictBool]
     scale: Literal["linear", "log"]
     label: str
     unit: str
-    vmin: float
-    vmax: float
+    vmin: FiniteFloat
+    vmax: FiniteFloat
+
+    @model_validator(mode="after")
+    def validate_grid_contract(self) -> "ScalarPayload":
+        expected_size = self.nx * self.ny
+        if len(self.values) != expected_size:
+            raise ValueError("scalar values length must equal nx * ny")
+        if len(self.mask) != expected_size:
+            raise ValueError("scalar mask length must equal nx * ny")
+        if any(
+            masked != (value is None) for value, masked in zip(self.values, self.mask, strict=True)
+        ):
+            raise ValueError("scalar values must be null exactly where mask is true")
+        if self.vmax <= self.vmin:
+            raise ValueError("scalar vmax must be strictly greater than vmin")
+        if self.scale == "log" and self.vmin <= 0.0:
+            raise ValueError("log scalar scales require a positive vmin")
+        return self
 
 
-class LinePayload(BaseModel):
-    points: list[tuple[float, float]]
+class LinePayload(_ResponsePayload):
+    points: list[tuple[FiniteFloat, FiniteFloat]] = Field(min_length=2)
     direction: Literal[-1, 1]
-    termination: str
+    termination: str = Field(min_length=1)
 
 
-class SourcePayload(BaseModel):
-    x: float
-    y: float
+class SourcePayload(_ResponsePayload):
+    x: FiniteFloat
+    y: FiniteFloat
     kind: SourcePayloadKind
-    strength: float
+    strength: FiniteFloat
     strength_unit: SourceStrengthUnit
-    angle_deg: float | None = Field(
+    angle_deg: FiniteFloat | None = Field(
         default=None,
         ge=0.0,
         lt=360.0,
-        allow_inf_nan=False,
         description=(
             "Dipole moment angle in degrees, counterclockwise from +x toward +y. "
             "Valid only for dipole sources: dipoles cannot use null and omitted dipoles "
@@ -154,16 +187,40 @@ class SourcePayload(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def validate_kind_contract(self) -> "SourcePayload":
+        if self.kind == "dipole":
+            if self.strength_unit != "A·m²":
+                raise ValueError("dipole source strength_unit must be A·m²")
+            if self.angle_deg is None:
+                raise ValueError("dipole source angle_deg cannot be null")
+            return self
+        if self.angle_deg is not None:
+            raise ValueError("angle_deg is only valid for dipole sources")
+        if self.kind in {"positive", "negative"}:
+            if self.strength_unit != "nC":
+                raise ValueError("charge source strength_unit must be nC")
+            if self.kind == "positive" and self.strength <= 0.0:
+                raise ValueError("positive source strength must be greater than 0")
+            if self.kind == "negative" and self.strength >= 0.0:
+                raise ValueError("negative source strength must be less than 0")
+        elif self.kind in {"wire_out", "wire_into"}:
+            if self.strength_unit != "A":
+                raise ValueError("wire source strength_unit must be A")
+            if self.strength < 0.0:
+                raise ValueError("wire source strength must be non-negative")
+        return self
 
-class MetadataPayload(BaseModel):
+
+class MetadataPayload(_ResponsePayload):
     title: str
     projection_note: str
     field_model: str
     seed_mode: str
-    termination_counts: dict[str, int]
+    termination_counts: dict[str, Annotated[StrictInt, Field(ge=0)]]
 
 
-class SceneResponse(BaseModel):
+class SceneResponse(_ResponsePayload):
     domain: DomainPayload
     scalar: ScalarPayload
     lines: list[LinePayload]
@@ -171,7 +228,13 @@ class SceneResponse(BaseModel):
     metadata: MetadataPayload
 
 
-class PresetPayload(BaseModel):
+class SourceSeparationCapability(_ResponsePayload):
+    exclusive_minimum: FiniteFloat = Field(gt=0.0)
+    unit: Literal["m"]
+
+
+class PresetPayload(_ResponsePayload):
     id: PresetName
     label: str
     description: str
+    source_separation: SourceSeparationCapability | None = None

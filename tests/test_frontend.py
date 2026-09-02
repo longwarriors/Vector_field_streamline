@@ -61,6 +61,32 @@ def _browser_scene() -> dict[str, object]:
     }
 
 
+def _browser_presets() -> list[dict[str, object]]:
+    editable = {"exclusive_minimum": 0.322, "unit": "m"}
+    return [
+        {
+            "id": "electric_dipole",
+            "label": "电偶极子",
+            "description": "fixture",
+            "source_separation": editable,
+        },
+        {
+            "id": "magnetic_dipole",
+            "label": "磁偶极子",
+            "description": "fixture",
+            "source_separation": editable,
+        },
+        {
+            "id": "halbach_array",
+            "label": "Halbach 阵列",
+            "description": "fixture",
+            "source_separation": editable,
+        },
+        {"id": "current_loop", "label": "圆形电流线圈", "description": "fixture"},
+        {"id": "uniform", "label": "匀强场", "description": "fixture"},
+    ]
+
+
 def _browser_loop_scene() -> dict[str, object]:
     scene = json.loads(json.dumps(_browser_scene()))
     scalar = scene["scalar"]
@@ -178,6 +204,14 @@ def browser_page(chromium_browser: Browser) -> Iterator[tuple[Page, list[str]]]:
     page = context.new_page()
     page_errors: list[str] = []
     page.on("pageerror", lambda error: page_errors.append(str(error)))
+    page.route(
+        "**/api/presets",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(_browser_presets()),
+        ),
+    )
     yield page, page_errors
     context.close()
 
@@ -540,12 +574,8 @@ def test_scalar_lines_arrows_sources_and_probe_share_one_transform(
     expect(page.locator(".source-strength")).to_have_text("1 nC")
     expect(page.locator(".coordinate-axis")).to_have_text(["x/m", "y/m"])
     coordinate_inputs = page.locator(".coordinate-field input")
-    expect(coordinate_inputs.nth(0)).to_have_attribute(
-        "aria-label", "正电荷 1 x 坐标（m）"
-    )
-    expect(coordinate_inputs.nth(1)).to_have_attribute(
-        "aria-label", "正电荷 1 y 坐标（m）"
-    )
+    expect(coordinate_inputs.nth(0)).to_have_attribute("aria-label", "正电荷 1 x 坐标（m）")
+    expect(coordinate_inputs.nth(1)).to_have_attribute("aria-label", "正电荷 1 y 坐标（m）")
     page.mouse.move(target["x"], target["y"])
     expect(page.locator("#probe")).to_be_visible()
     expect(page.locator("#probe-position")).to_have_text("x 1 m · y -1 m")
@@ -651,13 +681,13 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
     assert isinstance(scalar, dict)
     scalar.update(
         {
-            "values": [0.0, -2.0, 1.0, 10.0, 1.0e300, 2.0, 3.0, 4.0, 5.0],
+            "values": [0.0, -2.0, 1.0, 10.0, None, 2.0, 3.0, 4.0, 5.0],
             "mask": [False, False, False, False, True, False, False, False, False],
             "scale": "log",
+            "vmin": 1.0,
+            "vmax": 10.0,
         }
     )
-    scalar.pop("vmin")
-    scalar.pop("vmax")
     _instrument_canvas(page)
     _open_ready_scene(page, frontend_url, scene)
 
@@ -684,7 +714,7 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
               await import('/color-scale.js');
             const scalar = {
               scale: 'log',
-              values: [0, -2, 1, 10, 1e300],
+              values: [0, -2, 1, 10, null],
               mask: [false, false, false, false, true],
             };
             const scale = resolveScale(scalar);
@@ -692,7 +722,7 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
               scale,
               zero: normalizeScalar(0, scale),
               negative: normalizeScalar(-2, scale),
-              masked: colorForScalar(1e300, true, scale),
+              masked: colorForScalar(null, true, scale),
               invalid: colorForScalar(0, false, scale),
               validMaximum: colorForScalar(10, false, scale),
             };
@@ -707,6 +737,63 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
     assert result["masked"] != result["validMaximum"]
     assert result["invalid"] != result["validMaximum"]
     assert result["validMaximum"] == [253, 231, 37, 255]
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_probe_distinguishes_masked_null_from_zero(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    scalar = scene["scalar"]
+    assert isinstance(scalar, dict)
+    values = [1.0] * 15
+    mask = [False] * 15
+    values[6] = None
+    mask[6] = True
+    values[7] = 0.0
+    values[8] = 50.0
+    scalar.update(
+        {
+            "nx": 5,
+            "ny": 3,
+            "values": values,
+            "mask": mask,
+            "vmin": 1.0,
+            "vmax": 10.0,
+        }
+    )
+    _open_ready_scene(page, frontend_url, scene)
+
+    points = page.evaluate(
+        """async () => {
+          const canvas = document.querySelector('#field-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const domain = {x: [-2, 4], y: [-3, 1]};
+          const {calculatePlotRect, createCoordinateTransform} = await import('/coordinates.js');
+          const transform = createCoordinateTransform(
+            domain, calculatePlotRect(rect.width, rect.height, domain),
+          );
+          return Object.fromEntries([
+            ['masked', [-0.5, -1]],
+            ['zero', [1, -1]],
+            ['raw', [2.5, -1]],
+          ].map(([name, point]) => {
+            const [x, y] = transform.worldToCanvas(...point);
+            return [name, {x: rect.left + x, y: rect.top + y}];
+          }));
+        }"""
+    )
+
+    page.mouse.move(points["masked"]["x"], points["masked"]["y"])
+    expect(page.locator("#probe-value")).to_have_text("|F| — u")
+    page.mouse.move(points["zero"]["x"], points["zero"]["y"])
+    expect(page.locator("#probe-value")).to_have_text("|F| 0 u")
+    page.mouse.move(points["raw"]["x"], points["raw"]["y"])
+    expect(page.locator("#probe-value")).to_have_text("|F| 50 u")
+    expect(page.locator("#colorbar-max")).to_have_text("10")
     assert page_errors == []
 
 
@@ -758,6 +845,528 @@ def test_probe_value_remains_consistent_after_resize(
 
 
 @pytest.mark.browser
+def test_density_slider_reaches_odd_values(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    _open_ready_scene(page, frontend_url, _browser_scene())
+
+    density = page.locator("#density")
+    expect(density).to_have_attribute("step", "1")
+    density.evaluate(
+        "input => { input.value = '7'; input.dispatchEvent(new Event('input', {bubbles: true})); }"
+    )
+    expect(density).to_have_value("7")
+    expect(page.locator("#density-output")).to_have_text("7")
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_current_loop_odd_density_is_submitted_from_browser(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    requests: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        body = route.request.post_data_json
+        requests.append(body)
+        scene = _browser_loop_scene() if body["preset"] == "current_loop" else _browser_scene()
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(scene))
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    page.locator("#density").evaluate("input => { input.value = '7'; }")
+    page.locator("#preset").select_option("current_loop")
+    expect(page.locator("#scene-title")).to_have_text("Current loop fixture")
+
+    assert requests[-1]["density"] == 7
+    assert "sources" not in requests[-1]
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_frontend_loads_presets_before_initial_scene(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    events: list[str] = []
+    page.unroute("**/api/presets")
+
+    def route_presets(route: Route) -> None:
+        events.append("presets")
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(_browser_presets()),
+        )
+
+    def route_scene(route: Route) -> None:
+        events.append("scene")
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(_browser_scene()),
+        )
+
+    page.route("**/api/presets", route_presets)
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+
+    assert events == ["presets", "scene"]
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_frontend_rejects_nonpositive_source_separation_capability(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    presets = _browser_presets()
+    presets[0]["source_separation"] = {"exclusive_minimum": 0, "unit": "m"}
+    scene_requests = 0
+    page.unroute("**/api/presets")
+    page.route(
+        "**/api/presets",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(presets),
+        ),
+    )
+
+    def route_scene(route: Route) -> None:
+        nonlocal scene_requests
+        scene_requests += 1
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(_browser_scene()),
+        )
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+
+    expect(page.locator("#error-banner")).to_be_visible()
+    expect(page.locator("#error-message")).to_contain_text("场源间距能力无效")
+    assert scene_requests == 0
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_frontend_displays_seed_mode_and_termination_counts(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    metadata = scene["metadata"]
+    assert isinstance(metadata, dict)
+    metadata.update(
+        {
+            "field_model": "finite-volume fixture model",
+            "seed_mode": "free-form fixture seed policy",
+            "termination_counts": {"domain_exit": 3, "future_reason": 2},
+        }
+    )
+    _open_ready_scene(page, frontend_url, scene)
+
+    expect(page.locator("#field-model")).to_have_text("finite-volume fixture model")
+    expect(page.locator("#seed-mode")).to_have_text("free-form fixture seed policy")
+    expect(page.locator("#termination-counts")).to_contain_text("离开计算域 3")
+    expect(page.locator("#termination-counts")).to_contain_text("future_reason 2")
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_frontend_ignores_unknown_additive_scene_fields(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    scalar = scene["scalar"]
+    domain = scene["domain"]
+    metadata = scene["metadata"]
+    lines = scene["lines"]
+    sources = scene["sources"]
+    assert isinstance(scalar, dict)
+    assert isinstance(domain, dict)
+    assert isinstance(metadata, dict)
+    assert isinstance(lines, list)
+    assert isinstance(sources, list)
+    scalar["values"][4] = None
+    scalar["mask"][4] = True
+    scene["future_top_level"] = {"revision": 3}
+    scalar["future_scalar_field"] = "accepted"
+    domain["future_domain_field"] = True
+    metadata["future_metadata_field"] = [1, 2, 3]
+    lines[0]["future_line_field"] = "accepted"
+    sources[0]["future_source_field"] = "accepted"
+
+    _open_ready_scene(page, frontend_url, scene)
+
+    expect(page.locator("#scene-title")).to_have_text("Browser fixture")
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    assert page_errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("mask_value, scalar_value", [(False, None), (True, 5.0)])
+def test_frontend_rejects_scalar_mask_value_mismatch(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+    mask_value: bool,
+    scalar_value: float | None,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    scalar = scene["scalar"]
+    assert isinstance(scalar, dict)
+    scalar["mask"][4] = mask_value
+    scalar["values"][4] = scalar_value
+    _route_scene(page, scene)
+    page.goto(frontend_url)
+
+    expect(page.locator("#error-banner")).to_be_visible()
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "error")
+    assert page_errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize(
+    "invalid_case",
+    [
+        "missing vmin",
+        "non-increasing bounds",
+        "nonpositive log vmin",
+        "missing lines",
+        "missing sources",
+    ],
+)
+def test_frontend_rejects_missing_or_invalid_required_scene_fields(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+    invalid_case: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    scalar = scene["scalar"]
+    assert isinstance(scalar, dict)
+    if invalid_case == "missing vmin":
+        scalar.pop("vmin")
+    elif invalid_case == "non-increasing bounds":
+        scalar["vmax"] = scalar["vmin"]
+    elif invalid_case == "nonpositive log vmin":
+        scalar.update({"scale": "log", "vmin": 0.0})
+    elif invalid_case == "missing lines":
+        scene.pop("lines")
+    else:
+        scene.pop("sources")
+    _route_scene(page, scene)
+    page.goto(frontend_url)
+
+    expect(page.locator("#error-banner")).to_be_visible()
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "error")
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_numeric_source_collision_rolls_back_without_request(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    scene["sources"] = [
+        {"x": -0.4, "y": 0.0, "kind": "positive", "strength": 1.0, "strength_unit": "nC"},
+        {"x": 0.4, "y": 0.0, "kind": "negative", "strength": -1.0, "strength_unit": "nC"},
+    ]
+    requests: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        requests.append(route.request.post_data_json)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(scene))
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    baseline = len(requests)
+    first_x = page.locator('.coordinate-field input[data-source-field="x"]').first
+    first_x.evaluate("input => { input.value = '0.4'; }")
+    first_x.dispatch_event("change")
+    page.wait_for_timeout(500)
+
+    expect(first_x).to_have_value("-0.4")
+    expect(page.locator("#source-status")).to_contain_text("大于 0.322 m")
+    expect(page.locator("#source-status")).to_contain_text("恢复原坐标")
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    assert len(requests) == baseline
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_drag_snaps_to_advertised_source_separation(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    scene["sources"] = [
+        {"x": -0.4, "y": 0.0, "kind": "positive", "strength": 1.0, "strength_unit": "nC"},
+        {"x": 0.4, "y": 0.0, "kind": "negative", "strength": -1.0, "strength_unit": "nC"},
+    ]
+    requests: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        body = route.request.post_data_json
+        requests.append(body)
+        response_scene = json.loads(json.dumps(scene))
+        if isinstance(body.get("sources"), list):
+            response_scene["sources"] = [
+                {**source, "strength_unit": "nC"} for source in body["sources"]
+            ]
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(response_scene))
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    points = page.evaluate(
+        """async () => {
+          const canvas = document.querySelector('#field-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const domain = {x: [-2, 4], y: [-3, 1]};
+          const {calculatePlotRect, createCoordinateTransform} = await import('/coordinates.js');
+          const transform = createCoordinateTransform(
+            domain, calculatePlotRect(rect.width, rect.height, domain),
+          );
+          const start = transform.worldToCanvas(-0.4, 0);
+          const target = transform.worldToCanvas(0.4, 0);
+          return {
+            start: {x: rect.left + start[0], y: rect.top + start[1]},
+            target: {x: rect.left + target[0], y: rect.top + target[1]},
+          };
+        }"""
+    )
+
+    page.mouse.move(points["start"]["x"], points["start"]["y"])
+    page.mouse.down()
+    with page.expect_request("**/api/scene") as final_request:
+        page.mouse.move(points["target"]["x"], points["target"]["y"])
+        expect(page.locator("#source-status")).to_contain_text("间距吸附")
+        page.mouse.up()
+    submitted = final_request.value.post_data_json["sources"]
+    assert (
+        math.hypot(
+            submitted[0]["x"] - submitted[1]["x"],
+            submitted[0]["y"] - submitted[1]["y"],
+        )
+        > 0.322
+    )
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_multi_source_snap_falls_back_to_last_legal_position(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    _open_ready_scene(page, frontend_url, _browser_scene())
+
+    result = page.evaluate(
+        """async () => {
+          const controls = await import('/source-controls.js');
+          const sources = [
+            {x: -1, y: 0, kind: 'positive', strength: 1},
+            {x: 0, y: 0, kind: 'negative', strength: -1},
+            {x: 0.5, y: 0, kind: 'positive', strength: 1},
+          ];
+          const snapped = controls.snapSourcePosition(
+            'electric_dipole', sources, 0, {x: 0.25, y: 0}, 0.322,
+            {xmin: -2, xmax: 2, ymin: -2, ymax: 2},
+          );
+          return {
+            snapped,
+            conflict: controls.sourceSeparationConflict(
+              'electric_dipole', sources, 0, snapped, 0.322,
+            ),
+            partialCandidateConflict: controls.sourceSeparationConflict(
+              'electric_dipole',
+              [
+                {x: -1, y: 1, kind: 'positive', strength: 1},
+                {x: 0, y: 1, kind: 'negative', strength: -1},
+              ],
+              0,
+              {x: 0},
+              0.322,
+            ),
+          };
+        }"""
+    )
+
+    assert result == {
+        "snapped": {"x": -1, "y": 0, "snapped": False},
+        "conflict": None,
+        "partialCandidateConflict": {"index": 1, "distance": 0},
+    }
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_dragged_source_marks_rendered_field_stale_until_response(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    _instrument_canvas(page)
+    _open_ready_scene(page, frontend_url, _browser_scene())
+    target = page.evaluate(
+        """async () => {
+          const canvas = document.querySelector('#field-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const {calculatePlotRect, createCoordinateTransform} =
+            await import('/coordinates.js');
+          const transform = createCoordinateTransform(
+            {x: [-2, 4], y: [-3, 1]},
+            calculatePlotRect(rect.width, rect.height, {x: [-2, 4], y: [-3, 1]}),
+          );
+          const [x, y] = transform.worldToCanvas(1, -1);
+          return {x: rect.left + x, y: rect.top + y};
+        }"""
+    )
+    page.mouse.move(target["x"], target["y"])
+    page.mouse.down()
+    raster_count = page.evaluate("() => window.__vectorVizCanvasCalls.drawImages.length")
+    page.mouse.move(target["x"] + 60, target["y"] + 20)
+
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "stale")
+    expect(page.locator("#scale-badge")).to_have_text("场待重算")
+    expect(page.locator("#colorbar")).to_be_hidden()
+    assert page.evaluate("() => window.__vectorVizCanvasCalls.drawImages.length") == raster_count
+    page.mouse.up()
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_drag_issues_only_final_scene_request(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    requests: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        body = route.request.post_data_json
+        requests.append(body)
+        response_scene = json.loads(json.dumps(scene))
+        if isinstance(body.get("sources"), list):
+            response_scene["sources"] = [
+                {**source, "strength_unit": "nC"} for source in body["sources"]
+            ]
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(response_scene))
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    target = page.evaluate(
+        """async () => {
+          const canvas = document.querySelector('#field-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const domain = {x: [-2, 4], y: [-3, 1]};
+          const {calculatePlotRect, createCoordinateTransform} = await import('/coordinates.js');
+          const [x, y] = createCoordinateTransform(
+            domain, calculatePlotRect(rect.width, rect.height, domain),
+          ).worldToCanvas(1, -1);
+          return {x: rect.left + x, y: rect.top + y};
+        }"""
+    )
+    baseline = len(requests)
+
+    page.mouse.move(target["x"], target["y"])
+    page.mouse.down()
+    for offset in (10, 20, 30, 40):
+        page.mouse.move(target["x"] + offset, target["y"])
+    page.wait_for_timeout(500)
+    assert len(requests) == baseline
+    page.mouse.up()
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    assert len(requests) == baseline + 1
+    assert "sources" in requests[-1]
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_drag_cancels_pending_edit_and_submits_one_final_request(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    requests: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        body = route.request.post_data_json
+        requests.append(body)
+        response_scene = json.loads(json.dumps(scene))
+        if isinstance(body.get("sources"), list):
+            response_scene["sources"] = [
+                {**source, "strength_unit": "nC"} for source in body["sources"]
+            ]
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(response_scene),
+        )
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    points = page.evaluate(
+        """async () => {
+          const canvas = document.querySelector('#field-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const domain = {x: [-2, 4], y: [-3, 1]};
+          const {calculatePlotRect, createCoordinateTransform} = await import('/coordinates.js');
+          const transform = createCoordinateTransform(
+            domain, calculatePlotRect(rect.width, rect.height, domain),
+          );
+          const initial = transform.worldToCanvas(1, -1);
+          const keyboardMoved = transform.worldToCanvas(1.06, -1);
+          return {
+            initial: {x: rect.left + initial[0], y: rect.top + initial[1]},
+            moved: {x: rect.left + keyboardMoved[0], y: rect.top + keyboardMoved[1]},
+          };
+        }"""
+    )
+    baseline = len(requests)
+
+    page.mouse.click(points["initial"]["x"], points["initial"]["y"])
+    page.locator("#field-canvas").focus()
+    page.keyboard.press("ArrowRight")
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "stale")
+    page.mouse.move(points["moved"]["x"], points["moved"]["y"])
+    page.mouse.down()
+    page.mouse.move(points["moved"]["x"] + 30, points["moved"]["y"])
+    page.wait_for_timeout(500)
+    assert len(requests) == baseline
+
+    page.mouse.up()
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    assert len(requests) == baseline + 1
+    assert requests[-1]["sources"][0]["x"] > 1.06
+    assert page_errors == []
+
+
+@pytest.mark.browser
 def test_source_control_module_encodes_angle_budget_and_request_contract(
     browser_page: tuple[Page, list[str]],
     frontend_url: str,
@@ -780,6 +1389,22 @@ def test_source_control_module_encodes_angle_budget_and_request_contract(
           replacements.push(controls.createSource('dipole', replacements));
           replacements.splice(1, 1);
           replacements.push(controls.createSource('dipole', replacements));
+          const obliqueSources = [
+            {x: -1, y: 1, kind: 'dipole', strength: 1},
+            {
+              x: -0.2928932188134524,
+              y: 1.7071067811865475,
+              kind: 'dipole',
+              strength: 1,
+            },
+          ];
+          const obliqueSnapped = controls.snapSourcePosition(
+            'magnetic_dipole',
+            obliqueSources,
+            1,
+            {x: -0.9292893218813453, y: 1.0707106781186548},
+            0.322,
+          );
           return {
             wrappedNegative: controls.normalizeAngleDeg(-90),
             wrappedLarge: controls.normalizeAngleDeg(450),
@@ -807,6 +1432,84 @@ def test_source_control_module_encodes_angle_budget_and_request_contract(
               {kind: 'negative'},
               {kind: 'positive'},
             ]),
+            nonzeroDipoleSeedCount: controls.seedingSourceCount('magnetic_dipole', [
+              {kind: 'dipole', strength: 0},
+              {kind: 'dipole', strength: -0},
+              {kind: 'dipole', strength: -2},
+            ]),
+            zeroDipoleIsActive: controls.sourceIsActive(
+              'magnetic_dipole', {kind: 'dipole', strength: -0},
+            ),
+            zeroChargeIsActive: controls.sourceIsActive(
+              'electric_dipole', {kind: 'positive', strength: 0},
+            ),
+            canRemoveLastActiveDipole: controls.canRemoveSource(
+              'magnetic_dipole',
+              [
+                {kind: 'dipole', strength: 1},
+                {kind: 'dipole', strength: 0},
+              ],
+              0,
+            ),
+            boundaryConflicts: Boolean(controls.sourceSeparationConflict(
+              'electric_dipole',
+              [
+                {x: 0, y: 0, kind: 'positive', strength: 1},
+                {x: 1, y: 0, kind: 'negative', strength: -1},
+              ],
+              1,
+              {x: 0.322, y: 0},
+              0.322,
+            )),
+            snapped: controls.snapSourcePosition(
+              'magnetic_dipole',
+              [
+                {x: 0, y: 0, kind: 'dipole', strength: 1},
+                {x: 1, y: 0, kind: 'dipole', strength: 1},
+              ],
+              1,
+              {x: 0.1, y: 0},
+              0.731,
+            ),
+            snappedAboveMinimum: controls.snapSourcePosition(
+              'magnetic_dipole',
+              [
+                {x: 0, y: 0, kind: 'dipole', strength: 1},
+                {x: 1, y: 0, kind: 'dipole', strength: 1},
+              ],
+              1,
+              {x: 0.1, y: 0},
+              0.731,
+            ).x > 0.731,
+            snappedConflicts: Boolean(controls.sourceSeparationConflict(
+              'magnetic_dipole',
+              [
+                {x: 0, y: 0, kind: 'dipole', strength: 1},
+                {x: 1, y: 0, kind: 'dipole', strength: 1},
+              ],
+              1,
+              controls.snapSourcePosition(
+                'magnetic_dipole',
+                [
+                  {x: 0, y: 0, kind: 'dipole', strength: 1},
+                  {x: 1, y: 0, kind: 'dipole', strength: 1},
+                ],
+                1,
+                {x: 0.1, y: 0},
+                0.731,
+              ),
+              0.731,
+            )),
+            obliqueSnapped: obliqueSnapped.snapped,
+            obliqueDistanceAboveMinimum:
+              Math.hypot(obliqueSnapped.x + 1, obliqueSnapped.y - 1) > 0.322,
+            obliqueConflicts: Boolean(controls.sourceSeparationConflict(
+              'magnetic_dipole',
+              obliqueSources,
+              1,
+              obliqueSnapped,
+              0.322,
+            )),
             density: controls.densityForSeedBudget(6, 8, {
               min: 6,
               max: 40,
@@ -833,6 +1536,21 @@ def test_source_control_module_encodes_angle_budget_and_request_contract(
         "reversedMoment": 210,
         "seedCount": 8,
         "electricSeedCount": 2,
+        "nonzeroDipoleSeedCount": 1,
+        "zeroDipoleIsActive": False,
+        "zeroChargeIsActive": True,
+        "canRemoveLastActiveDipole": False,
+        "boundaryConflicts": True,
+        "snapped": {
+            "x": pytest.approx(0.731, abs=1e-12),
+            "y": 0,
+            "snapped": True,
+        },
+        "snappedAboveMinimum": True,
+        "snappedConflicts": False,
+        "obliqueSnapped": True,
+        "obliqueDistanceAboveMinimum": True,
+        "obliqueConflicts": False,
         "density": 8,
         "uniqueReplacementPositions": 8,
     }
@@ -860,8 +1578,7 @@ def test_halbach_sources_are_editable_but_cannot_bypass_api_contracts(
             )
             if isinstance(source_requests, list):
                 response_scene["sources"] = [
-                    {**source, "strength_unit": "A·m²"}
-                    for source in source_requests
+                    {**source, "strength_unit": "A·m²"} for source in source_requests
                 ]
         route.fulfill(
             status=200,
@@ -1089,10 +1806,10 @@ def test_drag_and_keyboard_requests_never_exceed_source_coordinate_contract(
     page.locator("#field-canvas").focus()
     page.keyboard.press("ArrowRight")
     with page.expect_request("**/api/scene") as keyboard_request:
-        page.keyboard.press("ArrowDown")
+        page.keyboard.press("ArrowUp")
     keyboard_source = keyboard_request.value.post_data_json["sources"][0]
     assert keyboard_source["x"] == pytest.approx(2.8)
-    assert keyboard_source["y"] == pytest.approx(-2.8)
+    assert keyboard_source["y"] > -2.8
     assert all(
         -2.8 <= source[axis] <= 2.8
         for body in request_bodies

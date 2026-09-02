@@ -29,9 +29,29 @@ def test_changelog_latest_release_matches_runtime_version() -> None:
     assert releases
     assert releases[0] == __version__
 
+    unreleased_base = re.search(
+        r"^\[Unreleased\]: .*/compare/v(\d+\.\d+\.\d+)\.\.\.HEAD$",
+        changelog,
+        flags=re.MULTILINE,
+    )
+    assert unreleased_base is not None
+    assert unreleased_base.group(1) == __version__
+
 
 def test_documented_health_version_matches_runtime_version() -> None:
     api_reference = (ROOT / "docs" / "api.md").read_text(encoding="utf-8")
     documented_versions = re.findall(r'"version": "(\d+\.\d+\.\d+)"', api_reference)
 
     assert documented_versions == [__version__]
+
+
+def test_roadmap_marks_runtime_release_complete() -> None:
+    roadmap = (ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
+    release = re.search(
+        rf"^## v{re.escape(__version__)}[^\n]*\n\n状态：\*\*([^*]+)\*\*。",
+        roadmap,
+        flags=re.MULTILINE,
+    )
+
+    assert release is not None
+    assert release.group(1) == "已完成"

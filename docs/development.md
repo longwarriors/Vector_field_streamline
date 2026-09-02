@@ -47,7 +47,8 @@ uv run mkdocs serve
 `.github/workflows/ci.yml` 对提交到 `master` 的改动、面向 `master` 的拉取请求和手动运行执行以下门禁：
 
 - Ubuntu + Python 3.13 是权威质量环境，安装 headless Chromium，并运行 Ruff、包含前端语义测试的完整 pytest 覆盖率、严格文档构建以及 wheel/sdist 构件冒烟；
-- Ubuntu/Windows + Python 3.11/3.14 只验证非浏览器兼容性，不重复下载浏览器或统计覆盖率；
+- Ubuntu/Windows + Python 3.11/3.14 只验证版本边界的非浏览器兼容性，不重复下载浏览器或统计覆盖率；
+- 独立的 macOS + Python 3.13 作业验证平台兼容性，不与上述矩阵做笛卡尔积；
 - 覆盖率配置位于 `pyproject.toml`，使用两位精度，精确综合覆盖率低于 90.00% 时失败；
 - CI 固定 uv 与各 GitHub Action 的版本，依赖安装始终从 `uv sync --locked` 开始。
 - 同一分支的新 workflow 会取消尚未完成的旧 workflow，避免旧提交在新提交之后反向覆盖 Pages。
@@ -91,12 +92,13 @@ uv run mkdocs serve
 使用测试客户端覆盖：
 
 - `GET /api/health` 返回成功和稳定状态字段；
-- `GET /api/presets` 返回可用于场景请求的标识符；
+- `GET /api/presets` 返回可用于场景请求的标识符，以及可编辑点源预设的严格最小中心距能力；
 - `POST /api/scene` 的完整与最小合法请求；
 - 非法预设、负密度、过大分辨率和畸形源被拒绝；
-- `scalar.values` 数量与 `nx * ny` 一致；
+- `scalar.values`、`mask` 数量与 `nx * ny` 一致，且 masked 项恰为 JSON `null`、未遮罩项是未按色标裁剪的有限原值；
 - 所有曲线点都在声明的坐标约定下可解释；
-- 响应包含单位与 `projection_note`。
+- 响应包含单位、`projection_note`、自由文本 `seed_mode` 与非负整数终止统计；
+- active 源中心距等于或小于能力下限、以及全零磁偶极场景都返回精确的 422 契约。
 
 ### 前端测试
 
@@ -105,6 +107,10 @@ uv run mkdocs serve
 - API 请求失败时显示错误，不保留“看似已更新”的旧状态；
 - 标量、场线、箭头和源共用同一坐标变换；
 - 对数尺度不会对零值或 mask 产生虚假热点；
+- 探针显示未裁剪原值，科学详情显示场模型、自由文本播种说明与终止统计；
+- `density` 步长为 1，奇数预算可提交，所有提交仍满足 active 播种源的最小预算；
+- 数值编辑在源间距冲突时回滚，拖动吸附到合法边界；
+- 拖动期间旧热图、色标和场线隐藏，只在松开后为最终位置发出一次请求；
 - 改变显示图层不再次请求物理场景；
 - 窗口缩放后坐标与指针探针仍一致。
 
@@ -117,7 +123,7 @@ uv run playwright install chromium
 uv run pytest tests/test_frontend.py --no-cov
 ```
 
-默认 `uv run pytest` 仍包含这些浏览器测试。`browser` marker 仅供兼容矩阵在没有下载 Chromium 时排除；权威质量作业不得排除它。当前测试已自动验证请求失败不展示旧结果、公共坐标变换、log/mask 无虚假热点、resize 后探针一致性、圆环 wire 标记只读、磁偶极方向显示、点源组成约束，以及所有请求在提交前满足播种预算。“改变显示图层不再次请求”留到 v0.3.0 图层开关存在时实现和验收，不提前制造空 UI。
+默认 `uv run pytest` 仍包含这些浏览器测试。`browser` marker 仅供兼容作业在没有下载 Chromium 时排除；权威质量作业不得排除它。当前测试已自动验证请求失败不展示旧结果、公共坐标变换、raw/null 标量契约、resize 后探针一致性、科学元数据和未知终止原因显示、拖动旧场隔离、源间距、圆环 wire 标记只读、磁偶极方向显示、点源组成约束，以及所有请求在提交前满足播种预算。“改变显示图层不再次请求”留到后续图层开关存在时实现和验收，不提前制造空 UI。
 
 ## 测试分组
 
@@ -172,7 +178,7 @@ uv run mkdocs build --strict
 - 记录点数、源数、种子数和容差；
 - 避免一次构造 `N_points × N_sources × D` 的巨大临时数组，必要时按源或点分块；
 - 计算可用 `float64`，向浏览器传输时经误差评估后才考虑 `float32`；
-- 前端拖动参数时可低分辨率预览，停止后再请求高精度结果。
+- 当前前端拖动点源时隐藏已失效的物理图层，只在停止后请求一次结果；未来若增加低分辨率预览，必须显式区分预览与最终场景。
 
 ## 代码审查清单
 

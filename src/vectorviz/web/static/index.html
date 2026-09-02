@@ -70,7 +70,7 @@
 
             <div class="control-group range-control">
               <div class="label-row">
-                <label for="density">场线密度</label>
+                <label for="density">播种预算</label>
                 <output id="density-output" for="density">18</output>
               </div>
               <input
@@ -79,13 +79,14 @@
                 type="range"
                 min="6"
                 max="40"
-                step="2"
+                step="1"
                 value="18"
               >
               <div class="range-bounds" aria-hidden="true">
                 <span>稀疏</span>
                 <span>细密</span>
               </div>
+              <p class="field-help">每次计算的总种子预算，不代表场强。</p>
             </div>
 
             <div class="control-group range-control">
@@ -156,6 +157,21 @@
             <div>
               <dt>单位</dt>
               <dd id="field-unit">—</dd>
+            </div>
+          </dl>
+
+          <dl class="scene-metadata" aria-label="数值场元数据">
+            <div>
+              <dt>场模型</dt>
+              <dd id="field-model">—</dd>
+            </div>
+            <div>
+              <dt>播种方式</dt>
+              <dd id="seed-mode">—</dd>
+            </div>
+            <div>
+              <dt>终止原因</dt>
+              <dd id="termination-counts">—</dd>
             </div>
           </dl>
         </aside>

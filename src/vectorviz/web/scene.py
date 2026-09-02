@@ -36,6 +36,9 @@ from .schemas import (
 
 DOMAIN = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
 SOURCE_RADIUS = 0.16
+SOURCE_SEED_CLEARANCE = 2.0e-3
+SOURCE_SEED_RADIUS = SOURCE_RADIUS + SOURCE_SEED_CLEARANCE
+MIN_SOURCE_SEPARATION = SOURCE_RADIUS + SOURCE_SEED_RADIUS
 CURRENT_LOOP_RADIUS = 1.0
 CURRENT_LOOP_CURRENT = 1.0
 CURRENT_LOOP_EXCLUSION_RADIUS = 0.16
@@ -160,10 +163,21 @@ def _source_payloads(sources: list[SourceInput]) -> tuple[SourcePayload, ...]:
             strength_unit = "A·m²"
         else:
             raise ValueError("uniform sources do not have a localized source strength")
-        payloads.append(
-            SourcePayload(**source.model_dump(), strength_unit=strength_unit)
-        )
+        payloads.append(SourcePayload(**source.model_dump(), strength_unit=strength_unit))
     return tuple(payloads)
+
+
+def _require_source_separation(
+    indexed_sources: list[tuple[int, SourceInput]],
+) -> None:
+    for offset, (first_index, first) in enumerate(indexed_sources):
+        for second_index, second in indexed_sources[offset + 1 :]:
+            distance = float(np.hypot(first.x - second.x, first.y - second.y))
+            if distance <= MIN_SOURCE_SEPARATION:
+                raise ValueError(
+                    f"sources[{first_index}] 与 sources[{second_index}] 的中心距离必须大于 "
+                    f"{MIN_SOURCE_SEPARATION:g} m"
+                )
 
 
 def _allocate_seed_counts(strengths: NDArray[np.float64], total: int) -> NDArray[np.int64]:
@@ -200,8 +214,7 @@ def _require_seed_budget(
 ) -> None:
     if source_count > density:
         raise ValueError(
-            f"{preset} 有 {source_count} 个{source_label}参与播种，"
-            f"density 至少为 {source_count}"
+            f"{preset} 有 {source_count} 个{source_label}参与播种，density 至少为 {source_count}"
         )
 
 
@@ -212,7 +225,7 @@ def _circle_seeds(
 ) -> NDArray[np.float64]:
     counts = _allocate_seed_counts(strengths, total)
     groups: list[NDArray[np.float64]] = []
-    radius = SOURCE_RADIUS + 2.0e-3
+    radius = SOURCE_SEED_RADIUS
     for center, count in zip(centers, counts, strict=True):
         angles = np.linspace(0.0, 2.0 * np.pi, int(count), endpoint=False)
         offsets = radius * np.column_stack((np.cos(angles), np.sin(angles)))
@@ -228,7 +241,7 @@ def _magnetic_seeds(
 ) -> NDArray[np.float64]:
     counts = _allocate_seed_counts(strengths, total)
     groups: list[NDArray[np.float64]] = []
-    radius = SOURCE_RADIUS + 2.0e-3
+    radius = SOURCE_SEED_RADIUS
     for center, strength, direction, count in zip(
         centers, strengths, directions, counts, strict=True
     ):
@@ -237,8 +250,7 @@ def _magnetic_seeds(
         axis = direction if strength >= 0.0 else -direction
         perpendicular = np.array((axis[1], -axis[0]))
         offsets = radius * (
-            np.cos(angles)[:, np.newaxis] * axis
-            + np.sin(angles)[:, np.newaxis] * perpendicular
+            np.cos(angles)[:, np.newaxis] * axis + np.sin(angles)[:, np.newaxis] * perpendicular
         )
         groups.append(center + offsets)
     return np.concatenate(groups, axis=0)
@@ -288,9 +300,7 @@ def _build_model(request: SceneRequest) -> _SceneModel:
         return _SceneModel(
             field=_PlanarCircularLoopField(loop),
             sources=markers,
-            exclusions=(
-                SphericalExclusion(wire_centers, CURRENT_LOOP_EXCLUSION_RADIUS),
-            ),
+            exclusions=(SphericalExclusion(wire_centers, CURRENT_LOOP_EXCLUSION_RADIUS),),
             seeds=_current_loop_seeds(request.density),
             direction=TraceDirection.FORWARD,
             trace_options=CURRENT_LOOP_TRACE_OPTIONS,
@@ -298,9 +308,7 @@ def _build_model(request: SceneRequest) -> _SceneModel:
             scalar_unit="T",
             title="圆形电流线圈的磁力线",
             field_model="三维理想圆形电流线圈在 z=0 子午面上的限制",
-            projection_note=(
-                "z=0 子午面是该轴对称场的不变平面，所示曲线是真实三维磁力线。"
-            ),
+            projection_note=("z=0 子午面是该轴对称场的不变平面，所示曲线是真实三维磁力线。"),
             seed_mode=(
                 "在圆环两侧的环内赤道段镜像等距覆盖播种；奇数预算另含轴线。"
                 "线密度不代表磁通或磁感应强度。"
@@ -308,13 +316,17 @@ def _build_model(request: SceneRequest) -> _SceneModel:
             reflect_y_symmetric_domain_exits=True,
         )
 
-    inputs = list(
-        _default_sources(request.preset) if request.sources is None else request.sources
-    )
+    inputs = list(_default_sources(request.preset) if request.sources is None else request.sources)
     payloads = _source_payloads(inputs)
 
     if request.preset == "electric_dipole":
-        active = [source for source in inputs if source.kind in {"positive", "negative"}]
+        indexed_active = [
+            (index, source)
+            for index, source in enumerate(inputs)
+            if source.kind in {"positive", "negative"}
+        ]
+        _require_source_separation(indexed_active)
+        active = [source for _, source in indexed_active]
         centers = np.array([[source.x, source.y] for source in active], dtype=float)
         signed_strengths = np.array([source.strength for source in active], dtype=float)
         if not np.any(signed_strengths > 0) or not np.any(signed_strengths < 0):
@@ -344,7 +356,15 @@ def _build_model(request: SceneRequest) -> _SceneModel:
         )
 
     if request.preset in {"magnetic_dipole", "halbach_array"}:
-        active = [source for source in inputs if source.kind == "dipole"]
+        indexed_active = [
+            (index, source)
+            for index, source in enumerate(inputs)
+            if source.kind == "dipole" and source.strength != 0.0
+        ]
+        if not indexed_active:
+            raise ValueError("至少需要一个非零磁偶极")
+        _require_source_separation(indexed_active)
+        active = [source for _, source in indexed_active]
         centers = np.array([[source.x, source.y] for source in active], dtype=float)
         strengths = np.array([source.strength for source in active], dtype=float)
         angles = np.deg2rad([source.angle_deg for source in active])
@@ -433,11 +453,14 @@ def _sample_scalar(model: _SceneModel, resolution: int) -> ScalarPayload:
         scale: Literal["linear", "log"] = "log" if vmax / vmin > 8.0 else "linear"
     else:
         vmin, vmax, scale = 0.0, 1.0, "linear"
-    serial_values = np.where(mask, vmin, np.clip(values, vmin, vmax))
+    serial_values = [
+        None if masked else float(value)
+        for value, masked in zip(values.ravel(), mask.ravel(), strict=True)
+    ]
     return ScalarPayload(
         nx=resolution,
         ny=resolution,
-        values=serial_values.ravel().tolist(),
+        values=serial_values,
         mask=mask.ravel().tolist(),
         scale=scale,
         label=model.scalar_label,

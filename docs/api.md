@@ -146,7 +146,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 ```json
 {
   "status": "ok",
-  "version": "0.2.1"
+  "version": "0.2.2"
 }
 ```
 
@@ -161,7 +161,11 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
   {
     "id": "electric_dipole",
     "label": "电偶极子",
-    "description": "两个异号点电荷的二维电场"
+    "description": "两个异号点电荷的二维电场",
+    "source_separation": {
+      "exclusive_minimum": 0.322,
+      "unit": "m"
+    }
   }
 ]
 ```
@@ -174,7 +178,9 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 - `current_loop`
 - `uniform`
 
-此端点是可用预设的权威目录；当前无构建客户端随版本静态提供同一组选项，并由契约测试防止两边漂移。客户端不应假设列表永久不变。
+此端点是可用预设及其交互能力的权威目录；当前无构建客户端随版本静态提供同一组选项，并由契约测试防止两边漂移。客户端不应假设列表永久不变。
+
+`electric_dipole`、`magnetic_dipole` 与 `halbach_array` 是可编辑点源预设，因此返回 `source_separation`。`exclusive_minimum: 0.322` 表示任意两个实际拥有排除区域的源中心距离必须**严格大于** 0.322 m；等于该值仍冲突。固定的 `current_loop` 与 `uniform` 没有这项能力，响应省略该字段；兼容客户端也应把缺失或 `null` 都解释为“不提供源间距交互”。
 
 ### `POST /api/scene`
 
@@ -203,17 +209,21 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 
 `sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m，范围均为 $[-2.8,2.8]$。请求模型 `SourceInput.kind` 只接受 `positive`、`negative`、`dipole`、`uniform`；响应专用的 `wire_out`/`wire_into` 不能提交。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。单位由预设决定，请求不得提交 `strength_unit`。
 
+可编辑点源场景无论使用默认源还是 `sources` 覆盖，电荷都拥有圆形排除区域；磁偶极和 Halbach 则只有 `strength != 0` 的 active 偶极拥有排除区域。服务端对这些 active 源逐对检查 `/api/presets` 公布的下限；显式源中心距小于或等于 0.322 m 时返回 422，`detail` 精确指出原请求中的 0-based 下标，例如 `sources[1] 与 sources[2] 的中心距离必须大于 0.322 m`。浏览器的预判与吸附只改善交互，服务端校验仍是权威边界。
+
 磁偶极子的 `strength` 单位为 A·m²，`angle_deg` 是从 $+x$ 朝 $+y$ 逆时针量取的面内角度，必须满足 $0\le\theta<360^\circ$。省略角度时使用 $90^\circ$，以兼容此前正强度指向 $+y$ 的行为；显式 `null`、非有限值和越界角度都非法。实际三维磁矩为
 
 $$
 \mathbf m=s\left(\cos\theta,\sin\theta,0\right),
 $$
 
-其中 $s$ 是有符号 `strength`，所以负值会把实际方向再翻转 $180^\circ$；$s=0$ 仍表示允许的零偶极矩。`angle_deg` 只能出现在 `dipole` 中，电荷即使提交 `null` 也会返回 422。这个参数化存在 $(s,\theta)$ 与 $(-s,\theta+180^\circ)$ 的等价表示，是为兼容 pre-1.0 已有的有符号强度契约而保留。
+其中 $s$ 是有符号 `strength`，所以负值会把实际方向再翻转 $180^\circ$；单个 $s=0$ 仍是允许且会原样返回的显示 marker，但不参与场、播种、排除区域、源间距或种子预算。`magnetic_dipole` 与 `halbach_array` 场景必须至少有一个非零偶极；全零请求返回 422，`detail` 为 `至少需要一个非零磁偶极`。`angle_deg` 只能出现在 `dipole` 中，电荷即使提交 `null` 也会返回 422。这个参数化存在 $(s,\theta)$ 与 $(-s,\theta+180^\circ)$ 的等价表示，是为兼容 pre-1.0 已有的有符号强度契约而保留。
 
 服务端必须为密度、分辨率、源数量和数值范围设置上限，防止一次交互请求耗尽内存或 CPU。
 
-`density` 是一次场景请求的总种子预算，不是“每个源各放多少条”。电偶极预设只从非零正电荷出发，因此这些正电荷参与预算；磁偶极和 Halbach 预设的每个偶极子都参与预算，包括强度为 0 的源。若参与播种的源数超过 `density`，服务端返回 422，`detail` 会给出当前数量和所需最小值，例如 `electric_dipole 有 7 个正电荷参与播种，density 至少为 7`。默认 Halbach 阵列有 8 个源，因此 `density` 至少为 8；浏览器在所有 POST 路径上预判预算，并把较小的滑块值自动抬到 8。预算充足时，每个播种源先得到 1 个种子，其余名额再按源强绝对值分配；非零磁偶极的播种半球随实际有符号磁矩一起旋转，零强度偶极没有物理磁矩轴，仍占一个种子预算并以其 `angle_deg` 作为约定播种轴；若全部强度均为 0，剩余预算在各源间均分。圆环预设不把两个 wire 标记当作播种源：它在两侧环内赤道段按几何半径镜像覆盖，奇数预算再增加一条轴线，仍严格消耗 `density` 个种子；这不是等通量播种。响应始终满足 `len(lines) <= density` 与 `sum(termination_counts.values()) == density`；当每个种子都得到至少两个有限轨迹点时，前一个不等式取等号。若种子位于零场或非有限场等无法形成曲线的位置，终止计数仍会记录该次追踪，但 `lines` 会排除只有一个点的结果。
+`density` 是一次场景请求的**整数**种子总预算，不是“每个源各放多少条”，范围为 6–40；浏览器滑块步长为 1，因此圆环的奇数预算轴线分支可达。电偶极预设只从正电荷出发，因此这些正电荷参与预算；磁偶极和 Halbach 只让非零 active 偶极参与预算。若参与播种的源数超过 `density`，服务端返回 422，`detail` 会给出当前数量和所需最小值，例如 `electric_dipole 有 7 个正电荷参与播种，density 至少为 7`。默认 Halbach 阵列有 8 个 active 源，因此 `density` 至少为 8；浏览器在所有 POST 路径上预判预算，并把较小值自动抬到所需下限。预算充足时，每个播种源先得到 1 个种子，其余名额再按源强绝对值分配；非零磁偶极的播种半球随实际有符号磁矩一起旋转。圆环预设不把两个 wire 标记当作播种源：它在两侧环内赤道段按几何半径镜像覆盖，奇数预算再增加一条轴线，仍严格消耗 `density` 个种子；这不是等通量播种。
+
+每个种子对应一次 trace job；无论结果是否足以渲染，都恰好给 `metadata.termination_counts` 的某个原因加 1。因此当前响应满足 `len(lines) <= density` 与 `sum(termination_counts.values()) == density`；当每个种子都得到至少两个有限轨迹点时，前一个不等式取等号。终止计数的键允许出现未来新增的原因，值必须是非负整数。
 
 成功响应结构如下。为便于阅读，示意片段把网格缩成 $2\times2$，并只展示 18 条轨迹中的 1 条；实际端点接受的 `resolution` 不低于 32，数组会相应更长。
 
@@ -228,8 +238,8 @@ $$
   "scalar": {
     "nx": 2,
     "ny": 2,
-    "values": [0.15, 0.17, 0.20, 0.18],
-    "mask": [false, false, false, false],
+    "values": [0.15, null, 12.5, 0.18],
+    "mask": [false, true, false, false],
     "scale": "log",
     "label": "|E|",
     "unit": "V/m",
@@ -276,17 +286,17 @@ $$
 #### `scalar`
 
 - `nx`、`ny` 定义规则网格尺寸；
-- `values` 是长度为 `nx * ny` 的 row-major 一维数组：第 0 行对应 `ymax`，每行从 `xmin` 到 `xmax`，随后向 `ymin` 进入下一行；
-- `mask` 与 `values` 等长，`true` 表示源排除区或无效采样；
+- `values` 是长度为 `nx * ny` 的 row-major 一维数组：第 0 行对应 `ymax`，每行从 `xmin` 到 `xmax`，随后向 `ymin` 进入下一行；未遮罩项是未按色标裁剪的原始有限浮点值；
+- `mask` 与 `values` 等长并逐项满足 `mask[i] == (values[i] is null)`；`true`/`null` 表示源排除区或非有限采样；
 - `scale` 当前只允许 `linear` 或 `log`；
 - `label` 与 `unit` 必须一同显示，避免无量纲色图。
-- `vmin` 与 `vmax` 是服务端在排除 mask 后给出的建议色标范围。
+- `vmin` 与 `vmax` 是服务端在排除 mask 后给出的建议色标范围，必须满足 `vmax > vmin`，对数尺度还要求 `vmin > 0`。
 
-对数尺度只接受正值。mask、零值和非有限值的编码应与前端协商，不得静默替换成任意小正数。
+`vmin`/`vmax` 只控制颜色归一化；探针和数据消费者仍读取 `values` 的原值，即使它低于 `vmin` 或高于 `vmax`。对数尺度不能显示的非正值由显示层透明处理，不得改写成任意小正数；它们若本身有限，也仍是未遮罩原值。
 
 #### `lines`
 
-每条线是按轨迹顺序排列的坐标点。`direction` 为 `1` 或 `-1`，表示相对场方向；`termination` 记录该分支终止原因。方向元数据不是要求前端把点序颠倒。后续可以增加场强和弧长，但客户端应忽略未知字段以保持向前兼容。
+每条线是按轨迹顺序排列的坐标点。`direction` 为 `1` 或 `-1`，表示相对场方向；`termination` 记录该 trace job 所选分支的终止原因。方向元数据不是要求前端把点序颠倒。后续可以增加场强和弧长，但客户端应忽略未知字段以保持向前兼容。
 
 #### `sources`
 
@@ -300,10 +310,17 @@ $$
 
 `projection_note` 不能省略。它说明曲线是二维真实场线、投影流线还是三维曲线切片。定义见[二维切片何时包含真实场线](tutorial/04-slices-and-validation.md#true-vs-projected)。
 
+`field_model`、`seed_mode` 与 `termination_counts` 都是当前前端直接展示的科学解释。v0.2.2 的 `seed_mode` 仍是自由文本，不应按固定枚举解析；枚举和独立说明字段属于 v0.3.0 计划。终止原因使用 `TerminationReason` 的字符串值；客户端可翻译已知值，但遇到未知键必须原样显示，而不是拒绝整个向前兼容响应。
+
+源拖动期间，屏幕上的源位置已经变化而服务端场仍属于上一次请求。浏览器此时只保留坐标网格和新源位置，隐藏旧热图、色标与场线并标记“场待重算”；松开指针后只提交一次最终位置。数值编辑发生源间距冲突时回滚且不发场景请求。这个 UI 状态约束不改变 `POST /api/scene`：服务端仍会独立验证每个请求。
+
 ## API 兼容性
 
 !!! warning "pre-1.0 电荷符号契约修正"
     旧实现遇到 `kind` 与 `strength` 符号矛盾时，会在组装电场时用 `abs()` 静默纠正物理符号，却把原始数值返回给客户端。现在 `positive`/`negative` 的不一致符号和 0 都返回 422，不再改写输入。这是 pre-1.0 阶段为消除物理模型与响应自相矛盾而做的契约修正。
+
+!!! warning "v0.2.2 标量编码修正"
+    masked 格点从一个伪造的有限填充值改为 JSON `null`，未遮罩格点从色标裁剪值改为原始有限值。依赖旧 `values: list[float]` 假设的 pre-1.0 客户端必须同时读取 `mask`/`null`；`vmin` 与 `vmax` 从此只表示显示建议，不能当作数据截断边界。
 
 !!! note "pre-1.0 圆环几何迁移预告"
     `wire_out`/`wire_into` 是 v0.2.x–v0.3.x 为固定单圆环提供的响应专用标记。v0.4.x 引入多导体与导入几何时，导体几何将迁移到独立的 `conductors` 集合，并折并这两个临时 kind。`conductors` 目前尚未实现；这里提前记录的是 pre-1.0 契约演进方向，不是现有响应字段。

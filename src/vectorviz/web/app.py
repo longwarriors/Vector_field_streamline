@@ -16,26 +16,39 @@ from fastapi.staticfiles import StaticFiles
 
 from vectorviz import __version__
 
-from .scene import build_scene
-from .schemas import PresetPayload, SceneRequest, SceneResponse
+from .scene import MIN_SOURCE_SEPARATION, build_scene
+from .schemas import (
+    PresetPayload,
+    SceneRequest,
+    SceneResponse,
+    SourceSeparationCapability,
+)
 
 STATIC_DIR = Path(__file__).with_name("static")
+
+SOURCE_SEPARATION_CAPABILITY = SourceSeparationCapability(
+    exclusive_minimum=MIN_SOURCE_SEPARATION,
+    unit="m",
+)
 
 PRESETS = [
     PresetPayload(
         id="electric_dipole",
         label="电偶极子",
         description="可拖动正负点电荷；显示 z=0 对称平面中的真实电场线。",
+        source_separation=SOURCE_SEPARATION_CAPABILITY,
     ),
     PresetPayload(
         id="magnetic_dipole",
         label="磁偶极子",
         description="理想点磁偶极子的对称平面磁力线。",
+        source_separation=SOURCE_SEPARATION_CAPABILITY,
     ),
     PresetPayload(
         id="halbach_array",
         label="Halbach 阵列",
         description="八个面内磁偶极子依次旋转 90°，形成一侧增强的磁场。",
+        source_separation=SOURCE_SEPARATION_CAPABILITY,
     ),
     PresetPayload(
         id="current_loop",
@@ -77,7 +90,12 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok", "version": __version__}
 
-    @application.get("/api/presets", response_model=list[PresetPayload], tags=["scenes"])
+    @application.get(
+        "/api/presets",
+        response_model=list[PresetPayload],
+        response_model_exclude_none=True,
+        tags=["scenes"],
+    )
     def presets() -> list[PresetPayload]:
         return PRESETS
 

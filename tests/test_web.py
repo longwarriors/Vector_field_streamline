@@ -13,6 +13,8 @@ from fastapi.testclient import TestClient
 
 from vectorviz import CircularLoopField, MagneticDipoleField, __version__
 from vectorviz.web import app as web_app
+from vectorviz.web import scene as web_scene
+from vectorviz.web import schemas as web_schemas
 from vectorviz.web.app import STATIC_DIR, create_app
 from vectorviz.web.scene import (
     SOURCE_RADIUS,
@@ -63,7 +65,11 @@ def test_scene_presets_are_finite_serializable_and_trace_requested_lines(
     assert scene.scalar.ny == resolution
     assert len(scene.scalar.values) == resolution**2
     assert len(scene.scalar.mask) == resolution**2
-    assert all(math.isfinite(value) for value in scene.scalar.values)
+    assert all(value is None or math.isfinite(value) for value in scene.scalar.values)
+    assert all(
+        masked is (value is None)
+        for value, masked in zip(scene.scalar.values, scene.scalar.mask, strict=True)
+    )
     assert math.isfinite(scene.scalar.vmin)
     assert math.isfinite(scene.scalar.vmax)
     assert scene.scalar.vmin <= scene.scalar.vmax
@@ -85,6 +91,157 @@ def test_scene_presets_are_finite_serializable_and_trace_requested_lines(
 
     # Reject NaN/Infinity just as a strict browser JSON parser would.
     json.dumps(scene.model_dump(mode="json"), allow_nan=False)
+
+
+def test_scene_scalar_preserves_unclipped_finite_values() -> None:
+    resolution = 80
+    model = _build_model(SceneRequest(preset="electric_dipole", density=6, resolution=resolution))
+
+    scalar = web_scene._sample_scalar(model, resolution)
+    x = np.linspace(web_scene.DOMAIN.lower[0], web_scene.DOMAIN.upper[0], resolution)
+    y = np.linspace(web_scene.DOMAIN.upper[1], web_scene.DOMAIN.lower[1], resolution)
+    xx, yy = np.meshgrid(x, y, indexing="xy")
+    expected = np.linalg.norm(model.field.evaluate(np.stack((xx, yy), axis=-1)), axis=-1)
+    mask = np.asarray(scalar.mask).reshape(resolution, resolution)
+    actual = np.array(
+        [np.nan if value is None else value for value in scalar.values], dtype=float
+    ).reshape(resolution, resolution)
+
+    assert np.any(expected[~mask] > scalar.vmax)
+    assert np.any(expected[~mask] < scalar.vmin)
+    np.testing.assert_array_equal(actual[~mask], expected[~mask])
+
+
+def test_scalar_mask_is_encoded_as_null(client: TestClient) -> None:
+    response = client.post(
+        "/api/scene",
+        json={"preset": "electric_dipole", "density": 6, "resolution": 32},
+    )
+    assert response.status_code == 200
+    scalar = response.json()["scalar"]
+
+    assert any(scalar["mask"])
+    assert all(
+        masked is (value is None)
+        for value, masked in zip(scalar["values"], scalar["mask"], strict=True)
+    )
+    assert "null" in response.text
+
+
+def test_response_models_forbid_extra_fields() -> None:
+    capability = web_schemas.SourceSeparationCapability(
+        exclusive_minimum=0.322,
+        unit="m",
+    )
+    domain = web_schemas.DomainPayload(
+        x=(-1.0, 1.0),
+        y=(-1.0, 1.0),
+        coordinate_system="cartesian",
+        unit="m",
+    )
+    scalar = web_schemas.ScalarPayload(
+        nx=1,
+        ny=1,
+        values=[1.0],
+        mask=[False],
+        scale="linear",
+        label="|F|",
+        unit="u",
+        vmin=0.5,
+        vmax=1.5,
+    )
+    line = web_schemas.LinePayload(
+        points=[(0.0, 0.0), (1.0, 0.0)],
+        direction=1,
+        termination="future_reason",
+    )
+    source = SourcePayload(
+        x=0.0,
+        y=0.0,
+        kind="dipole",
+        strength=1.0,
+        strength_unit="A·m²",
+        angle_deg=0.0,
+    )
+    metadata = web_schemas.MetadataPayload(
+        title="t",
+        projection_note="p",
+        field_model="f",
+        seed_mode="coverage",
+        termination_counts={"future_reason": 0},
+    )
+    scene = web_schemas.SceneResponse(
+        domain=domain,
+        scalar=scalar,
+        lines=[line],
+        sources=[source],
+        metadata=metadata,
+    )
+    preset = web_schemas.PresetPayload(
+        id="magnetic_dipole",
+        label="m",
+        description="d",
+        source_separation=capability,
+    )
+
+    for payload in (capability, domain, scalar, line, source, metadata, scene, preset):
+        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+            type(payload).model_validate({**payload.model_dump(), "unexpected": True})
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"values": []},
+        {"mask": []},
+        {"values": [None], "mask": [False]},
+        {"values": [1.0], "mask": [True]},
+        {"vmin": 1.0, "vmax": 1.0},
+        {"vmin": 2.0, "vmax": 1.0},
+        {"scale": "log", "vmin": 0.0},
+        {"mask": [1]},
+        {"values": [float("inf")]},
+    ],
+)
+def test_scalar_payload_rejects_invalid_cross_field_invariants(
+    update: dict[str, object],
+) -> None:
+    payload: dict[str, object] = {
+        "nx": 1,
+        "ny": 1,
+        "values": [1.0],
+        "mask": [False],
+        "scale": "linear",
+        "label": "|F|",
+        "unit": "u",
+        "vmin": 0.5,
+        "vmax": 1.5,
+    }
+    payload.update(update)
+
+    with pytest.raises(ValueError):
+        web_schemas.ScalarPayload.model_validate(payload)
+
+
+@pytest.mark.parametrize("invalid_count", [-1, True, 1.0, "1"])
+def test_metadata_rejects_invalid_termination_counts(invalid_count: object) -> None:
+    with pytest.raises(ValueError):
+        web_schemas.MetadataPayload(
+            title="t",
+            projection_note="p",
+            field_model="f",
+            seed_mode="coverage",
+            termination_counts={"future_reason": invalid_count},
+        )
+
+    accepted = web_schemas.MetadataPayload(
+        title="t",
+        projection_note="p",
+        field_model="f",
+        seed_mode="coverage",
+        termination_counts={"future_reason": 0},
+    )
+    assert accepted.termination_counts == {"future_reason": 0}
 
 
 def test_electric_scene_honors_source_override() -> None:
@@ -232,7 +389,12 @@ def test_dipole_angle_is_published_by_request_response_and_openapi_schemas(
     payload_schema = SourcePayload.model_json_schema()
     openapi_schemas = client.get("/openapi.json").json()["components"]["schemas"]
 
-    for schema in (input_schema, payload_schema, openapi_schemas["SourceInput"], openapi_schemas["SourcePayload"]):
+    for schema in (
+        input_schema,
+        payload_schema,
+        openapi_schemas["SourceInput"],
+        openapi_schemas["SourcePayload"],
+    ):
         angle_schema = schema["properties"]["angle_deg"]
         number_branch = next(
             branch for branch in angle_schema["anyOf"] if branch.get("type") == "number"
@@ -292,9 +454,7 @@ def test_dipole_sources_reject_invalid_or_null_angle(
         "/api/scene",
         json={
             "preset": "magnetic_dipole",
-            "sources": [
-                {"x": 0.0, "y": 0.0, "kind": "dipole", "angle_deg": angle_deg}
-            ],
+            "sources": [{"x": 0.0, "y": 0.0, "kind": "dipole", "angle_deg": angle_deg}],
         },
     )
 
@@ -324,18 +484,14 @@ def test_nonstandard_json_nan_is_reported_as_validation_error() -> None:
 
 
 @pytest.mark.parametrize("angle_deg", [0.0, float(np.nextafter(360.0, 0.0))])
-def test_dipole_angle_accepts_both_legal_boundaries(
-    client: TestClient, angle_deg: float
-) -> None:
+def test_dipole_angle_accepts_both_legal_boundaries(client: TestClient, angle_deg: float) -> None:
     response = client.post(
         "/api/scene",
         json={
             "preset": "magnetic_dipole",
             "density": 6,
             "resolution": 32,
-            "sources": [
-                {"x": 0.0, "y": 0.0, "kind": "dipole", "angle_deg": angle_deg}
-            ],
+            "sources": [{"x": 0.0, "y": 0.0, "kind": "dipole", "angle_deg": angle_deg}],
         },
     )
 
@@ -359,9 +515,7 @@ def test_magnetic_seed_axes_follow_signed_in_plane_moments() -> None:
     ]
 
     model = _build_model(
-        SceneRequest(
-            preset="magnetic_dipole", density=len(sources), resolution=32, sources=sources
-        )
+        SceneRequest(preset="magnetic_dipole", density=len(sources), resolution=32, sources=sources)
     )
 
     base_axes = np.column_stack((np.cos(np.deg2rad(angles)), np.sin(np.deg2rad(angles))))
@@ -370,6 +524,71 @@ def test_magnetic_seed_axes_follow_signed_in_plane_moments() -> None:
     np.testing.assert_allclose(model.seeds, expected, rtol=0.0, atol=2.0e-15)
     radial = model.seeds - centers
     assert np.all(np.einsum("ij,ij->i", model.field.evaluate(model.seeds), radial) > 0.0)
+
+
+def test_zero_strength_dipoles_are_markers_but_not_active_sources() -> None:
+    zero_position = np.array((-1.0, 0.0))
+    active_position = np.array((1.0, 0.0))
+    request = SceneRequest(
+        preset="magnetic_dipole",
+        density=6,
+        resolution=32,
+        sources=[
+            SourceInput(
+                x=float(zero_position[0]),
+                y=float(zero_position[1]),
+                kind="dipole",
+                strength=0.0,
+                angle_deg=37.0,
+            ),
+            SourceInput(
+                x=float(active_position[0]),
+                y=float(active_position[1]),
+                kind="dipole",
+                strength=2.0,
+                angle_deg=0.0,
+            ),
+        ],
+    )
+
+    model = _build_model(request)
+
+    assert [source.strength for source in model.sources] == [0.0, 2.0]
+    np.testing.assert_array_equal(model.exclusions[0].centers, active_position[None, :])
+    np.testing.assert_allclose(
+        np.linalg.norm(model.seeds - active_position, axis=1),
+        np.full(request.density, SOURCE_RADIUS + 2.0e-3),
+        rtol=0.0,
+        atol=2.0e-15,
+    )
+    assert np.all(np.isfinite(model.field.evaluate(zero_position)))
+
+
+@pytest.mark.parametrize(
+    "strength",
+    [np.nextafter(0.0, 1.0), np.nextafter(0.0, -1.0)],
+)
+def test_every_nonzero_dipole_strength_remains_active(strength: float) -> None:
+    request = SceneRequest(
+        preset="magnetic_dipole",
+        density=6,
+        resolution=32,
+        sources=[
+            SourceInput(
+                x=0.25,
+                y=-0.5,
+                kind="dipole",
+                strength=float(strength),
+                angle_deg=17.0,
+            )
+        ],
+    )
+
+    model = _build_model(request)
+
+    np.testing.assert_array_equal(model.exclusions[0].centers, [[0.25, -0.5]])
+    assert model.seeds.shape == (request.density, 2)
+    assert np.all(np.isnan(model.field.evaluate((0.25, -0.5))))
 
 
 def test_halbach_defaults_form_two_quarter_turn_cycles_and_seed_each_dipole_once() -> None:
@@ -406,9 +625,7 @@ def test_halbach_default_rejects_density_below_its_eight_source_minimum(
     )
 
     assert response.status_code == 422
-    assert response.json() == {
-        "detail": "halbach_array 有 8 个磁偶极子参与播种，density 至少为 8"
-    }
+    assert response.json() == {"detail": "halbach_array 有 8 个磁偶极子参与播种，density 至少为 8"}
 
 
 def test_halbach_accepts_dipole_only_source_overrides(client: TestClient) -> None:
@@ -462,7 +679,9 @@ def test_halbach_planar_adapter_matches_core_and_has_zero_normal_component() -> 
 
     core_vectors = core.evaluate(embedded)
 
-    np.testing.assert_allclose(model.field.evaluate(points), core_vectors[:, :2], rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(
+        model.field.evaluate(points), core_vectors[:, :2], rtol=0.0, atol=0.0
+    )
     np.testing.assert_allclose(core_vectors[:, 2], np.zeros(points.shape[0]), rtol=0.0, atol=0.0)
 
 
@@ -612,8 +831,7 @@ def _electric_sources(positive_count: int) -> list[SourceInput]:
         (1.2, 1.5),
     ]
     positives = [
-        SourceInput(x=x, y=y, kind="positive", strength=1.0)
-        for x, y in positions[:positive_count]
+        SourceInput(x=x, y=y, kind="positive", strength=1.0) for x, y in positions[:positive_count]
     ]
     return [*positives, SourceInput(x=0.0, y=0.5, kind="negative", strength=-1.0)]
 
@@ -638,10 +856,7 @@ def test_seed_budget_boundary_assigns_one_seed_to_each_seeding_source() -> None:
 
     assert model.seeds.shape == (request.density, 2)
     for source in request.sources[:-1]:
-        nearby = sum(
-            math.dist(seed, (source.x, source.y)) < 0.17
-            for seed in model.seeds.tolist()
-        )
+        nearby = sum(math.dist(seed, (source.x, source.y)) < 0.17 for seed in model.seeds.tolist())
         assert nearby == 1
     assert len(scene.lines) == request.density
     assert sum(scene.metadata.termination_counts.values()) == request.density
@@ -711,6 +926,15 @@ def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
         "uniform",
     }
     assert all(preset["label"] and preset["description"] for preset in payload)
+    by_id = {preset["id"]: preset for preset in payload}
+    expected_capability = {
+        "exclusive_minimum": web_scene.MIN_SOURCE_SEPARATION,
+        "unit": "m",
+    }
+    for preset_id in ("electric_dipole", "magnetic_dipole", "halbach_array"):
+        assert by_id[preset_id]["source_separation"] == expected_capability
+    for preset_id in ("current_loop", "uniform"):
+        assert "source_separation" not in by_id[preset_id]
 
 
 def test_scene_endpoint_returns_browser_contract(client: TestClient) -> None:
@@ -774,26 +998,22 @@ def test_charge_kind_accepts_matching_nonzero_strength_sign(
         (
             {"x": -1.0, "y": 0.0, "kind": "positive", "strength": -1.0},
             {"x": 1.0, "y": 0.0, "kind": "negative", "strength": -1.0},
-            "positive source strength must be greater than 0; "
-            "zero and negative values are invalid",
+            "positive source strength must be greater than 0; zero and negative values are invalid",
         ),
         (
             {"x": 1.0, "y": 0.0, "kind": "negative", "strength": 1.0},
             {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 1.0},
-            "negative source strength must be less than 0; "
-            "zero and positive values are invalid",
+            "negative source strength must be less than 0; zero and positive values are invalid",
         ),
         (
             {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 0.0},
             {"x": 1.0, "y": 0.0, "kind": "negative", "strength": -1.0},
-            "positive source strength must be greater than 0; "
-            "zero and negative values are invalid",
+            "positive source strength must be greater than 0; zero and negative values are invalid",
         ),
         (
             {"x": 1.0, "y": 0.0, "kind": "negative", "strength": 0.0},
             {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 1.0},
-            "negative source strength must be less than 0; "
-            "zero and positive values are invalid",
+            "negative source strength must be less than 0; zero and positive values are invalid",
         ),
     ],
 )
@@ -872,9 +1092,7 @@ def test_scene_endpoint_rejects_insufficient_seed_budget_with_actionable_detail(
     )
 
     assert response.status_code == 422
-    assert response.json() == {
-        "detail": "electric_dipole 有 7 个正电荷参与播种，density 至少为 7"
-    }
+    assert response.json() == {"detail": "electric_dipole 有 7 个正电荷参与播种，density 至少为 7"}
 
 
 def test_magnetic_seed_budget_error_names_its_seeding_sources(
@@ -887,8 +1105,7 @@ def test_magnetic_seed_budget_error_names_its_seeding_sources(
             "density": 6,
             "resolution": 32,
             "sources": [
-                {"x": -2.4 + 0.7 * index, "y": 0.0, "kind": "dipole"}
-                for index in range(7)
+                {"x": -2.4 + 0.7 * index, "y": 0.0, "kind": "dipole"} for index in range(7)
             ],
         },
     )
@@ -899,7 +1116,163 @@ def test_magnetic_seed_budget_error_names_its_seeding_sources(
     }
 
 
-def test_degenerate_seed_results_are_counted_but_not_rendered(
+def test_zero_strength_dipoles_do_not_consume_seed_budget(client: TestClient) -> None:
+    sources = [
+        {
+            "x": -2.1 + 0.7 * index,
+            "y": 0.0,
+            "kind": "dipole",
+            "strength": 0.0 if index == 0 else 1.0,
+        }
+        for index in range(7)
+    ]
+
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": "magnetic_dipole",
+            "density": 6,
+            "resolution": 32,
+            "sources": sources,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["sources"]) == 7
+    assert payload["sources"][0]["strength"] == 0.0
+    assert sum(payload["metadata"]["termination_counts"].values()) == 6
+
+
+@pytest.mark.parametrize("preset", ["magnetic_dipole", "halbach_array"])
+def test_all_zero_magnetic_scenes_return_422(
+    client: TestClient,
+    preset: str,
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": preset,
+            "density": 6,
+            "resolution": 32,
+            "sources": [
+                {"x": -0.5, "y": 0.0, "kind": "dipole", "strength": 0.0},
+                {"x": 0.5, "y": 0.0, "kind": "dipole", "strength": -0.0},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "至少需要一个非零磁偶极"}
+
+
+def _separation_sources(preset: str, distance: float) -> list[dict[str, object]]:
+    if preset == "electric_dipole":
+        return [
+            {"x": 0.0, "y": 0.0, "kind": "positive", "strength": 1.0},
+            {"x": distance, "y": 0.0, "kind": "negative", "strength": -1.0},
+        ]
+    return [
+        {
+            "x": 0.0,
+            "y": 0.0,
+            "kind": "dipole",
+            "strength": 1.0,
+            "angle_deg": 0.0,
+        },
+        {
+            "x": distance,
+            "y": 0.0,
+            "kind": "dipole",
+            "strength": 1.0,
+            "angle_deg": 0.0,
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("preset", "distance"),
+    [
+        (preset, distance)
+        for preset in ("electric_dipole", "magnetic_dipole", "halbach_array")
+        for distance in (0.321999, 0.322)
+    ],
+)
+def test_active_sources_at_or_below_minimum_separation_return_422(
+    client: TestClient,
+    preset: str,
+    distance: float,
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": preset,
+            "density": 6,
+            "resolution": 32,
+            "sources": _separation_sources(preset, distance),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "sources[0] 与 sources[1] 的中心距离必须大于 0.322 m"}
+
+
+@pytest.mark.parametrize(
+    "preset",
+    ["electric_dipole", "magnetic_dipole", "halbach_array"],
+)
+def test_active_sources_strictly_above_minimum_separation_are_accepted(
+    client: TestClient,
+    preset: str,
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": preset,
+            "density": 6,
+            "resolution": 32,
+            "sources": _separation_sources(preset, 0.322001),
+        },
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "preset",
+    ["electric_dipole", "magnetic_dipole", "halbach_array"],
+)
+def test_source_separation_has_no_hidden_tolerance(
+    client: TestClient,
+    preset: str,
+) -> None:
+    below = float(np.nextafter(web_scene.MIN_SOURCE_SEPARATION, 0.0))
+    above = float(np.nextafter(web_scene.MIN_SOURCE_SEPARATION, np.inf))
+
+    rejected = client.post(
+        "/api/scene",
+        json={
+            "preset": preset,
+            "density": 6,
+            "resolution": 32,
+            "sources": _separation_sources(preset, below),
+        },
+    )
+    accepted = client.post(
+        "/api/scene",
+        json={
+            "preset": preset,
+            "density": 6,
+            "resolution": 32,
+            "sources": _separation_sources(preset, above),
+        },
+    )
+
+    assert rejected.status_code == 422
+    assert accepted.status_code == 200
+
+
+def test_inactive_dipoles_do_not_own_exclusions_or_separation_constraints(
     client: TestClient,
 ) -> None:
     response = client.post(
@@ -908,14 +1281,36 @@ def test_degenerate_seed_results_are_counted_but_not_rendered(
             "preset": "magnetic_dipole",
             "density": 6,
             "resolution": 32,
-            "sources": [{"x": 0.0, "y": 0.0, "kind": "dipole", "strength": 0.0}],
+            "sources": [
+                {"x": 0.0, "y": 0.0, "kind": "dipole", "strength": 0.0},
+                {"x": 0.0, "y": 0.0, "kind": "dipole", "strength": 1.0},
+            ],
         },
     )
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["lines"] == []
-    assert payload["metadata"]["termination_counts"] == {"null_field": 6}
+    assert [source["strength"] for source in response.json()["sources"]] == [0.0, 1.0]
+
+
+def test_source_separation_error_uses_original_request_indices(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": "magnetic_dipole",
+            "density": 6,
+            "resolution": 32,
+            "sources": [
+                {"x": -2.0, "y": 0.0, "kind": "dipole", "strength": 0.0},
+                {"x": 0.0, "y": 0.0, "kind": "dipole", "strength": 1.0},
+                {"x": 0.322, "y": 0.0, "kind": "dipole", "strength": 1.0},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "sources[1] 与 sources[2] 的中心距离必须大于 0.322 m"}
 
 
 @pytest.mark.parametrize(
@@ -954,8 +1349,7 @@ def test_degenerate_seed_results_are_counted_but_not_rendered(
         {
             "preset": "electric_dipole",
             "sources": [
-                {"x": float(index) / 10, "y": 0.0, "kind": "positive"}
-                for index in range(9)
+                {"x": float(index) / 10, "y": 0.0, "kind": "positive"} for index in range(9)
             ],
         },
         {
