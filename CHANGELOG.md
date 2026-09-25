@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-26
+
 ### Changed
 
 - 场线追踪提速，输出与 v0.3.2 逐位相同（验证范围见开发指南的 v0.3.3 基准一节）：单点求值不再经过 NumPy 包装函数，事件函数复用右端函数刚算过的场值，圆环一般区域的单点求值改用 Python 浮点。端到端请求 `density=18`、`resolution=80` 的场景，圆环从约 1.48 s 降到 0.36 s，其余预设耗时减少 10–20%。
@@ -98,7 +100,8 @@
 - `density` 定义为整个场景的种子总预算，并在服务端与浏览器提交前共同校验。
 - 场景元数据区分真实不变平面场线与投影流线，并公开播种说明和终止统计。
 
-[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.2.2...v0.3.0
