@@ -359,3 +359,61 @@ def test_loop_geometry_is_normalized_and_read_only() -> None:
 
     huge_normal = CircularLoopField(1.0, 1.0, normal=(1.0e308, 1.0e308, 1.0e308))
     np.testing.assert_allclose(huge_normal.normal, np.ones(3) / np.sqrt(3.0), rtol=2.0e-16)
+
+
+
+def _point_in_loop_frame(
+    loop: CircularLoopField, rho: float, z: float, angle: float
+) -> np.ndarray:
+    radial_axis = np.cross(loop.normal, (1.0, 0.0, 0.0))
+    radial_axis /= np.linalg.norm(radial_axis)
+    other_axis = np.cross(loop.normal, radial_axis)
+    direction = np.cos(angle) * radial_axis + np.sin(angle) * other_axis
+    return loop.center + rho * direction + z * loop.normal
+
+
+def test_single_point_evaluation_matches_the_one_row_batch_bit_for_bit() -> None:
+    # The tracer evaluates one point per solver stage through a scalar fast
+    # path; it must return exactly what the batch code returns for that point
+    # in every region: general, near the wire, far field (small m), near the
+    # axis, on the axis and on the filament.
+    rng = np.random.default_rng(20260926)
+    loops = (
+        CircularLoopField(1.0, 1.0, normal=(0.0, 1.0, 0.0)),
+        CircularLoopField(-2.5, 0.7, center=(0.2, -0.1, 0.3), normal=(0.3, 0.4, 0.866)),
+    )
+    for loop in loops:
+        radius = loop.radius
+        general = zip(
+            rng.uniform(0.0, 3.0, size=64),
+            rng.uniform(-3.0, 3.0, size=64),
+            rng.uniform(0.0, 2.0 * np.pi, size=64),
+            strict=True,
+        )
+        near_wire = zip(
+            10.0 ** rng.uniform(-7.0, -0.5, size=32),
+            rng.uniform(0.0, 2.0 * np.pi, size=32),
+            rng.uniform(0.0, 2.0 * np.pi, size=32),
+            strict=True,
+        )
+        far_field = zip(
+            rng.uniform(20.0, 200.0, size=16),
+            rng.uniform(-200.0, 200.0, size=16),
+            strict=True,
+        )
+        cases = [(float(rho), float(z), float(angle)) for rho, z, angle in general]
+        cases += [
+            (radius + distance * np.cos(phase), distance * np.sin(phase), angle)
+            for distance, phase, angle in near_wire
+        ]
+        cases += [(float(rho), float(z), 0.7) for rho, z in far_field]
+        cases += [(1.0e-5 * radius, z, 0.3) for z in (-2.0, 0.0, 0.4)]
+        cases += [(0.0, z, 0.0) for z in (-1.0, 0.0, 2.0)]
+        cases += [(radius, 0.0, angle) for angle in (0.0, 1.0)]
+
+        for rho, z, angle in cases:
+            point = _point_in_loop_frame(loop, rho, z, angle)
+            single = loop.evaluate(point)
+            batch = loop.evaluate(point[np.newaxis, :])[0]
+            assert single.shape == (3,)
+            assert np.array_equal(single, batch, equal_nan=True), (point, single, batch)

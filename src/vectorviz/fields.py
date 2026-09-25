@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 
 import numpy as np
@@ -468,6 +469,70 @@ class CircularLoopField(_CircularLoopGeometry):
         return field, first, second, third, fourth
 
     def evaluate(self, points: ArrayLike) -> FloatArray:
+        coordinates = _as_points(points, 3)
+        if coordinates.ndim == 1:
+            return self._evaluate_point(coordinates)
+        return self._evaluate_batch(coordinates)
+
+    def _evaluate_point(self, coordinates: FloatArray) -> FloatArray:
+        """Evaluate one point, bit-for-bit equal to the batch path on one row.
+
+        The field tracer calls this once per solver stage, where NumPy's
+        per-call overhead on one-element arrays dominates. The geometry reuses
+        the batch code, so the dot product and norms are the same operations.
+        The general-region formulas then run on Python floats using only
+        ``+ - * /`` and ``sqrt``, which IEEE 754 rounds identically for floats
+        and arrays, and the same SciPy elliptic ufuncs. Near-axis and singular
+        points keep the batch path, whose fractional powers may be vectorised
+        differently from a scalar ``pow``.
+        """
+
+        (
+            _coordinates,
+            _original_shape,
+            radial_vectors,
+            radial,
+            axial,
+            singular,
+        ) = self._cylindrical_geometry(coordinates)
+        rho = float(radial[0])
+        z = float(axial[0])
+        radius = self._radius
+        if singular[0] or rho <= self._NEAR_AXIS_RATIO * math.sqrt(radius**2 + z * z):
+            return self._evaluate_batch(coordinates)
+
+        outer = radius + rho
+        inner = radius - rho
+        q_squared = outer * outer + z * z
+        wire_distance_squared = inner * inner + z * z
+        complementary_parameter = wire_distance_squared / q_squared
+        if complementary_parameter < 0.1:
+            parameter = 1.0 - complementary_parameter
+            first = ellipkm1(complementary_parameter)
+        else:
+            parameter = 4.0 * radius * rho / q_squared
+            first = ellipk(parameter)
+        second = ellipe(parameter)
+        if parameter < 1.0e-2:
+            radial_elliptic = np.pi / 2.0 * _polyval(parameter, _RADIAL_ELLIPTIC_SERIES)
+        else:
+            radial_elliptic = -first + (1.0 - 0.5 * parameter) / complementary_parameter * second
+        prefactor = self._permeability * self._current / (2.0 * np.pi * math.sqrt(q_squared))
+        radial_component = prefactor * z / rho * radial_elliptic
+        axial_component = prefactor * (
+            -radial_elliptic + 2.0 * radius**2 / wire_distance_squared * second
+        )
+        row = radial_vectors[0]
+        normal = self._normal
+        return np.array(
+            [
+                radial_component * float(row[index]) / rho + axial_component * float(normal[index])
+                for index in range(3)
+            ],
+            dtype=float,
+        )
+
+    def _evaluate_batch(self, points: FloatArray) -> FloatArray:
         (
             _coordinates,
             original_shape,
