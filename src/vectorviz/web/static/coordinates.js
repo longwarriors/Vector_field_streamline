@@ -8,11 +8,11 @@ export function clamp(value, minimum, maximum) {
 export const NARROW_PLOT_WIDTH = 520;
 
 // Margins leave room for tick labels, the axis unit titles and the colorbar:
-// a 72 px column right of the plot when wide, a strip under it when narrow.
+// an 88 px column 14 px right of the plot when wide, a strip under it when narrow.
 export function plotMargins(width) {
   return width < NARROW_PLOT_WIDTH
     ? { left: 40, right: 16, top: 30, bottom: 108 }
-    : { left: 48, right: 96, top: 30, bottom: 52 };
+    : { left: 48, right: 112, top: 30, bottom: 52 };
 }
 
 export function calculatePlotRect(width, height, domain) {

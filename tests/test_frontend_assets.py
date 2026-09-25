@@ -12,20 +12,31 @@ TEXT_SUFFIXES = {".html", ".css", ".js"}
 SVG_NAMESPACE = "http://www.w3.org/2000/svg"
 REMOTE_REFERENCE = re.compile(
     r"""https?://"""
-    r"""|(?:src|href)\s*=\s*["']//"""
+    r"""|(?:src|href|action)\s*=\s*["']?//"""
     r"""|url\(\s*["']?//"""
     r"""|@import"""
-    r"""|(?:from|import)\s*\(?\s*["']//""",
+    r"""|(?:from|import|fetch)\s*\(?\s*["'`]//""",
     re.IGNORECASE,
 )
 THIRD_PARTY_BRANDS = re.compile(r"miro|roobert", re.IGNORECASE)
-BRAND_YELLOWS = ("#ffd02f", "#fcb900")
+# Brand yellow and its deep variant, as hex or rgb().
+BRAND_YELLOWS = re.compile(
+    r"#ffd02f|#fcb900|rgba?\(\s*255\s*,\s*208\s*,\s*47|rgba?\(\s*252\s*,\s*185\s*,\s*0",
+    re.IGNORECASE,
+)
 
 
 CSS_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 ROOT_BLOCK = re.compile(r"^:root \{\n(?P<body>.*?)^\}", re.DOTALL | re.MULTILINE)
 CUSTOM_PROPERTY = re.compile(r"--(?P<name>[\w-]+)\s*:\s*(?P<value>[^;]+);")
-COLOR_LITERAL = re.compile(r"#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?)\(", re.IGNORECASE)
+# Colour literals inside declaration values (never selectors such as #add-...).
+DECLARATION_VALUE = re.compile(r"(?<=:)[^;{}]*(?=;)")
+COLOR_LITERAL = re.compile(
+    r"(?<![\w-])#[0-9a-f]{3,8}(?![\w-])"
+    r"|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color-mix|color)\("
+    r"|\b(?:white|black|red|green|blue|yellow|orange|purple|pink|gray|grey|silver)\b",
+    re.IGNORECASE,
+)
 NOTE_TOKENS = ("note-positive", "note-negative", "note-dipole", "note-wire", "note-guide")
 
 
@@ -41,7 +52,7 @@ def _contrast(first: str, second: str) -> float:
 
 
 def _static_text_files() -> list[Path]:
-    files = sorted(path for path in STATIC_ROOT.iterdir() if path.suffix in TEXT_SUFFIXES)
+    files = sorted(path for path in STATIC_ROOT.rglob("*") if path.suffix in TEXT_SUFFIXES)
     assert files, "the packaged frontend has no HTML, CSS or JavaScript files"
     return files
 
@@ -54,12 +65,11 @@ def test_static_frontend_is_self_contained() -> None:
             offenders.append(f"{path.name}: remote reference {match.group(0)!r}")
         for match in THIRD_PARTY_BRANDS.finditer(text):
             offenders.append(f"{path.name}: third-party brand name {match.group(0)!r}")
-    canvas_theme = (STATIC_ROOT / "canvas-theme.js").read_text(encoding="utf-8").lower()
-    offenders.extend(
-        f"canvas-theme.js: brand yellow {color} inside the plot palette"
-        for color in BRAND_YELLOWS
-        if color in canvas_theme
-    )
+    for path in _static_text_files():
+        if path.suffix != ".js":
+            continue
+        for match in BRAND_YELLOWS.finditer(path.read_text(encoding="utf-8")):
+            offenders.append(f"{path.name}: brand yellow {match.group(0)!r} in script")
     assert offenders == []
 
 
@@ -72,7 +82,12 @@ def test_stylesheet_tokens_meet_contrast_floors() -> None:
         for match in CUSTOM_PROPERTY.finditer(root.group("body"))
     }
     outside_root = css[: root.start()] + css[root.end() :]
-    assert COLOR_LITERAL.findall(outside_root) == [], "colours must be :root tokens"
+    literals = [
+        match.group(0)
+        for value in DECLARATION_VALUE.findall(outside_root)
+        for match in COLOR_LITERAL.finditer(value)
+    ]
+    assert literals == [], "colours must be :root tokens"
 
     def color(name: str) -> str:
         value = tokens[f"vv-{name}"]
@@ -111,5 +126,5 @@ def test_stylesheet_tokens_meet_contrast_floors() -> None:
     assert failures == []
 
     # Brand yellow reads as a high field value next to viridis: wordmark only.
-    brand_rules = re.findall(r"([^{}]+)\{[^{}]*var\(--vv-brand\)", outside_root)
+    brand_rules = re.findall(r"([^{}]+)\{[^{}]*var\(\s*--vv-brand\b", outside_root)
     assert [selector.strip() for selector in brand_rules] == [".brand strong::before"]

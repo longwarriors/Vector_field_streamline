@@ -156,11 +156,22 @@ def _browser_halbach_scene(count: int = 8) -> dict[str, object]:
     return scene
 
 
+# Ports above 1024 that Chromium refuses to load (net::ERR_UNSAFE_PORT).
+CHROMIUM_RESTRICTED_PORTS = frozenset(
+    {1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667,
+     6668, 6669, 6679, 6697, 10080}
+)
+
+
 @pytest.fixture(scope="session")
 def frontend_url() -> Iterator[str]:
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", 0))
+    while True:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        if listener.getsockname()[1] not in CHROMIUM_RESTRICTED_PORTS:
+            break
+        listener.close()
     listener.listen(128)
     host, port = listener.getsockname()
     server = uvicorn.Server(
@@ -911,12 +922,54 @@ def test_heatmap_texel_centers_align_with_scalar_nodes(
         }"""
     )
     yellow = [253, 231, 37]
-    for pixels in samples:
-        closest = min(
+
+    def closest_to_yellow(pixels: list[list[int]]) -> int:
+        return min(
             max(abs(channel - expected) for channel, expected in zip(pixel, yellow, strict=True))
             for pixel in pixels
         )
-        assert closest <= 3, pixels
+
+    for pixels in samples:
+        assert closest_to_yellow(pixels) <= 3, pixels
+
+    # The transposed pattern checks the vertical axis: rows alternate and
+    # nodes y = -0.5 and -1.5 lie between the integer y ticks.
+    transposed = json.loads(json.dumps(scene))
+    transposed["scalar"].update(
+        {
+            "nx": 3,
+            "ny": 9,
+            "values": [value for row in range(9) for value in [9.0 if row % 2 else 1.0] * 3],
+            "mask": [False] * 27,
+        }
+    )
+    page.unroute("**/api/scene")
+    _route_scene(page, transposed)
+    page.locator("#run-button").click()
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    vertical = page.evaluate(
+        """async () => {
+          const canvas = document.querySelector('#field-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const domain = {x: [-2, 4], y: [-3, 1]};
+          const {calculatePlotRect, createCoordinateTransform} =
+            await import('/coordinates.js');
+          const transform = createCoordinateTransform(
+            domain, calculatePlotRect(rect.width, rect.height, domain),
+          );
+          const context = canvas.getContext('2d');
+          const ratio = canvas.width / rect.width;
+          return [-0.5, -1.5].map((y) => {
+            const [px, py] = transform.worldToCanvas(-1.5, y);
+            const data = context.getImageData(
+              Math.floor(px * ratio), Math.floor(py * ratio) - 1, 1, 3,
+            ).data;
+            return [0, 1, 2].map((index) => Array.from(data.slice(index * 4, index * 4 + 3)));
+          });
+        }"""
+    )
+    for pixels in vertical:
+        assert closest_to_yellow(pixels) <= 3, pixels
     assert page_errors == []
 
 
@@ -984,6 +1037,7 @@ PLOT_READOUT_VIEWPORTS = [
     (1280, 800),
     (1280, 650),
     (1366, 657),
+    (1280, 560),
     (820, 900),
     (390, 844),
 ]
@@ -1102,6 +1156,10 @@ def test_plot_readouts_stay_inside_stage_and_off_the_plot(
     assert inside(layout["colorbar"], layout["stage"])
     assert not overlaps(layout["colorbar"], plot)
     assert layout["colorbarOverflow"] <= 1
+    # The fixture limits equal the data extremes, so nothing is clipped.
+    assert page.locator("#colorbar").evaluate(
+        "bar => bar.hasAttribute('data-extend-over') || bar.hasAttribute('data-extend-under')"
+    ) is False
     assert {title["text"] for title in layout["titles"]} == {"x / m", "y / m"}
     for title in layout["titles"]:
         assert layout["canvas"]["left"] <= title["x"] <= layout["canvas"]["right"]
@@ -1110,20 +1168,69 @@ def test_plot_readouts_stay_inside_stage_and_off_the_plot(
             plot["left"] < title["x"] < plot["right"] and plot["top"] < title["y"] < plot["bottom"]
         )
 
-    # The probe reports raw values, so it must stay readable at the plot corner.
-    page.mouse.move(plot["right"] - 2, plot["top"] + 2)
-    expect(page.locator("#probe")).to_be_visible()
-    probe = page.locator("#probe").evaluate(
-        """(element) => {
-          const r = element.getBoundingClientRect();
-          return {left: r.left, top: r.top, right: r.right, bottom: r.bottom};
-        }"""
-    )
-    assert inside(probe, layout["stage"])
+    # The probe reports raw values, so it must stay readable anywhere on the
+    # plot and, where the colorbar sits beside the plot, keep off it.
+    def probe_box() -> dict[str, float]:
+        return page.locator("#probe").evaluate(
+            """(element) => {
+              const r = element.getBoundingClientRect();
+              return {left: r.left, top: r.top, right: r.right, bottom: r.bottom};
+            }"""
+        )
+
+    beside_plot = page.locator("#canvas-stage").get_attribute("data-plot-layout") == "wide"
+    width = plot["right"] - plot["left"]
+    middle = (plot["top"] + plot["bottom"]) / 2
+    targets = [(plot["right"] - 2, plot["top"] + 2)]
+    targets += [(plot["left"] + width * step / 8, middle) for step in range(1, 8)]
+    for x, y in targets:
+        page.mouse.move(x, y)
+        expect(page.locator("#probe")).to_be_visible()
+        probe = probe_box()
+        assert inside(probe, layout["stage"]), (x, y, probe)
+        if beside_plot:
+            assert not overlaps(probe, layout["colorbar"]), (x, y, probe)
 
     expect(page.locator("#projection-note")).to_have_text("Browser semantic fixture")
     expect(page.locator("#colorbar-label")).to_contain_text("T")
     expect(page.get_by_text("不代表场强")).to_be_visible()
+
+    # Scientific details must be reachable with the mouse wheel in every layout.
+    seed_mode = page.locator("#seed-mode")
+    for _ in range(30):
+        if seed_mode.evaluate(
+            """(element) => {
+              const r = element.getBoundingClientRect();
+              return r.top >= 0 && r.bottom <= window.innerHeight;
+            }"""
+        ):
+            break
+        column = page.locator(".details-column").bounding_box()
+        x = min(max(column["x"] + column["width"] / 2, 1), viewport[0] - 1)
+        y = min(max(column["y"] + 40, 1), viewport[1] - 1)
+        page.mouse.move(x, y)
+        page.mouse.wheel(0, 300)
+        page.wait_for_timeout(60)
+    expect(seed_mode).to_be_in_viewport()
+
+    # A resize invalidates the probe's placement; it must not linger outside.
+    if viewport[0] >= 1024:
+        page.mouse.move(plot["right"] - 2, plot["top"] + 2)
+        expect(page.locator("#probe")).to_be_visible()
+        backing = page.locator("#field-canvas").evaluate("canvas => canvas.width")
+        page.set_viewport_size({"width": viewport[0] - 160, "height": viewport[1]})
+        page.wait_for_function(
+            "previous => document.querySelector('#field-canvas').width !== previous",
+            arg=backing,
+        )
+        page.wait_for_timeout(100)
+        stage = page.locator("#canvas-stage").evaluate(
+            """(element) => {
+              const r = element.getBoundingClientRect();
+              return {left: r.left, top: r.top, right: r.right, bottom: r.bottom};
+            }"""
+        )
+        assert page.locator("#probe").is_hidden() or inside(probe_box(), stage)
     assert page_errors == []
 
 
@@ -1183,6 +1290,44 @@ def test_uncolored_cells_and_colorbar_extend_follow_scene_state(
     assert max(hatched) - min(hatched) <= 20, hatched
     assert min(hatched) < 235, hatched
     assert _srgb_luminance(hatched) < _srgb_luminance([253, 231, 37]), hatched
+
+    # RGB of a 16 CSS px horizontal run centred on a world point.
+    def pixel_run(x: float, y: float) -> list[list[int]]:
+        return page.evaluate(
+            """async ([x, y]) => {
+              const canvas = document.querySelector('#field-canvas');
+              const rect = canvas.getBoundingClientRect();
+              const domain = {x: [-2, 4], y: [-3, 1]};
+              const {calculatePlotRect, createCoordinateTransform} =
+                await import('/coordinates.js');
+              const [px, py] = createCoordinateTransform(
+                domain, calculatePlotRect(rect.width, rect.height, domain),
+              ).worldToCanvas(x, y);
+              const ratio = canvas.width / rect.width;
+              const data = canvas.getContext('2d').getImageData(
+                Math.floor((px - 8) * ratio), Math.floor(py * ratio), Math.ceil(16 * ratio), 1,
+              ).data;
+              const run = [];
+              for (let i = 0; i < data.length; i += 4) run.push([data[i], data[i + 1], data[i + 2]]);
+              return run;
+            }""",
+            [x, y],
+        )
+
+    # Hatch lines (ink at half opacity) are much darker than the grey base.
+    assert min(min(rgb) for rgb in pixel_run(-0.5, -1.5)) < 170
+    # The cell at x = 2.5 holds 20 > vmax and must show no stray hatching. The
+    # smoothed heatmap changes monotonically across the run, so a pixel darker
+    # than both pixels two steps away can only be a hatch line.
+    clipped = [_srgb_luminance(rgb) for rgb in pixel_run(2.5, -1.5)]
+    dips = [
+        index
+        for index in range(2, len(clipped) - 2)
+        if clipped[index] < min(clipped[index - 2], clipped[index + 2]) - 0.05
+    ]
+    assert dips == [], clipped
+    expect(page.locator(".colorbar-extend-over")).to_be_visible()
+    expect(page.locator(".colorbar-extend-under")).to_be_visible()
     raster = page.evaluate(
         """() => window.__vectorVizCanvasCalls.putImages
           .filter((image) => image.width === 5 && image.height === 3).at(-1)"""
@@ -1243,6 +1388,23 @@ def test_uncolored_cells_and_colorbar_extend_follow_scene_state(
     expect(page.locator("#connection-label")).to_have_text("已同步")
     expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
     expect(page.locator("#legend-uncolored")).to_be_hidden()
+
+    # The status names the failure: a computation error or an unreachable service.
+    page.unroute("**/api/scene")
+    page.route(
+        "**/api/scene",
+        lambda route: route.fulfill(
+            status=500,
+            content_type="application/json",
+            body=json.dumps({"detail": "fixture failure"}),
+        ),
+    )
+    page.locator("#run-button").click()
+    expect(page.locator("#connection-label")).to_have_text("计算失败")
+    page.unroute("**/api/scene")
+    page.route("**/api/scene", lambda route: route.abort())
+    page.locator("#run-button").click()
+    expect(page.locator("#connection-label")).to_have_text("连接失败")
     assert page_errors == []
 
 

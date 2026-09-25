@@ -10,7 +10,7 @@ export const PALETTE = Object.freeze(
     [1.0, [253, 231, 37]],
   ].map(([stop, color]) => Object.freeze([stop, Object.freeze(color)])),
 );
-// Masked and uncolorable cells stay transparent so the paper shows through.
+// Masked and uncolorable cells stay transparent; the renderer hatches them.
 const INVALID_PIXEL = [7, 17, 26, 0];
 
 export function paletteCssGradient(direction = "to top") {

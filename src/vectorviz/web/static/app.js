@@ -84,6 +84,7 @@ import {
     colorbarLabel: document.querySelector("#colorbar-label"),
     colorbarExtent: document.querySelector("#colorbar-extent"),
     legendUncolored: document.querySelector("#legend-uncolored"),
+    legendSources: document.querySelector('.legend-chip[data-layer="sources"]'),
     captionSeed: document.querySelector("#caption-seed"),
     lineCount: document.querySelector("#line-count"),
     gridSize: document.querySelector("#grid-size"),
@@ -667,6 +668,7 @@ import {
     drawStreamlines();
     drawSources();
     elements.legendUncolored.hidden = !hatchShowsBesideMarkers(uncoloredCells);
+    elements.legendSources.hidden = state.scene.sources.length === 0;
   }
 
   // Overlays such as the colorbar are laid out against the plot, not the stage.
@@ -769,9 +771,12 @@ import {
     context.restore();
   }
 
-  // A marker's outer ring ends at r = 13, so hatching inside r = 14 is hidden.
+  // Hatching counts as visible only when at least one hatch spacing of it
+  // shows outside a marker's outer ring, which ends at r = 13.
   const MARKER_COVER_RADIUS =
-    CANVAS_THEME.marker.outerRingRadius + CANVAS_THEME.marker.outerRingWidth / 2 + 1;
+    CANVAS_THEME.marker.outerRingRadius +
+    CANVAS_THEME.marker.outerRingWidth / 2 +
+    CANVAS_THEME.hatch.spacing;
 
   // The legend only names hatching that can be seen beside the markers.
   function hatchShowsBesideMarkers(cells) {
@@ -1050,9 +1055,11 @@ import {
     elements.addNegativeSource.hidden = preset !== "electric_dipole";
     elements.addDipoleSource.hidden =
       preset !== "magnetic_dipole" && preset !== "halbach_array";
-    elements.addPositiveSource.disabled = sourceLimitReached;
-    elements.addNegativeSource.disabled = sourceLimitReached;
-    elements.addDipoleSource.disabled = sourceLimitReached;
+    // Sources can only be added to a loaded scene.
+    const cannotAdd = sourceLimitReached || !state.scene;
+    elements.addPositiveSource.disabled = cannotAdd;
+    elements.addNegativeSource.disabled = cannotAdd;
+    elements.addDipoleSource.disabled = cannotAdd;
     elements.sourceHelp.textContent = editable
       ? preset === "electric_dipole"
         ? "可增删电荷；拖动标记或输入坐标。"
@@ -1081,7 +1088,9 @@ import {
       fixed.textContent =
         elements.preset.value === "uniform"
           ? "匀强场的方向与强度由预设固定。"
-          : "固定几何标记将在场景加载后显示。";
+          : state.presentationStatus === "error"
+            ? "场景加载失败，固定标记暂不可显示。"
+            : "固定几何标记将在场景加载后显示。";
       elements.sourceEditorList.append(fixed);
       return;
     }
@@ -1362,17 +1371,31 @@ import {
     const unitSuffix = coordinateUnit ? ` ${coordinateUnit}` : "";
     elements.probePosition.textContent = `x ${formatEditorValue(worldX)}${unitSuffix} · y ${formatEditorValue(worldY)}${unitSuffix}`;
     elements.probeValue.textContent = `${state.scene.scalar.label || "场强"} ${formatValue(value)} ${state.scene.scalar.unit || ""}`.trim();
-    elements.probe.style.left = `${canvasX}px`;
-    elements.probe.style.top = `${canvasY}px`;
     elements.probe.hidden = false;
-    // Flip toward the plot interior when the default up-right placement
-    // would be clipped by the stage edge.
+    placeProbe(canvasX, canvasY);
+  }
+
+  // Up and to the right of the pointer by default; to the left when that
+  // would cross the plot's right edge (and the colorbar beside it) or the
+  // stage, below when there is no room above, and clamped inside the stage
+  // when neither side fits, so the raw reading is never clipped.
+  function placeProbe(canvasX, canvasY) {
     const gap = 12;
     const inset = 4;
-    elements.probe.dataset.flipX = String(
-      canvasX + gap + elements.probe.offsetWidth > elements.stage.clientWidth - inset,
-    );
-    elements.probe.dataset.flipY = String(canvasY - gap - elements.probe.offsetHeight < inset);
+    const width = elements.probe.offsetWidth;
+    const height = elements.probe.offsetHeight;
+    const stageWidth = elements.stage.clientWidth;
+    const stageHeight = elements.stage.clientHeight;
+    const rightLimit =
+      elements.stage.dataset.plotLayout === "wide" ? state.plotRect.right : stageWidth - inset;
+    let x = canvasX + gap;
+    if (x + width > rightLimit) x = canvasX - gap - width;
+    x = clamp(x, inset, Math.max(inset, stageWidth - width - inset));
+    let y = canvasY - gap - height;
+    if (y < inset) y = canvasY + gap;
+    y = clamp(y, inset, Math.max(inset, stageHeight - height - inset));
+    elements.probe.style.left = `${x}px`;
+    elements.probe.style.top = `${y}px`;
   }
 
   function sampleNearest(x, y) {
@@ -1488,10 +1511,28 @@ import {
   elements.canvas.addEventListener("keydown", handleCanvasKeydown);
 
   const resizeObserver = new ResizeObserver(() => {
+    // The probe was placed for the old geometry; the next pointer move shows it again.
+    elements.probe.hidden = true;
     window.cancelAnimationFrame(state.resizeFrame);
     state.resizeFrame = window.requestAnimationFrame(render);
   });
   resizeObserver.observe(elements.stage);
+
+  // Redraw at the new backing resolution when only the pixel ratio changes,
+  // for example after moving the window to a display with another scale.
+  function watchPixelRatio() {
+    window
+      .matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+      .addEventListener(
+        "change",
+        () => {
+          render();
+          watchPixelRatio();
+        },
+        { once: true },
+      );
+  }
+  watchPixelRatio();
 
   document.querySelectorAll(".brand-pole").forEach((pole) => {
     pole.style.fill = CANVAS_THEME.marker.fill[pole.dataset.pole];
