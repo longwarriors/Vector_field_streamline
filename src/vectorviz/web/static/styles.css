@@ -1286,6 +1286,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .source-editor {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: end;
@@ -1306,15 +1307,17 @@ input[type="range"]::-moz-range-thumb {
   font-weight: var(--vv-fw-strong);
 }
 
+/* The title spans the note; the delete button sits in its top-right corner. */
 .source-editor > .source-name {
-  grid-column: 1 / -2;
+  grid-column: 1 / -1;
+  min-height: 32px;
+  padding-right: 64px;
 }
 
 .source-editor > .remove-source {
-  grid-row: 1;
-  grid-column: -2 / -1;
-  align-self: center;
-  justify-self: end;
+  position: absolute;
+  top: 10px;
+  right: 12px;
 }
 
 .source-label {
@@ -1784,6 +1787,10 @@ input[type="range"]::-moz-range-thumb {
   select {
     min-height: 44px;
     font-size: var(--vv-fs-16);
+  }
+
+  .source-editor > .source-name {
+    min-height: 44px;
   }
 }
 
