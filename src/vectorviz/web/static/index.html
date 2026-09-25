@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="dark">
+    <meta name="color-scheme" content="light">
     <meta
       name="description"
       content="VectorViz：在浏览器中交互探索二维电场与磁场场线。"
@@ -13,25 +13,41 @@
     <script type="module" src="app.js"></script>
   </head>
   <body>
-    <a class="skip-link" href="#workspace">跳到可视化区域</a>
+    <a class="skip-link" href="#scene-controls">跳到场景控制</a>
 
     <div class="app-shell">
       <header class="topbar">
-        <a class="brand" href="/" aria-label="VectorViz 首页">
-          <span class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 40 40" role="img">
-              <path d="M7 21c4-12 22-12 26 0M7 19c4 12 22 12 26 0" />
-              <circle cx="8" cy="20" r="3" />
-              <circle cx="32" cy="20" r="3" />
-            </svg>
-          </span>
-          <span>
-            <strong>VectorViz</strong>
-            <small>场线实验室</small>
-          </span>
-        </a>
+        <h1 class="sr-only">VectorViz 场线实验室</h1>
+        <div class="toolbar-capsule capsule-scene">
+          <a class="brand" href="/" aria-label="VectorViz 首页">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 40 40">
+                <path d="M8 21c4-12 20-12 24 0M8 19c4 12 20 12 24 0" />
+                <circle class="brand-pole" data-pole="positive" cx="8" cy="20" r="4" />
+                <circle class="brand-pole" data-pole="negative" cx="32" cy="20" r="4" />
+              </svg>
+            </span>
+            <span class="brand-text">
+              <strong>VectorViz</strong>
+              <small>场线实验室</small>
+            </span>
+          </a>
+          <span class="capsule-divider" aria-hidden="true"></span>
+          <div class="preset-control">
+            <label for="preset">场景</label>
+            <div class="select-wrap">
+              <select id="preset" name="preset" form="scene-form">
+                <option value="electric_dipole">电偶极子</option>
+                <option value="magnetic_dipole">磁偶极子</option>
+                <option value="halbach_array">Halbach 阵列</option>
+                <option value="current_loop">圆形电流线圈</option>
+                <option value="uniform">匀强场</option>
+              </select>
+            </div>
+          </div>
+        </div>
 
-        <div class="topbar-actions">
+        <div class="toolbar-capsule capsule-actions">
           <span class="connection-state" id="connection-state" data-state="idle">
             <span class="state-dot" aria-hidden="true"></span>
             <span id="connection-label">等待计算</span>
@@ -44,163 +60,24 @@
       </header>
 
       <main class="workspace" id="workspace">
-        <aside class="control-panel" aria-label="场景控制">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">SCENE CONTROLS</p>
-              <h1>物理场景</h1>
-            </div>
-            <span class="beta-badge">2D</span>
-          </div>
-
-          <form id="scene-form">
-            <div class="control-group">
-              <label for="preset">场源预设</label>
-              <div class="select-wrap">
-                <select id="preset" name="preset">
-                  <option value="electric_dipole">电偶极子</option>
-                  <option value="magnetic_dipole">磁偶极子</option>
-                  <option value="halbach_array">Halbach 阵列</option>
-                  <option value="current_loop">圆形电流线圈</option>
-                  <option value="uniform">匀强场</option>
-                </select>
-              </div>
-              <p class="field-help">切换解析模型并重新生成场线。</p>
-            </div>
-
-            <div class="control-group range-control">
-              <div class="label-row">
-                <label for="density">播种预算</label>
-                <output id="density-output" for="density">18</output>
-              </div>
-              <input
-                id="density"
-                name="density"
-                type="range"
-                min="6"
-                max="40"
-                step="1"
-                value="18"
-              >
-              <div class="range-bounds" aria-hidden="true">
-                <span>稀疏</span>
-                <span>细密</span>
-              </div>
-              <p class="field-help">每次计算的总种子预算，不代表场强。</p>
-            </div>
-
-            <div class="control-group range-control">
-              <div class="label-row">
-                <label for="resolution">采样分辨率</label>
-                <output id="resolution-output" for="resolution">80 × 80</output>
-              </div>
-              <input
-                id="resolution"
-                name="resolution"
-                type="range"
-                min="32"
-                max="144"
-                step="16"
-                value="80"
-              >
-              <div class="range-bounds" aria-hidden="true">
-                <span>快速</span>
-                <span>精细</span>
-              </div>
-            </div>
-
-            <section class="source-section" aria-labelledby="source-heading">
-              <div class="source-heading-row">
-                <div>
-                  <h2 id="source-heading">场源位置</h2>
-                  <p id="source-help">拖动画布标记，或直接输入坐标。</p>
-                </div>
-                <button class="text-button" id="reset-sources" type="button" disabled>
-                  重置
-                </button>
-              </div>
-              <div class="source-actions" id="source-actions" hidden>
-                <button class="source-action" id="add-positive-source" type="button">
-                  + 正电荷
-                </button>
-                <button class="source-action" id="add-negative-source" type="button">
-                  + 负电荷
-                </button>
-                <button class="source-action" id="add-dipole-source" type="button" hidden>
-                  + 磁偶极子
-                </button>
-              </div>
-              <p class="source-status" id="source-status" role="status" aria-live="polite"></p>
-              <div id="source-editor-list" class="source-editor-list">
-                <p class="empty-sources">场景加载后可调整场源。</p>
-              </div>
-            </section>
-          </form>
-
-          <div class="guide-card">
-            <span class="guide-icon" aria-hidden="true">⌖</span>
-            <div>
-              <strong>画布交互</strong>
-              <p id="interaction-help">拖动场源改变位置；移动指针可探测坐标与场强。</p>
-            </div>
-          </div>
-
-          <dl class="scene-stats" aria-label="场景统计">
-            <div>
-              <dt>场线</dt>
-              <dd id="line-count">—</dd>
-            </div>
-            <div>
-              <dt>网格</dt>
-              <dd id="grid-size">—</dd>
-            </div>
-            <div>
-              <dt>单位</dt>
-              <dd id="field-unit">—</dd>
-            </div>
-          </dl>
-
-          <dl class="scene-metadata" aria-label="数值场元数据">
-            <div>
-              <dt>场模型</dt>
-              <dd id="field-model">—</dd>
-            </div>
-            <div>
-              <dt>播种方式</dt>
-              <dd id="seed-mode">—</dd>
-            </div>
-            <div>
-              <dt>播种说明</dt>
-              <dd id="seed-description">—</dd>
-            </div>
-            <div>
-              <dt>末端终止</dt>
-              <dd id="termination-counts">—</dd>
-            </div>
-            <div>
-              <dt>起点端终止</dt>
-              <dd id="start-termination-counts">—</dd>
-            </div>
-            <div>
-              <dt>尝试结果</dt>
-              <dd class="trace-outcomes">
-                渲染 <strong id="rendered-line-count">—</strong>
-                · 抑制 <strong id="suppressed-count">—</strong>
-              </dd>
-            </div>
-          </dl>
-        </aside>
-
         <section class="viewer-panel" aria-labelledby="scene-title">
           <div class="viewer-heading">
-            <div>
-              <p class="eyebrow">LIVE FIELD VIEW</p>
+            <div class="frame-title">
               <h2 id="scene-title">正在准备场景…</h2>
+              <span class="scale-badge" id="scale-badge">等待数据</span>
             </div>
-            <div class="legend-chips" aria-label="图层图例">
-              <span><i class="legend-line" aria-hidden="true"></i>场线</span>
-              <span><i class="legend-arrow" aria-hidden="true">›</i>方向</span>
-              <span><i class="legend-source" aria-hidden="true"></i>场源</span>
+            <div class="legend-chips" aria-label="图例">
+              <span class="legend-chip" data-layer="lines">
+                <i class="legend-line" aria-hidden="true"></i>场线
+              </span>
+              <span class="legend-chip" data-layer="lines">
+                <i class="legend-arrow" aria-hidden="true">
+                  <svg viewBox="0 0 14 10"><path d="M13 5 3 1.2v7.6z" /></svg>
+                </i>方向
+              </span>
+              <span class="legend-chip" data-layer="sources">
+                <i class="legend-source" aria-hidden="true"></i>场源
+              </span>
             </div>
           </div>
 
@@ -213,10 +90,6 @@
               >
                 当前浏览器不支持 Canvas，请升级浏览器后重试。
               </canvas>
-
-              <div class="canvas-hud" aria-hidden="true">
-                <span class="hud-pill" id="scale-badge">等待数据</span>
-              </div>
 
               <div class="probe" id="probe" hidden aria-hidden="true">
                 <span id="probe-position">x 0.00 · y 0.00</span>
@@ -231,34 +104,177 @@
               </div>
 
               <div class="loading-overlay" id="loading-overlay" role="status" aria-live="polite">
-                <span class="spinner" aria-hidden="true"></span>
-                <strong>正在计算场线</strong>
-                <span>求值、积分与绘制可能需要几秒</span>
+                <div class="loading-card">
+                  <span class="spinner" aria-hidden="true"></span>
+                  <strong>正在计算场线</strong>
+                  <span>求值、积分与绘制可能需要几秒</span>
+                </div>
               </div>
 
               <div class="error-banner" id="error-banner" role="alert" hidden>
-                <div>
+                <span class="error-icon" aria-hidden="true">!</span>
+                <div class="error-text">
                   <strong>场景计算失败</strong>
                   <span id="error-message">请稍后重试。</span>
                 </div>
-                <button id="retry-button" type="button">重试</button>
+                <button class="secondary-button" id="retry-button" type="button">重试</button>
               </div>
             </div>
 
             <figcaption>
               <span class="caption-mark" aria-hidden="true">i</span>
-              <span id="projection-note">曲线沿局部场方向积分；颜色表示场强大小。</span>
+              <span class="caption-text">
+                <span id="projection-note">曲线沿局部场方向积分；颜色表示场强大小。</span>
+              </span>
             </figcaption>
           </figure>
 
           <p class="sr-only" id="live-status" aria-live="polite"></p>
         </section>
-      </main>
 
-      <footer class="footer">
-        <span>VectorViz · 科学计算与可视化分离</span>
-        <span>Canvas 2D renderer</span>
-      </footer>
+        <div class="side-rail">
+          <aside
+            class="control-panel side-card"
+            id="scene-controls"
+            aria-labelledby="controls-heading"
+            tabindex="-1"
+          >
+            <div class="panel-heading">
+              <h2 id="controls-heading">参数与场源</h2>
+              <span class="plane-badge">2D</span>
+            </div>
+
+            <form id="scene-form">
+              <div class="control-group range-control">
+                <div class="label-row">
+                  <label for="density">播种预算</label>
+                  <output id="density-output" for="density">18</output>
+                </div>
+                <input
+                  id="density"
+                  name="density"
+                  type="range"
+                  min="6"
+                  max="40"
+                  step="1"
+                  value="18"
+                >
+                <div class="range-bounds" aria-hidden="true">
+                  <span>稀疏</span>
+                  <span>细密</span>
+                </div>
+                <p class="field-help">每次计算的总种子预算，不代表场强。</p>
+              </div>
+
+              <div class="control-group range-control">
+                <div class="label-row">
+                  <label for="resolution">采样分辨率</label>
+                  <output id="resolution-output" for="resolution">80 × 80</output>
+                </div>
+                <input
+                  id="resolution"
+                  name="resolution"
+                  type="range"
+                  min="32"
+                  max="144"
+                  step="16"
+                  value="80"
+                >
+                <div class="range-bounds" aria-hidden="true">
+                  <span>粗</span>
+                  <span>细</span>
+                </div>
+              </div>
+
+              <section class="source-section" aria-labelledby="source-heading">
+                <div class="source-heading-row">
+                  <div>
+                    <h3 id="source-heading">场源位置</h3>
+                    <p id="source-help">拖动画布标记，或直接输入坐标。</p>
+                  </div>
+                  <button class="text-button" id="reset-sources" type="button" disabled>
+                    重置
+                  </button>
+                </div>
+                <div class="source-actions" id="source-actions" hidden>
+                  <button class="source-action" id="add-positive-source" type="button">
+                    + 正电荷
+                  </button>
+                  <button class="source-action" id="add-negative-source" type="button">
+                    + 负电荷
+                  </button>
+                  <button class="source-action" id="add-dipole-source" type="button" hidden>
+                    + 磁偶极子
+                  </button>
+                </div>
+                <p class="source-status" id="source-status" role="status" aria-live="polite"></p>
+                <div id="source-editor-list" class="source-editor-list">
+                  <p class="empty-sources">场景加载后可调整场源。</p>
+                </div>
+              </section>
+            </form>
+          </aside>
+
+          <div class="details-column">
+            <aside class="guide-note" aria-labelledby="guide-heading">
+              <h2 id="guide-heading">
+                <span class="guide-icon" aria-hidden="true">⌖</span>
+                画布交互
+              </h2>
+              <p id="interaction-help">拖动场源改变位置；移动指针可探测坐标与场强。</p>
+            </aside>
+
+            <aside class="details-panel side-card" aria-labelledby="details-heading">
+              <h2 id="details-heading">科学详情</h2>
+              <dl class="scene-stats" aria-label="场景统计">
+                <div>
+                  <dt>场线</dt>
+                  <dd id="line-count">—</dd>
+                </div>
+                <div>
+                  <dt>网格</dt>
+                  <dd id="grid-size">—</dd>
+                </div>
+                <div>
+                  <dt>单位</dt>
+                  <dd id="field-unit">—</dd>
+                </div>
+              </dl>
+
+              <dl class="scene-metadata" aria-label="数值场元数据">
+                <div>
+                  <dt>场模型</dt>
+                  <dd id="field-model">—</dd>
+                </div>
+                <div>
+                  <dt>播种方式</dt>
+                  <dd id="seed-mode">—</dd>
+                </div>
+                <div>
+                  <dt>播种说明</dt>
+                  <dd id="seed-description">—</dd>
+                </div>
+                <div>
+                  <dt>末端终止</dt>
+                  <dd id="termination-counts">—</dd>
+                </div>
+                <div>
+                  <dt>起点端终止</dt>
+                  <dd id="start-termination-counts">—</dd>
+                </div>
+                <div>
+                  <dt>尝试结果</dt>
+                  <dd class="trace-outcomes">
+                    渲染 <strong id="rendered-line-count">—</strong>
+                    · 抑制 <strong id="suppressed-count">—</strong>
+                  </dd>
+                </div>
+              </dl>
+              <p class="renderer-note">Canvas 2D 渲染 · 服务端计算</p>
+            </aside>
+          </div>
+        </div>
+      </main>
     </div>
 
     <noscript>

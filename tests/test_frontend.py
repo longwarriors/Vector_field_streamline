@@ -977,7 +977,16 @@ def test_canvas_focus_ring_is_not_clipped(
     assert page_errors == []
 
 
-PLOT_READOUT_VIEWPORTS = [(1440, 900), (1280, 800), (820, 900), (390, 844)]
+# Desktop, laptop, projector windows (1280x800 and 1366x768 minus browser
+# chrome), a tablet and a phone.
+PLOT_READOUT_VIEWPORTS = [
+    (1440, 900),
+    (1280, 800),
+    (1280, 650),
+    (1366, 657),
+    (820, 900),
+    (390, 844),
+]
 
 
 @pytest.mark.browser
@@ -1009,7 +1018,36 @@ def test_plot_readouts_stay_inside_stage_and_off_the_plot(
     _open_ready_scene(page, frontend_url, scene)
     expect(page.locator("#colorbar-max")).to_have_text("1.44e-5")
     expect(page.locator("#colorbar-min")).to_have_text("3.58e-9")
-    page.locator("#field-canvas").scroll_into_view_if_needed()
+
+    # The whole plot is on the first screen and nothing opaque covers it.
+    first_screen = page.evaluate(
+        """async () => {
+          const canvas = document.querySelector('#field-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const domain = {x: [-2, 4], y: [-3, 1]};
+          const {calculatePlotRect} = await import('/coordinates.js');
+          const plot = calculatePlotRect(rect.width, rect.height, domain);
+          const left = rect.left + plot.left;
+          const top = rect.top + plot.top;
+          const right = rect.left + plot.right;
+          const bottom = rect.top + plot.bottom;
+          const probes = [
+            [(left + right) / 2, (top + bottom) / 2],
+            [left + 2, top + 2], [right - 2, top + 2],
+            [left + 2, bottom - 2], [right - 2, bottom - 2],
+          ];
+          return {
+            inViewport: left >= 0 && top >= 0 &&
+              right <= window.innerWidth && bottom <= window.innerHeight,
+            hits: probes.map(([x, y]) => document.elementFromPoint(x, y)?.id ?? null),
+            overflowX:
+              document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          };
+        }"""
+    )
+    assert first_screen["inViewport"] is True
+    assert first_screen["hits"] == ["field-canvas"] * 5
+    assert first_screen["overflowX"] <= 1
 
     layout = page.evaluate(
         """async () => {

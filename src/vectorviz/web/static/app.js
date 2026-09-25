@@ -133,10 +133,10 @@ import {
     }
   }
 
-  function setError(message) {
+  function setError(message, { unreachable = false } = {}) {
     elements.errorMessage.textContent = message;
     elements.errorBanner.hidden = false;
-    setConnectionStatus("error", "连接失败");
+    setConnectionStatus("error", unreachable ? "连接失败" : "计算失败");
     elements.liveStatus.textContent = `场景计算失败：${message}`;
   }
 
@@ -501,7 +501,9 @@ import {
     } catch (error) {
       if (error.name !== "AbortError" && sequence === state.requestSequence) {
         invalidateSceneView("error");
-        setError(error.message || "无法连接场景计算服务");
+        setError(error.message || "无法连接场景计算服务", {
+          unreachable: error instanceof TypeError,
+        });
       }
     } finally {
       if (sequence === state.requestSequence) {
@@ -573,13 +575,20 @@ import {
     elements.colorbar.hidden = false;
     elements.colorbarMax.textContent = formatValue(scale.maximum);
     elements.colorbarMin.textContent = formatValue(scale.minimum);
-    elements.colorbarLabel.textContent = [scalar.label || "场强", unit].filter(Boolean).join(" · ");
+    elements.colorbarLabel.textContent = quantityWithUnit(scalar.label || "场强", scalar.unit);
     const draggableSourceCount = sourcesAreEditable() ? scene.sources.length : 0;
     elements.canvas.dataset.draggable = String(draggableSourceCount > 0);
     elements.canvas.setAttribute(
       "aria-label",
       `${title}二维可视化，共 ${scene.metadata.rendered_line_count} 条场线、${draggableSourceCount} 个可移动场源。`,
     );
+  }
+
+  // "quantity / unit", bracketing compound units: |E| / (V/m), |B| / T.
+  function quantityWithUnit(quantity, unit) {
+    const trimmed = String(unit || "").trim();
+    if (!trimmed) return quantity;
+    return /[\s/·]/.test(trimmed) ? `${quantity} / (${trimmed})` : `${quantity} / ${trimmed}`;
   }
 
   function presetLabel(value) {
@@ -646,6 +655,8 @@ import {
     style.setProperty("--plot-bottom", `${bottom}px`);
     style.setProperty("--plot-width", `${right - left}px`);
     style.setProperty("--plot-height", `${bottom - top}px`);
+    const { x, y } = state.scene.domain;
+    style.setProperty("--domain-aspect", String((x[1] - x[0]) / (y[1] - y[0])));
     elements.stage.dataset.plotLayout = width < NARROW_PLOT_WIDTH ? "narrow" : "wide";
   }
 
@@ -862,14 +873,6 @@ import {
     };
   }
 
-  const SWATCH_CLASSES = Object.freeze({
-    positive: "positive",
-    negative: "negative",
-    dipole: "neutral",
-    wire_out: "wire",
-    wire_into: "wire",
-  });
-
   function drawSources() {
     state.scene.sources.forEach((source, index) => {
       const [x, y] = worldToCanvas(finiteNumber(source.x), finiteNumber(source.y));
@@ -915,8 +918,13 @@ import {
     name.className = "source-name";
     const swatch = document.createElement("i");
     const style = sourceStyle(source);
-    swatch.className = `source-swatch ${SWATCH_CLASSES[style.kind]}`;
+    swatch.className = "source-swatch";
     swatch.setAttribute("aria-hidden", "true");
+    swatch.style.background = style.fill;
+    const glyph = document.createElement("span");
+    glyph.textContent = style.symbol;
+    if (Number.isFinite(style.rotation)) glyph.style.transform = `rotate(${style.rotation}rad)`;
+    swatch.append(glyph);
     const sourceLabel = document.createElement("span");
     sourceLabel.className = "source-label";
     sourceLabel.textContent = readableSourceName(source, index);
@@ -958,6 +966,7 @@ import {
       sources.forEach((source, index) => {
         const row = document.createElement("div");
         row.className = "fixed-source";
+        row.dataset.sourceKind = source.kind;
         row.append(createSourceName(source, index));
         elements.sourceEditorList.append(row);
       });
@@ -976,7 +985,10 @@ import {
     if (!sources.length) {
       const empty = document.createElement("p");
       empty.className = "empty-sources";
-      empty.textContent = "此预设没有可移动场源。";
+      empty.textContent = {
+        error: "场景加载失败，场源暂不可编辑。",
+        loading: "场景加载后可调整场源。",
+      }[state.presentationStatus] || "此预设没有可移动场源。";
       elements.sourceEditorList.append(empty);
       return;
     }
@@ -984,6 +996,7 @@ import {
     sources.forEach((source, index) => {
       const row = document.createElement("div");
       row.className = "source-editor";
+      row.dataset.sourceKind = source.kind;
       row.append(createSourceName(source, index));
       row.append(coordinateInput(index, "x"), coordinateInput(index, "y"));
       if (source.kind === "dipole") row.append(angleInput(index));
@@ -1337,7 +1350,9 @@ import {
       await loadScene({preserveSources: false});
     } catch (error) {
       invalidateSceneView("error");
-      setError(error.message || "无法读取预设能力");
+      setError(error.message || "无法读取预设能力", {
+        unreachable: error instanceof TypeError,
+      });
       setLoading(false);
     }
   }
@@ -1373,6 +1388,9 @@ import {
   });
   resizeObserver.observe(elements.stage);
 
+  document.querySelectorAll(".brand-pole").forEach((pole) => {
+    pole.style.fill = CANVAS_THEME.marker.fill[pole.dataset.pole];
+  });
   elements.colorbar.style.setProperty("--colormap-vertical", paletteCssGradient("to top"));
   elements.colorbar.style.setProperty("--colormap-horizontal", paletteCssGradient("to right"));
   updateRange(elements.density, elements.densityOutput, (value) => String(value));
