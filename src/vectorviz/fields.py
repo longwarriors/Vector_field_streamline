@@ -9,7 +9,35 @@ from numpy.typing import ArrayLike
 from scipy.constants import epsilon_0, mu_0
 from scipy.special import ellipe, ellipk, ellipkm1
 
-from .core import FloatArray, VectorField, _as_points
+from .core import FloatArray, VectorField, _as_points, _norm_last_axis
+
+_EPSILON = float(np.finfo(float).eps)
+
+
+def _selection(mask: np.ndarray) -> slice | np.ndarray | None:
+    """Index for the masked elements: None if none, a full slice if all.
+
+    Elementwise operations on ``array[slice(None)]`` see the same values in
+    the same order as on ``array[mask]`` when every element is selected, so
+    the shortcut is exact while avoiding gather/scatter copies.
+    """
+
+    if mask.size == 1:  # the single-point case used by the tracer
+        return slice(None) if mask[0] else None
+    if not mask.any():
+        return None
+    if mask.all():
+        return slice(None)
+    return mask
+
+
+def _polyval(values: FloatArray, coefficients: FloatArray) -> FloatArray:
+    """Horner evaluation, the same steps as ``numpy.polynomial.polynomial.polyval``."""
+
+    result = coefficients[-1] + values * 0
+    for coefficient in coefficients[-2::-1]:
+        result = coefficient + result * values
+    return result
 
 
 def _readonly(array: ArrayLike) -> FloatArray:
@@ -39,6 +67,8 @@ class UniformField(VectorField):
 
     def evaluate(self, points: ArrayLike) -> FloatArray:
         coordinates = _as_points(points, self.dimension)
+        if coordinates.ndim == 1:
+            return self._vector.copy()
         return np.array(np.broadcast_to(self._vector, coordinates.shape), copy=True)
 
 
@@ -108,19 +138,21 @@ class PointChargeField(VectorField):
         flat_points = coordinates.reshape(-1, self.dimension)
         displacement = flat_points[:, np.newaxis, :] - self._positions[np.newaxis, :, :]
         radius_squared = np.einsum("pqd,pqd->pq", displacement, displacement)
-        singular = np.any(radius_squared == 0.0, axis=1)
+        singular = np.logical_or.reduce(radius_squared == 0.0, axis=1)
 
         inverse_radius_cubed = np.zeros_like(radius_squared)
-        nonzero = radius_squared > 0.0
-        inverse_radius_cubed[nonzero] = radius_squared[nonzero] ** -1.5
+        nonzero = _selection(radius_squared > 0.0)
+        if nonzero is not None:
+            inverse_radius_cubed[nonzero] = radius_squared[nonzero] ** -1.5
         coefficient = 1.0 / (4.0 * np.pi * self._permittivity)
-        values = coefficient * np.sum(
+        values = coefficient * np.add.reduce(
             self._charges[np.newaxis, :, np.newaxis]
             * displacement
             * inverse_radius_cubed[:, :, np.newaxis],
             axis=1,
         )
-        values[singular] = np.nan
+        if singular.any():
+            values[singular] = np.nan
         return values.reshape(original_shape)
 
 
@@ -187,14 +219,15 @@ class MagneticDipoleField(VectorField):
         flat_points = coordinates.reshape(-1, 3)
         displacement = flat_points[:, np.newaxis, :] - self._positions[np.newaxis, :, :]
         radius_squared = np.einsum("pmd,pmd->pm", displacement, displacement)
-        singular = np.any(radius_squared == 0.0, axis=1)
+        singular = np.logical_or.reduce(radius_squared == 0.0, axis=1)
         moment_dot_radius = np.einsum("pmd,md->pm", displacement, self._moments)
 
         inverse_radius_cubed = np.zeros_like(radius_squared)
         inverse_radius_fifth = np.zeros_like(radius_squared)
-        nonzero = radius_squared > 0.0
-        inverse_radius_cubed[nonzero] = radius_squared[nonzero] ** -1.5
-        inverse_radius_fifth[nonzero] = radius_squared[nonzero] ** -2.5
+        nonzero = _selection(radius_squared > 0.0)
+        if nonzero is not None:
+            inverse_radius_cubed[nonzero] = radius_squared[nonzero] ** -1.5
+            inverse_radius_fifth[nonzero] = radius_squared[nonzero] ** -2.5
         contributions = (
             3.0
             * displacement
@@ -202,8 +235,9 @@ class MagneticDipoleField(VectorField):
             * inverse_radius_fifth[:, :, np.newaxis]
             - self._moments[np.newaxis, :, :] * inverse_radius_cubed[:, :, np.newaxis]
         )
-        values = self._permeability / (4.0 * np.pi) * np.sum(contributions, axis=1)
-        values[singular] = np.nan
+        values = self._permeability / (4.0 * np.pi) * np.add.reduce(contributions, axis=1)
+        if singular.any():
+            values[singular] = np.nan
         return values.reshape(original_shape)
 
 
@@ -286,14 +320,14 @@ class _CircularLoopGeometry(VectorField):
         displacement = flat_points - self._center
         axial = displacement @ self._normal
         radial_vectors = displacement - axial[:, np.newaxis] * self._normal
-        radial = np.linalg.norm(radial_vectors, axis=1)
+        radial = _norm_last_axis(radial_vectors)
         wire_distance = np.hypot(radial - self._radius, axial)
-        geometry_scale = np.maximum(self._radius, np.linalg.norm(displacement, axis=1))
+        geometry_scale = np.maximum(self._radius, _norm_last_axis(displacement))
         # A rotated point constructed on the mathematical filament generally
         # misses exact floating equality after dot products and norms. This
         # ULP-scale classification only absorbs coordinate roundoff; it is not
         # a physical wire radius and never enters a field denominator.
-        singular_tolerance = 32.0 * np.finfo(float).eps * geometry_scale
+        singular_tolerance = 32.0 * _EPSILON * geometry_scale
         singular = wire_distance <= singular_tolerance
         return coordinates, original_shape, radial_vectors, radial, axial, singular
 
@@ -332,29 +366,36 @@ def _loop_elliptic_terms(
     """
 
     first = np.empty_like(parameter)
-    near_wire = complementary_parameter < 0.1
-    first[near_wire] = ellipkm1(complementary_parameter[near_wire])
-    first[~near_wire] = ellipk(parameter[~near_wire])
+    near_wire_mask = complementary_parameter < 0.1
+    near_wire = _selection(near_wire_mask)
+    away = _selection(~near_wire_mask)
+    if near_wire is not None:
+        first[near_wire] = ellipkm1(complementary_parameter[near_wire])
+    if away is not None:
+        first[away] = ellipk(parameter[away])
     second = np.asarray(ellipe(parameter), dtype=float)
     radial_term = np.empty_like(parameter)
     flux_term = np.empty_like(parameter)
-    small_parameter = parameter < 1.0e-2
-    radial_term[small_parameter] = np.pi / 2.0 * np.polynomial.polynomial.polyval(
-        parameter[small_parameter], _RADIAL_ELLIPTIC_SERIES
-    )
-    flux_term[small_parameter] = np.pi / 2.0 * np.polynomial.polynomial.polyval(
-        parameter[small_parameter], _FLUX_ELLIPTIC_SERIES
-    )
-    ordinary = ~small_parameter
-    radial_term[ordinary] = (
-        -first[ordinary]
-        + (1.0 - 0.5 * parameter[ordinary])
-        / complementary_parameter[ordinary]
-        * second[ordinary]
-    )
-    flux_term[ordinary] = (
-        (1.0 - 0.5 * parameter[ordinary]) * first[ordinary] - second[ordinary]
-    )
+    small_parameter_mask = parameter < 1.0e-2
+    small_parameter = _selection(small_parameter_mask)
+    if small_parameter is not None:
+        radial_term[small_parameter] = np.pi / 2.0 * _polyval(
+            parameter[small_parameter], _RADIAL_ELLIPTIC_SERIES
+        )
+        flux_term[small_parameter] = np.pi / 2.0 * _polyval(
+            parameter[small_parameter], _FLUX_ELLIPTIC_SERIES
+        )
+    ordinary = _selection(~small_parameter_mask)
+    if ordinary is not None:
+        radial_term[ordinary] = (
+            -first[ordinary]
+            + (1.0 - 0.5 * parameter[ordinary])
+            / complementary_parameter[ordinary]
+            * second[ordinary]
+        )
+        flux_term[ordinary] = (
+            (1.0 - 0.5 * parameter[ordinary]) * first[ordinary] - second[ordinary]
+        )
     return second, radial_term, flux_term
 
 
@@ -380,6 +421,21 @@ class CircularLoopField(_CircularLoopGeometry):
         permeability: float = mu_0,
     ) -> None:
         super().__init__(current, radius, center, normal, permeability)
+
+    def _elliptic_parameter(
+        self, rho: FloatArray, q_squared: FloatArray, complementary_parameter: FloatArray
+    ) -> FloatArray:
+        """Elliptic parameter ``m``, taken as ``1 - m1`` near the filament."""
+
+        parameter = np.empty_like(complementary_parameter)
+        near_wire_mask = complementary_parameter < 0.1
+        near_wire = _selection(near_wire_mask)
+        away = _selection(~near_wire_mask)
+        if near_wire is not None:
+            parameter[near_wire] = 1.0 - complementary_parameter[near_wire]
+        if away is not None:
+            parameter[away] = 4.0 * self._radius * rho[away] / q_squared[away]
+        return parameter
 
     def _axis_derivatives(
         self, axial: FloatArray
@@ -423,8 +479,9 @@ class CircularLoopField(_CircularLoopGeometry):
         values = np.empty((radial.size, 3), dtype=float)
 
         scale = np.sqrt(self._radius**2 + axial**2)
-        near_axis = radial <= self._NEAR_AXIS_RATIO * scale
-        if np.any(near_axis):
+        near_axis_mask = radial <= self._NEAR_AXIS_RATIO * scale
+        near_axis = _selection(near_axis_mask)
+        if near_axis is not None:
             rho = radial[near_axis]
             z = axial[near_axis]
             field, first, second, third, fourth = self._axis_derivatives(z)
@@ -435,18 +492,15 @@ class CircularLoopField(_CircularLoopGeometry):
                 + axial_component[:, np.newaxis] * self._normal
             )
 
-        general = ~near_axis & ~singular
-        if np.any(general):
+        general = _selection(~near_axis_mask & ~singular)
+        if general is not None:
             rho = radial[general]
             z = axial[general]
             radius = self._radius
             q_squared = (radius + rho) ** 2 + z**2
             wire_distance_squared = (radius - rho) ** 2 + z**2
             complementary_parameter = wire_distance_squared / q_squared
-            parameter = np.empty_like(complementary_parameter)
-            near_wire = complementary_parameter < 0.1
-            parameter[near_wire] = 1.0 - complementary_parameter[near_wire]
-            parameter[~near_wire] = 4.0 * radius * rho[~near_wire] / q_squared[~near_wire]
+            parameter = self._elliptic_parameter(rho, q_squared, complementary_parameter)
             second, radial_elliptic, _flux_elliptic = _loop_elliptic_terms(
                 parameter, complementary_parameter
             )
@@ -463,7 +517,8 @@ class CircularLoopField(_CircularLoopGeometry):
                     + axial_component[:, np.newaxis] * self._normal
                 )
 
-        values[singular] = np.nan
+        if singular.any():
+            values[singular] = np.nan
         return values.reshape(original_shape)
 
     def flux_function(self, points: ArrayLike) -> FloatArray:
@@ -485,8 +540,9 @@ class CircularLoopField(_CircularLoopGeometry):
         result = np.empty(radial.size, dtype=float)
 
         scale = np.sqrt(self._radius**2 + axial**2)
-        near_axis = radial <= self._NEAR_AXIS_RATIO * scale
-        if np.any(near_axis):
+        near_axis_mask = radial <= self._NEAR_AXIS_RATIO * scale
+        near_axis = _selection(near_axis_mask)
+        if near_axis is not None:
             rho = radial[near_axis]
             field, _first, second, _third, fourth = self._axis_derivatives(axial[near_axis])
             result[near_axis] = (
@@ -495,18 +551,15 @@ class CircularLoopField(_CircularLoopGeometry):
                 + fourth * rho**6 / 384.0
             )
 
-        general = ~near_axis & ~singular
-        if np.any(general):
+        general = _selection(~near_axis_mask & ~singular)
+        if general is not None:
             rho = radial[general]
             z = axial[general]
             radius = self._radius
             q_squared = (radius + rho) ** 2 + z**2
             wire_distance_squared = (radius - rho) ** 2 + z**2
             complementary_parameter = wire_distance_squared / q_squared
-            parameter = np.empty_like(complementary_parameter)
-            near_wire = complementary_parameter < 0.1
-            parameter[near_wire] = 1.0 - complementary_parameter[near_wire]
-            parameter[~near_wire] = 4.0 * radius * rho[~near_wire] / q_squared[~near_wire]
+            parameter = self._elliptic_parameter(rho, q_squared, complementary_parameter)
             _second, _radial_elliptic, flux_elliptic = _loop_elliptic_terms(
                 parameter, complementary_parameter
             )
@@ -519,7 +572,8 @@ class CircularLoopField(_CircularLoopGeometry):
                     * flux_elliptic
                 )
 
-        result[singular] = np.nan
+        if singular.any():
+            result[singular] = np.nan
         return result.reshape(original_shape[:-1])
 
 

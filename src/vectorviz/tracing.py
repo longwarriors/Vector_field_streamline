@@ -205,15 +205,17 @@ class FieldLineTracer:
         self.domain = domain
         self.options = options if options is not None else TraceOptions()
         self.exclusions = exclusion_values
+        self._vector_shape = (field.dimension,)
 
     def _field_at(self, point: FloatArray) -> tuple[FloatArray, float]:
         vector = np.asarray(self.field.evaluate(point), dtype=float)
-        if vector.shape != (self.field.dimension,):
+        if vector.shape != self._vector_shape:
             raise ValueError(
                 "VectorField.evaluate violated its contract: "
-                f"expected {(self.field.dimension,)}, got {vector.shape}."
+                f"expected {self._vector_shape}, got {vector.shape}."
             )
-        return vector, float(np.linalg.norm(vector))
+        # Exactly what np.linalg.norm evaluates for a real vector.
+        return vector, float(np.sqrt(vector.dot(vector)))
 
     def _branch_without_integration(
         self,
@@ -254,10 +256,24 @@ class FieldLineTracer:
             )
 
         encountered_nonfinite = False
+        # The solver evaluates the event functions at the point where it has
+        # just evaluated the right-hand side; remember that one value so the
+        # events do not evaluate the field there again. Keys are the exact
+        # coordinate bytes, so a hit returns the identical result.
+        cached_key: bytes | None = None
+        cached_value: tuple[FloatArray, float] | None = None
+
+        def field_at(point: FloatArray) -> tuple[FloatArray, float]:
+            nonlocal cached_key, cached_value
+            key = point.tobytes()
+            if key != cached_key or cached_value is None:
+                cached_value = self._field_at(point)
+                cached_key = key
+            return cached_value
 
         def rhs(_parameter: float, point: FloatArray) -> FloatArray:
             nonlocal encountered_nonfinite
-            vector, magnitude = self._field_at(point)
+            vector, magnitude = field_at(point)
             if not np.all(np.isfinite(vector)) or not np.isfinite(magnitude):
                 encountered_nonfinite = True
                 return np.zeros_like(point)
@@ -268,7 +284,7 @@ class FieldLineTracer:
             return sign * vector / magnitude
 
         def null_event(_parameter: float, point: FloatArray) -> float:
-            vector, magnitude = self._field_at(point)
+            vector, magnitude = field_at(point)
             if not np.all(np.isfinite(vector)) or not np.isfinite(magnitude):
                 return 1.0
             return magnitude - options.null_threshold
@@ -277,7 +293,7 @@ class FieldLineTracer:
         null_event.direction = -1.0  # type: ignore[attr-defined]
 
         def finite_event(_parameter: float, point: FloatArray) -> float:
-            vector, magnitude = self._field_at(point)
+            vector, magnitude = field_at(point)
             return 1.0 if np.all(np.isfinite(vector)) and np.isfinite(magnitude) else -1.0
 
         finite_event.terminal = True  # type: ignore[attr-defined]
@@ -320,7 +336,7 @@ class FieldLineTracer:
             def closure_candidate_event(_parameter: float, point: FloatArray) -> float:
                 """Locate local minima of distance to the seed along this branch."""
 
-                vector, magnitude = self._field_at(point)
+                vector, magnitude = field_at(point)
                 if (
                     not np.all(np.isfinite(vector))
                     or not np.isfinite(magnitude)

@@ -18,6 +18,17 @@ from numpy.typing import ArrayLike, NDArray
 FloatArray = NDArray[np.float64]
 
 
+def _norm_last_axis(vectors: FloatArray) -> FloatArray:
+    """Euclidean norm along the last axis, bit-identical to ``np.linalg.norm``.
+
+    For real input ``np.linalg.norm(x, axis=-1)`` evaluates exactly
+    ``sqrt(add.reduce(x * x, axis=-1))``; calling that directly skips the
+    wrapper's argument handling, which dominates for single points.
+    """
+
+    return np.sqrt(np.add.reduce(vectors * vectors, axis=-1))
+
+
 def _as_points(points: ArrayLike, dimension: int, *, name: str = "points") -> FloatArray:
     """Coerce coordinates while preserving all leading batch dimensions."""
 
@@ -136,7 +147,7 @@ class Domain:
         coordinates = _as_points(points, self.dimension)
         lower_margin = coordinates - self.lower
         upper_margin = self.upper - coordinates
-        return np.min(np.minimum(lower_margin, upper_margin), axis=-1)
+        return np.minimum.reduce(np.minimum(lower_margin, upper_margin), axis=-1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,8 +193,8 @@ class SphericalExclusion:
 
         coordinates = _as_points(points, self.dimension)
         delta = coordinates[..., np.newaxis, :] - self.centers
-        distances = np.linalg.norm(delta, axis=-1) - self.radii
-        return np.min(distances, axis=-1)
+        distances = _norm_last_axis(delta) - self.radii
+        return np.minimum.reduce(distances, axis=-1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,7 +256,7 @@ class ToroidalExclusion:
         displacement = coordinates - self.center
         axial = np.einsum("...d,d->...", displacement, self.normal)
         radial_vectors = displacement - axial[..., np.newaxis] * self.normal
-        radial = np.linalg.norm(radial_vectors, axis=-1)
+        radial = _norm_last_axis(radial_vectors)
         centerline_distance = np.hypot(radial - self.major_radius, axial)
         return centerline_distance - self.minor_radius
 
