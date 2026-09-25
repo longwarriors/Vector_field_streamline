@@ -6,6 +6,7 @@ import {
   resolveScale,
 } from "./color-scale.js";
 import {
+  NARROW_PLOT_WIDTH,
   calculatePlotRect,
   clamp,
   createCoordinateTransform,
@@ -80,7 +81,6 @@ import {
     colorbarMax: document.querySelector("#colorbar-max"),
     colorbarMin: document.querySelector("#colorbar-min"),
     colorbarLabel: document.querySelector("#colorbar-label"),
-    colorbarGradient: document.querySelector(".colorbar-gradient"),
     lineCount: document.querySelector("#line-count"),
     gridSize: document.querySelector("#grid-size"),
     fieldUnit: document.querySelector("#field-unit"),
@@ -623,6 +623,7 @@ import {
 
     state.plotRect = calculatePlotRect(size.width, size.height, state.scene.domain);
     state.transform = createCoordinateTransform(state.scene.domain, state.plotRect);
+    publishPlotRect(size.width);
     if (state.presentationStatus === "stale") {
       drawGridAndAxes();
       drawSources();
@@ -633,6 +634,19 @@ import {
     drawGridAndAxes();
     drawStreamlines();
     drawSources();
+  }
+
+  // Overlays such as the colorbar are laid out against the plot, not the stage.
+  function publishPlotRect(width) {
+    const { left, top, right, bottom } = state.plotRect;
+    const style = elements.stage.style;
+    style.setProperty("--plot-left", `${left}px`);
+    style.setProperty("--plot-top", `${top}px`);
+    style.setProperty("--plot-right", `${right}px`);
+    style.setProperty("--plot-bottom", `${bottom}px`);
+    style.setProperty("--plot-width", `${right - left}px`);
+    style.setProperty("--plot-height", `${bottom - top}px`);
+    elements.stage.dataset.plotLayout = width < NARROW_PLOT_WIDTH ? "narrow" : "wide";
   }
 
   function drawHeatmap() {
@@ -722,6 +736,17 @@ import {
 
     context.strokeStyle = CANVAS_THEME.axes.frame;
     context.strokeRect(left, top, right - left, bottom - top);
+
+    const unit = String(state.scene.domain.unit || "").trim();
+    const axisTitle = (axis) => (unit ? `${axis} / ${unit}` : axis);
+    context.fillStyle = CANVAS_THEME.axes.title;
+    context.font = CANVAS_THEME.axes.titleFont;
+    context.textAlign = "left";
+    context.textBaseline = "bottom";
+    context.fillText(axisTitle("y"), left, top - 8);
+    context.textAlign = "center";
+    context.textBaseline = "top";
+    context.fillText(axisTitle("x"), (left + right) / 2, bottom + 28);
     context.restore();
   }
 
@@ -1224,6 +1249,14 @@ import {
     elements.probe.style.left = `${canvasX}px`;
     elements.probe.style.top = `${canvasY}px`;
     elements.probe.hidden = false;
+    // Flip toward the plot interior when the default up-right placement
+    // would be clipped by the stage edge.
+    const gap = 12;
+    const inset = 4;
+    elements.probe.dataset.flipX = String(
+      canvasX + gap + elements.probe.offsetWidth > elements.stage.clientWidth - inset,
+    );
+    elements.probe.dataset.flipY = String(canvasY - gap - elements.probe.offsetHeight < inset);
   }
 
   function sampleNearest(x, y) {
@@ -1340,7 +1373,8 @@ import {
   });
   resizeObserver.observe(elements.stage);
 
-  elements.colorbarGradient.style.background = paletteCssGradient("to top");
+  elements.colorbar.style.setProperty("--colormap-vertical", paletteCssGradient("to top"));
+  elements.colorbar.style.setProperty("--colormap-horizontal", paletteCssGradient("to right"));
   updateRange(elements.density, elements.densityOutput, (value) => String(value));
   updateRange(elements.resolution, elements.resolutionOutput, (value) => `${value} × ${value}`);
   bootstrap();

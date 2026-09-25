@@ -14,6 +14,8 @@ export const CANVAS_THEME = deepFreeze({
     tick: "rgba(222, 238, 241, 0.65)",
     grid: "rgba(228, 248, 247, 0.12)",
     frame: "rgba(235, 250, 250, 0.3)",
+    title: "rgba(222, 238, 241, 0.8)",
+    titleFont: "600 11px ui-sans-serif, system-ui, sans-serif",
   },
   line: {
     halo: "rgba(0, 8, 12, 0.5)",

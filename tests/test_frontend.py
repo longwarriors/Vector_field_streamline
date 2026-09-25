@@ -885,6 +885,10 @@ def test_heatmap_texel_centers_align_with_scalar_nodes(
 
     # Nodes x = -0.5 and x = 2.5 lie between x ticks; y = -1.5 lies between
     # y ticks, and every row is identical, so grid lines cannot pollute them.
+    # Skia quantises bilinear weights to 1/16, so only the pixels on one side
+    # of a node show its exact colour; sample the pixels either side of it.
+    # The pre-fix misalignment put nodes a twentieth of the plot width away
+    # from their texel centres, about 20% of a colour step off.
     samples = page.evaluate(
         """async () => {
           const canvas = document.querySelector('#field-canvas');
@@ -899,14 +903,189 @@ def test_heatmap_texel_centers_align_with_scalar_nodes(
           const ratio = canvas.width / rect.width;
           return [-0.5, 2.5].map((x) => {
             const [px, py] = transform.worldToCanvas(x, -1.5);
-            return Array.from(context.getImageData(
-              Math.floor(px * ratio), Math.floor(py * ratio), 1, 1,
-            ).data);
+            const data = context.getImageData(
+              Math.floor(px * ratio) - 1, Math.floor(py * ratio), 3, 1,
+            ).data;
+            return [0, 1, 2].map((index) => Array.from(data.slice(index * 4, index * 4 + 3)));
           });
         }"""
     )
-    for pixel in samples:
-        assert pixel[:3] == pytest.approx([253, 231, 37], abs=3)
+    yellow = [253, 231, 37]
+    for pixels in samples:
+        closest = min(
+            max(abs(channel - expected) for channel, expected in zip(pixel, yellow, strict=True))
+            for pixel in pixels
+        )
+        assert closest <= 3, pixels
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_canvas_focus_ring_is_not_clipped(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    _open_ready_scene(page, frontend_url, _browser_scene())
+
+    for _ in range(80):
+        page.keyboard.press("Tab")
+        if page.evaluate("() => document.activeElement?.id") == "field-canvas":
+            break
+    else:
+        pytest.fail("keyboard Tab never reached the field canvas")
+
+    ring = page.evaluate(
+        """() => {
+          const canvas = document.querySelector('#field-canvas');
+          const style = getComputedStyle(canvas);
+          const rect = canvas.getBoundingClientRect();
+          const clips = [];
+          for (let node = canvas.parentElement; node; node = node.parentElement) {
+            const parentStyle = getComputedStyle(node);
+            if (parentStyle.overflowX !== 'visible' || parentStyle.overflowY !== 'visible') {
+              const box = node.getBoundingClientRect();
+              clips.push({left: box.left, top: box.top, right: box.right, bottom: box.bottom});
+            }
+          }
+          return {
+            focusVisible: canvas.matches(':focus-visible'),
+            outlineStyle: style.outlineStyle,
+            outlineWidth: parseFloat(style.outlineWidth),
+            outlineOffset: parseFloat(style.outlineOffset),
+            rect: {left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom},
+            clips,
+          };
+        }"""
+    )
+    assert ring["focusVisible"] is True
+    assert ring["outlineStyle"] != "none"
+    assert ring["outlineWidth"] >= 2
+    reach = ring["outlineWidth"] + ring["outlineOffset"]
+    outer = {
+        "left": ring["rect"]["left"] - reach,
+        "top": ring["rect"]["top"] - reach,
+        "right": ring["rect"]["right"] + reach,
+        "bottom": ring["rect"]["bottom"] + reach,
+    }
+    assert ring["clips"], "expected the stage to clip its overlays"
+    for clip in ring["clips"]:
+        assert outer["left"] >= clip["left"] - 0.5
+        assert outer["top"] >= clip["top"] - 0.5
+        assert outer["right"] <= clip["right"] + 0.5
+        assert outer["bottom"] <= clip["bottom"] + 0.5
+    assert page_errors == []
+
+
+PLOT_READOUT_VIEWPORTS = [(1440, 900), (1280, 800), (820, 900), (390, 844)]
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize(
+    "viewport", PLOT_READOUT_VIEWPORTS, ids=[f"{w}x{h}" for w, h in PLOT_READOUT_VIEWPORTS]
+)
+def test_plot_readouts_stay_inside_stage_and_off_the_plot(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+    viewport: tuple[int, int],
+) -> None:
+    page, page_errors = browser_page
+    page.set_viewport_size({"width": viewport[0], "height": viewport[1]})
+    scene = _browser_scene()
+    scalar = scene["scalar"]
+    assert isinstance(scalar, dict)
+    # Real Halbach limits: the widest colorbar labels the presets produce.
+    scalar.update(
+        {
+            "values": [3.584e-9, 1e-8, 1e-7, 1e-6, 5e-6, 1.437e-5, 2e-6, 3e-7, 4e-8],
+            "scale": "log",
+            "label": "|B|",
+            "unit": "T",
+            "vmin": 3.584e-9,
+            "vmax": 1.437e-5,
+        }
+    )
+    _instrument_canvas(page)
+    _open_ready_scene(page, frontend_url, scene)
+    expect(page.locator("#colorbar-max")).to_have_text("1.44e-5")
+    expect(page.locator("#colorbar-min")).to_have_text("3.58e-9")
+    page.locator("#field-canvas").scroll_into_view_if_needed()
+
+    layout = page.evaluate(
+        """async () => {
+          const canvas = document.querySelector('#field-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const domain = {x: [-2, 4], y: [-3, 1]};
+          const {calculatePlotRect} = await import('/coordinates.js');
+          const plot = calculatePlotRect(rect.width, rect.height, domain);
+          const box = (element) => {
+            const r = element.getBoundingClientRect();
+            return {left: r.left, top: r.top, right: r.right, bottom: r.bottom};
+          };
+          const colorbar = document.querySelector('#colorbar');
+          const titles = window.__vectorVizCanvasCalls.texts
+            .filter(({text}) => text === 'x / m' || text === 'y / m');
+          return {
+            canvas: box(canvas),
+            stage: box(document.querySelector('#canvas-stage')),
+            plot: {
+              left: rect.left + plot.left,
+              top: rect.top + plot.top,
+              right: rect.left + plot.right,
+              bottom: rect.top + plot.bottom,
+            },
+            colorbar: box(colorbar),
+            colorbarOverflow: Math.max(
+              colorbar.scrollWidth - colorbar.clientWidth,
+              colorbar.scrollHeight - colorbar.clientHeight,
+            ),
+            titles: titles.map(({text, x, y}) => ({
+              text, x: rect.left + x, y: rect.top + y,
+            })),
+          };
+        }"""
+    )
+
+    def inside(inner: dict[str, float], outer: dict[str, float]) -> bool:
+        return (
+            inner["left"] >= outer["left"] - 0.5
+            and inner["top"] >= outer["top"] - 0.5
+            and inner["right"] <= outer["right"] + 0.5
+            and inner["bottom"] <= outer["bottom"] + 0.5
+        )
+
+    def overlaps(first: dict[str, float], second: dict[str, float]) -> bool:
+        return (
+            min(first["right"], second["right"]) - max(first["left"], second["left"]) > 0.5
+            and min(first["bottom"], second["bottom"]) - max(first["top"], second["top"]) > 0.5
+        )
+
+    plot = layout["plot"]
+    assert inside(layout["colorbar"], layout["stage"])
+    assert not overlaps(layout["colorbar"], plot)
+    assert layout["colorbarOverflow"] <= 1
+    assert {title["text"] for title in layout["titles"]} == {"x / m", "y / m"}
+    for title in layout["titles"]:
+        assert layout["canvas"]["left"] <= title["x"] <= layout["canvas"]["right"]
+        assert layout["canvas"]["top"] <= title["y"] <= layout["canvas"]["bottom"]
+        assert not (
+            plot["left"] < title["x"] < plot["right"] and plot["top"] < title["y"] < plot["bottom"]
+        )
+
+    # The probe reports raw values, so it must stay readable at the plot corner.
+    page.mouse.move(plot["right"] - 2, plot["top"] + 2)
+    expect(page.locator("#probe")).to_be_visible()
+    probe = page.locator("#probe").evaluate(
+        """(element) => {
+          const r = element.getBoundingClientRect();
+          return {left: r.left, top: r.top, right: r.right, bottom: r.bottom};
+        }"""
+    )
+    assert inside(probe, layout["stage"])
+
+    expect(page.locator("#projection-note")).to_have_text("Browser semantic fixture")
+    expect(page.locator("#colorbar-label")).to_contain_text("T")
+    expect(page.get_by_text("不代表场强")).to_be_visible()
     assert page_errors == []
 
 

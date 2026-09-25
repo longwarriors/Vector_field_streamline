@@ -4,13 +4,23 @@ export function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+// Below this canvas width the colorbar moves under the plot.
+export const NARROW_PLOT_WIDTH = 520;
+
+// Margins leave room for tick labels, the axis unit titles and the colorbar:
+// a 72 px column right of the plot when wide, a strip under it when narrow.
+export function plotMargins(width) {
+  return width < NARROW_PLOT_WIDTH
+    ? { left: 40, right: 16, top: 30, bottom: 108 }
+    : { left: 48, right: 96, top: 30, bottom: 52 };
+}
+
 export function calculatePlotRect(width, height, domain) {
-  const leftMargin = width < 520 ? 36 : 48;
-  const rightMargin = width < 520 ? 55 : 68;
-  const topMargin = 20;
-  const bottomMargin = 36;
-  const availableWidth = Math.max(1, width - leftMargin - rightMargin);
-  const availableHeight = Math.max(1, height - topMargin - bottomMargin);
+  const margins = plotMargins(width);
+  const leftMargin = margins.left;
+  const topMargin = margins.top;
+  const availableWidth = Math.max(1, width - margins.left - margins.right);
+  const availableHeight = Math.max(1, height - margins.top - margins.bottom);
   const domainWidth = domain.x[1] - domain.x[0];
   const domainHeight = domain.y[1] - domain.y[0];
   const domainAspect = domainWidth / domainHeight;
