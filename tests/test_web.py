@@ -1820,6 +1820,7 @@ def test_static_index_and_assets_are_served(client: TestClient) -> None:
 
     for asset in (
         "/app.js",
+        "/canvas-theme.js",
         "/source-controls.js",
         "/coordinates.js",
         "/color-scale.js",

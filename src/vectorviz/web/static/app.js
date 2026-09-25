@@ -1,4 +1,10 @@
-import { colorForScalar, getScaleType, resolveScale } from "./color-scale.js";
+import { CANVAS_THEME } from "./canvas-theme.js";
+import {
+  colorForScalar,
+  getScaleType,
+  paletteCssGradient,
+  resolveScale,
+} from "./color-scale.js";
 import {
   calculatePlotRect,
   clamp,
@@ -74,6 +80,7 @@ import {
     colorbarMax: document.querySelector("#colorbar-max"),
     colorbarMin: document.querySelector("#colorbar-min"),
     colorbarLabel: document.querySelector("#colorbar-label"),
+    colorbarGradient: document.querySelector(".colorbar-gradient"),
     lineCount: document.querySelector("#line-count"),
     gridSize: document.querySelector("#grid-size"),
     fieldUnit: document.querySelector("#field-unit"),
@@ -609,7 +616,7 @@ import {
   function render() {
     const size = resizeCanvas();
     context.clearRect(0, 0, size.width, size.height);
-    context.fillStyle = "#07111a";
+    context.fillStyle = CANVAS_THEME.paper;
     context.fillRect(0, 0, size.width, size.height);
     elements.canvas.dataset.sceneState = state.presentationStatus;
     if (!state.scene) return;
@@ -674,9 +681,9 @@ import {
     const [ymin, ymax] = state.scene.domain.y;
     context.save();
     context.lineWidth = 1;
-    context.font = "10px ui-sans-serif, system-ui, sans-serif";
-    context.fillStyle = "rgba(222, 238, 241, 0.65)";
-    context.strokeStyle = "rgba(228, 248, 247, 0.12)";
+    context.font = CANVAS_THEME.axes.font;
+    context.fillStyle = CANVAS_THEME.axes.tick;
+    context.strokeStyle = CANVAS_THEME.axes.grid;
 
     niceTicks(xmin, xmax).forEach((tick) => {
       const [x] = worldToCanvas(tick, ymin);
@@ -700,7 +707,7 @@ import {
       context.fillText(formatAxisValue(tick), left - 7, y);
     });
 
-    context.strokeStyle = "rgba(235, 250, 250, 0.3)";
+    context.strokeStyle = CANVAS_THEME.axes.frame;
     context.strokeRect(left, top, right - left, bottom - top);
     context.restore();
   }
@@ -723,12 +730,12 @@ import {
       const points = state.transform.projectPoints(validPoints(line));
       if (points.length < 2) continue;
       tracePath(points);
-      context.strokeStyle = "rgba(0, 8, 12, 0.5)";
-      context.lineWidth = 3.4;
+      context.strokeStyle = CANVAS_THEME.line.halo;
+      context.lineWidth = CANVAS_THEME.line.haloWidth;
       context.stroke();
       tracePath(points);
-      context.strokeStyle = "rgba(248, 255, 253, 0.88)";
-      context.lineWidth = 1.15;
+      context.strokeStyle = CANVAS_THEME.line.core;
+      context.lineWidth = CANVAS_THEME.line.coreWidth;
       context.stroke();
       drawDirectionArrows(points, line.direction);
     }
@@ -765,9 +772,9 @@ import {
 
     const arrowCount = clamp(Math.floor(total / 130), 1, 3);
     const sign = directionSign(direction);
-    context.fillStyle = "rgba(255, 255, 255, 0.94)";
-    context.strokeStyle = "rgba(0, 8, 12, 0.58)";
-    context.lineWidth = 2.6;
+    context.fillStyle = CANVAS_THEME.arrow.fill;
+    context.strokeStyle = CANVAS_THEME.arrow.stroke;
+    context.lineWidth = CANVAS_THEME.arrow.strokeWidth;
     for (let arrowIndex = 1; arrowIndex <= arrowCount; arrowIndex += 1) {
       const target = (total * arrowIndex) / (arrowCount + 1);
       const segment = segments.find((candidate) => candidate.start + candidate.length >= target);
@@ -797,49 +804,51 @@ import {
     context.fill();
   }
 
+  const SOURCE_GLYPHS = Object.freeze({
+    positive: "+",
+    negative: "−",
+    dipole: "→",
+    wire_out: "⊙",
+    wire_into: "⊗",
+  });
+
+  // validateScene admits only the kinds listed in SOURCE_STRENGTH_UNITS.
   function sourceStyle(source) {
-    const kind = String(source.kind || "").toLowerCase();
-    if (kind === "wire_out") {
-      return { fill: "#ffb45f", symbol: "⊙", className: "wire" };
-    }
-    if (kind === "wire_into") {
-      return { fill: "#ffb45f", symbol: "⊗", className: "wire" };
-    }
-    if (kind.includes("dipole") || kind.includes("magnet")) {
-      return {
-        fill: "#ffe08a",
-        symbol: "→",
-        className: "neutral",
-        rotation: (-effectiveDipoleAngleDeg(source) * Math.PI) / 180,
-      };
-    }
-    if (kind.includes("uniform")) {
-      return { fill: "#59e1c1", symbol: "→", className: "neutral" };
-    }
-    if (kind === "positive") return { fill: "#ff725f", symbol: "+", className: "positive" };
-    if (kind === "negative") return { fill: "#65b9ff", symbol: "−", className: "negative" };
-    if (source.strength > 0) return { fill: "#ff725f", symbol: "+", className: "positive" };
-    if (source.strength < 0) return { fill: "#65b9ff", symbol: "−", className: "negative" };
-    return { fill: "#ffe08a", symbol: "◆", className: "neutral" };
+    const { kind } = source;
+    return {
+      kind,
+      fill: CANVAS_THEME.marker.fill[kind],
+      symbol: SOURCE_GLYPHS[kind],
+      rotation:
+        kind === "dipole" ? (-effectiveDipoleAngleDeg(source) * Math.PI) / 180 : undefined,
+    };
   }
+
+  const SWATCH_CLASSES = Object.freeze({
+    positive: "positive",
+    negative: "negative",
+    dipole: "neutral",
+    wire_out: "wire",
+    wire_into: "wire",
+  });
 
   function drawSources() {
     state.scene.sources.forEach((source, index) => {
       const [x, y] = worldToCanvas(finiteNumber(source.x), finiteNumber(source.y));
       const style = sourceStyle(source);
       context.save();
-      context.shadowColor = "rgba(0, 0, 0, 0.48)";
-      context.shadowBlur = 10;
+      context.shadowColor = CANVAS_THEME.marker.shadow;
+      context.shadowBlur = CANVAS_THEME.marker.shadowBlur;
       context.beginPath();
       context.arc(x, y, 10, 0, Math.PI * 2);
       context.fillStyle = style.fill;
       context.fill();
       context.shadowBlur = 0;
-      context.strokeStyle = "rgba(255, 255, 255, 0.94)";
-      context.lineWidth = 2;
+      context.strokeStyle = CANVAS_THEME.marker.ring;
+      context.lineWidth = CANVAS_THEME.marker.ringWidth;
       context.stroke();
-      context.fillStyle = "#061018";
-      context.font = "800 13px ui-sans-serif, system-ui, sans-serif";
+      context.fillStyle = CANVAS_THEME.marker.glyph;
+      context.font = CANVAS_THEME.marker.glyphFont;
       context.textAlign = "center";
       context.textBaseline = "middle";
       if (Number.isFinite(style.rotation)) {
@@ -854,7 +863,7 @@ import {
       if (index === state.selectedSource) {
         context.beginPath();
         context.arc(x, y, 16, 0, Math.PI * 2);
-        context.strokeStyle = "rgba(89, 225, 193, 0.9)";
+        context.strokeStyle = CANVAS_THEME.marker.selection;
         context.lineWidth = 2;
         context.setLineDash([3, 3]);
         context.stroke();
@@ -868,7 +877,7 @@ import {
     name.className = "source-name";
     const swatch = document.createElement("i");
     const style = sourceStyle(source);
-    swatch.className = `source-swatch ${style.className}`;
+    swatch.className = `source-swatch ${SWATCH_CLASSES[style.kind]}`;
     swatch.setAttribute("aria-hidden", "true");
     const sourceLabel = document.createElement("span");
     sourceLabel.className = "source-label";
@@ -946,17 +955,11 @@ import {
   }
 
   function readableSourceName(source, index) {
-    const kind = String(source.kind || "").toLowerCase();
-    if (kind === "wire_out") return "电流出屏";
-    if (kind === "wire_into") return "电流入屏";
-    if (kind.includes("dipole") || kind.includes("magnet")) {
-      return `磁偶极子 ${index + 1}`;
-    }
-    if (kind === "positive") return `正电荷 ${index + 1}`;
-    if (kind === "negative") return `负电荷 ${index + 1}`;
-    if (source.strength > 0) return `正电荷 ${index + 1}`;
-    if (source.strength < 0) return `负电荷 ${index + 1}`;
-    return `场源 ${index + 1}`;
+    if (source.kind === "wire_out") return "电流出屏";
+    if (source.kind === "wire_into") return "电流入屏";
+    if (source.kind === "dipole") return `磁偶极子 ${index + 1}`;
+    if (source.kind === "positive") return `正电荷 ${index + 1}`;
+    return `负电荷 ${index + 1}`;
   }
 
   function coordinateInput(index, axis) {
@@ -1324,6 +1327,7 @@ import {
   });
   resizeObserver.observe(elements.stage);
 
+  elements.colorbarGradient.style.background = paletteCssGradient("to top");
   updateRange(elements.density, elements.densityOutput, (value) => String(value));
   updateRange(elements.resolution, elements.resolutionOutput, (value) => `${value} × ${value}`);
   bootstrap();

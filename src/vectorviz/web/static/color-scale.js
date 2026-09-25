@@ -1,13 +1,24 @@
 /** Pure scalar-scale and pixel-color functions used by the heatmap renderer. */
 
-const PALETTE = [
-  [0.0, [68, 1, 84]],
-  [0.25, [59, 82, 139]],
-  [0.52, [33, 145, 140]],
-  [0.76, [94, 201, 98]],
-  [1.0, [253, 231, 37]],
-];
+// Viridis nodes; the heatmap and the colorbar gradient both read this table.
+export const PALETTE = Object.freeze(
+  [
+    [0.0, [68, 1, 84]],
+    [0.25, [59, 82, 139]],
+    [0.52, [33, 145, 140]],
+    [0.76, [94, 201, 98]],
+    [1.0, [253, 231, 37]],
+  ].map(([stop, color]) => Object.freeze([stop, Object.freeze(color)])),
+);
+// Masked and uncolorable cells stay transparent so the paper shows through.
 const INVALID_PIXEL = [7, 17, 26, 0];
+
+export function paletteCssGradient(direction = "to top") {
+  const stops = PALETTE.map(
+    ([stop, [red, green, blue]]) => `rgb(${red}, ${green}, ${blue}) ${stop * 100}%`,
+  );
+  return `linear-gradient(${direction}, ${stops.join(", ")})`;
+}
 
 export function getScaleType(scale) {
   const value = typeof scale === "string" ? scale : scale?.type;

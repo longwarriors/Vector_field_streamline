@@ -25,6 +25,7 @@ def main() -> None:
             for asset in (
                 "index.html",
                 "app.js",
+                "canvas-theme.js",
                 "source-controls.js",
                 "coordinates.js",
                 "color-scale.js",

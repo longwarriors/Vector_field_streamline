@@ -823,14 +823,7 @@ input[type="range"]::-moz-range-thumb {
 .colorbar-gradient {
   width: 9px;
   min-height: 100%;
-  background: linear-gradient(
-    to top,
-    #440154 0%,
-    #3b528b 25%,
-    #21918c 52%,
-    #5ec962 76%,
-    #fde725 100%
-  );
+  /* The gradient is written by app.js from the PALETTE in color-scale.js. */
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 99px;
 }
