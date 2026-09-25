@@ -47,6 +47,9 @@
   --vv-scrim: rgba(255, 255, 255, 0.72);
   --vv-legend-core: #ffffff;
   --vv-legend-halo: rgba(0, 8, 12, 0.5);
+  /* The canvas hatching for uncoloured cells, mirrored by the legend chip. */
+  --vv-hatch-base: #c7cad5;
+  --vv-hatch-line: rgba(28, 28, 30, 0.5);
   --vv-scroll-shadow: rgba(5, 0, 56, 0.18);
 
   --vv-elev-1: 0 1px 2px 0 rgba(5, 0, 56, 0.04);
@@ -557,8 +560,14 @@ select {
   white-space: nowrap;
 }
 
+.legend-chip[hidden] {
+  display: none;
+}
+
 /* Keep each chip's box while its layer is not drawn, so nothing reflows. */
 .viewer-panel:has(#field-canvas:not([data-scene-state="ready"])) .legend-chip[data-layer="lines"],
+.viewer-panel:has(#field-canvas:not([data-scene-state="ready"])) .legend-chip[data-layer="heatmap"],
+.viewer-panel:has(#field-canvas:not([data-scene-state="ready"])) .caption-seed,
 .viewer-panel:has(#field-canvas[data-scene-state="loading"]) .legend-chip[data-layer="sources"],
 .viewer-panel:has(#field-canvas[data-scene-state="error"]) .legend-chip[data-layer="sources"] {
   visibility: hidden;
@@ -594,6 +603,23 @@ select {
   border-radius: 50%;
 }
 
+.legend-hatch {
+  width: 14px;
+  height: 12px;
+  background:
+    repeating-linear-gradient(135deg, var(--vv-hatch-line) 0 1px, transparent 1px 4px),
+    var(--vv-hatch-base);
+  border: 1px solid var(--vv-control-border);
+}
+
+/*
+ * In a single-row heading the conditional chip goes first, so while it is
+ * visibility-hidden its empty box merges into the space beside the title.
+ */
+#legend-uncolored {
+  order: -1;
+}
+
 @container viewer (max-width: 759.98px) {
   .frame-title h2 {
     font-size: var(--vv-fs-16);
@@ -616,6 +642,17 @@ select {
 
   .legend-chips {
     flex: 1 0 100%;
+  }
+
+  #legend-uncolored {
+    order: 0;
+  }
+}
+
+@container viewer (max-width: 359.98px) {
+  .legend-chip {
+    gap: 4px;
+    padding: 0 6px;
   }
 }
 
@@ -757,12 +794,53 @@ select {
 }
 
 .colorbar-gradient {
+  position: relative;
   grid-area: bar;
   width: 20px;
-  height: 100%;
+  height: calc(100% - 20px);
   min-height: 0;
+  margin: 10px 0;
   background: var(--colormap-vertical);
   border: 1px solid var(--vv-control-border);
+}
+
+/* matplotlib-style extend triangles, shown only when cells pass a limit. */
+.colorbar-extend {
+  position: absolute;
+  left: -1px;
+  width: calc(100% + 2px);
+  height: 9px;
+  overflow: visible;
+  visibility: hidden;
+}
+
+.colorbar-extend path {
+  stroke: var(--vv-control-border);
+  stroke-linejoin: round;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.colorbar-extend-over {
+  bottom: calc(100% + 1px);
+}
+
+.colorbar-extend-over path {
+  fill: var(--colormap-top);
+}
+
+.colorbar-extend-under {
+  top: calc(100% + 1px);
+  transform: rotate(180deg);
+}
+
+.colorbar-extend-under path {
+  fill: var(--colormap-bottom);
+}
+
+#colorbar[data-extend-over] .colorbar-extend-over,
+#colorbar[data-extend-under] .colorbar-extend-under {
+  visibility: visible;
 }
 
 .colorbar strong {
@@ -793,9 +871,27 @@ select {
 }
 
 .canvas-stage[data-plot-layout="narrow"] .colorbar-gradient {
-  width: 100%;
+  width: calc(100% - 24px);
   height: 12px;
+  margin: 0 12px;
   background: var(--colormap-horizontal);
+}
+
+/* Horizontal bar: the 12x9 triangle box is turned a quarter to point sideways. */
+.canvas-stage[data-plot-layout="narrow"] .colorbar-extend {
+  top: 0.5px;
+  bottom: auto;
+  width: 12px;
+}
+
+.canvas-stage[data-plot-layout="narrow"] .colorbar-extend-over {
+  left: calc(100% - 0.5px);
+  transform: rotate(90deg);
+}
+
+.canvas-stage[data-plot-layout="narrow"] .colorbar-extend-under {
+  left: -11.5px;
+  transform: rotate(-90deg);
 }
 
 .loading-overlay {
@@ -940,6 +1036,13 @@ figcaption {
   display: grid;
   gap: 2px;
   min-width: 0;
+}
+
+.caption-seed {
+  color: var(--vv-ink);
+  font-size: var(--vv-fs-13);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--vv-fw-strong);
 }
 
 /* ---------- Controls card ---------- */
@@ -1275,6 +1378,24 @@ input[type="range"]::-moz-range-thumb {
   text-wrap: pretty;
 }
 
+.reading-list {
+  margin: 8px 0 0;
+  padding: 8px 0 0 16px;
+  color: var(--vv-text-2);
+  border-top: 1px dashed var(--vv-control-border);
+  font-size: var(--vv-fs-13);
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.reading-list li + li {
+  margin-top: 3px;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
 /* ---------- Details card ---------- */
 
 .details-panel h2 {
@@ -1510,6 +1631,13 @@ input[type="range"]::-moz-range-thumb {
   figcaption {
     padding: 6px var(--vv-s-3);
     font-size: var(--vv-fs-13);
+  }
+
+  /* Short windows: the projection note and seeding line share a row if they fit. */
+  .caption-text {
+    display: flex;
+    flex-wrap: wrap;
+    column-gap: var(--vv-s-3);
   }
 }
 

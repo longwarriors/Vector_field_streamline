@@ -1127,6 +1127,125 @@ def test_plot_readouts_stay_inside_stage_and_off_the_plot(
     assert page_errors == []
 
 
+def _srgb_luminance(rgb: list[int]) -> float:
+    linear = [
+        c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+        for c in (channel / 255 for channel in rgb)
+    ]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+@pytest.mark.browser
+def test_uncolored_cells_and_colorbar_extend_follow_scene_state(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    scalar = scene["scalar"]
+    assert isinstance(scalar, dict)
+    # Column x = -0.5 is masked; 0.5 and 20 fall outside the 1-10 colour limits.
+    row = [0.5, None, 5.0, 20.0, 5.0]
+    scalar.update(
+        {
+            "nx": 5,
+            "ny": 3,
+            "values": row * 3,
+            "mask": [value is None for value in row] * 3,
+            "vmin": 1.0,
+            "vmax": 10.0,
+        }
+    )
+    _instrument_canvas(page)
+    _open_ready_scene(page, frontend_url, scene)
+
+    def pixel_at(x: float, y: float) -> list[int]:
+        return page.evaluate(
+            """async ([x, y]) => {
+              const canvas = document.querySelector('#field-canvas');
+              const rect = canvas.getBoundingClientRect();
+              const domain = {x: [-2, 4], y: [-3, 1]};
+              const {calculatePlotRect, createCoordinateTransform} =
+                await import('/coordinates.js');
+              const [px, py] = createCoordinateTransform(
+                domain, calculatePlotRect(rect.width, rect.height, domain),
+              ).worldToCanvas(x, y);
+              const ratio = canvas.width / rect.width;
+              return Array.from(canvas.getContext('2d').getImageData(
+                Math.floor(px * ratio), Math.floor(py * ratio), 1, 1,
+              ).data.slice(0, 3));
+            }""",
+            [x, y],
+        )
+
+    # (-0.5, -1.5) is the middle of a masked cell and lies off every grid line.
+    hatched = pixel_at(-0.5, -1.5)
+    assert max(hatched) - min(hatched) <= 20, hatched
+    assert min(hatched) < 235, hatched
+    assert _srgb_luminance(hatched) < _srgb_luminance([253, 231, 37]), hatched
+    raster = page.evaluate(
+        """() => window.__vectorVizCanvasCalls.putImages
+          .filter((image) => image.width === 5 && image.height === 3).at(-1)"""
+    )
+    assert raster["data"][1 * 4 + 3] == 0
+    expect(page.locator("#legend-uncolored")).to_be_visible()
+    colorbar = page.locator("#colorbar")
+    expect(colorbar).to_have_attribute("data-extend-over", "")
+    expect(colorbar).to_have_attribute("data-extend-under", "")
+    expect(page.locator("#colorbar-extent")).to_have_text(
+        "3 个格点高于上限、3 个格点低于下限，按端色显示。"
+    )
+    expect(page.locator("#caption-seed")).to_have_text("播种：覆盖播种 · 渲染 1 / 抑制 0")
+
+    # Dragging hides every scene-dependent mark without moving the plot.
+    canvas_box = page.locator("#field-canvas").bounding_box()
+    target = page.evaluate(
+        """async () => {
+          const canvas = document.querySelector('#field-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const domain = {x: [-2, 4], y: [-3, 1]};
+          const {calculatePlotRect, createCoordinateTransform} =
+            await import('/coordinates.js');
+          const [x, y] = createCoordinateTransform(
+            domain, calculatePlotRect(rect.width, rect.height, domain),
+          ).worldToCanvas(1, -1);
+          return {x: rect.left + x, y: rect.top + y};
+        }"""
+    )
+    page.mouse.move(target["x"], target["y"])
+    page.mouse.down()
+    page.mouse.move(target["x"] + 40, target["y"] + 20)
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "stale")
+    assert page.locator("#field-canvas").bounding_box() == canvas_box
+    assert min(pixel_at(-0.5, -1.5)) >= 250
+    expect(page.locator("#legend-uncolored")).to_be_hidden()
+    expect(page.locator("#caption-seed")).to_be_hidden()
+    page.mouse.up()
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+
+    # Hatching wholly under a marker cannot be seen, so the legend stays away.
+    fine = _browser_scene()
+    fine_scalar = fine["scalar"]
+    assert isinstance(fine_scalar, dict)
+    nx, ny = 61, 41
+    covered = 20 * nx + 30  # the node at the source, (1, -1)
+    fine_scalar.update(
+        {
+            "nx": nx,
+            "ny": ny,
+            "values": [None if index == covered else 5.0 for index in range(nx * ny)],
+            "mask": [index == covered for index in range(nx * ny)],
+        }
+    )
+    page.unroute("**/api/scene")
+    _route_scene(page, fine)
+    page.locator("#run-button").click()
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    expect(page.locator("#legend-uncolored")).to_be_hidden()
+    assert page_errors == []
+
+
 @pytest.mark.browser
 def test_density_slider_reaches_odd_values(
     browser_page: tuple[Page, list[str]],

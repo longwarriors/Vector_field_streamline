@@ -78,6 +78,15 @@
               <span class="legend-chip" data-layer="sources">
                 <i class="legend-source" aria-hidden="true"></i>场源
               </span>
+              <span
+                class="legend-chip"
+                id="legend-uncolored"
+                data-layer="heatmap"
+                title="未着色：场源排除区（半径为数值设定）或非有限值；对数色标下为 0 的格点也不着色。"
+                hidden
+              >
+                <i class="legend-hatch" aria-hidden="true"></i>未着色
+              </span>
             </div>
           </div>
 
@@ -98,9 +107,17 @@
 
               <div class="colorbar" id="colorbar" hidden aria-label="场强颜色标尺">
                 <span id="colorbar-max">—</span>
-                <div class="colorbar-gradient" aria-hidden="true"></div>
+                <div class="colorbar-gradient" aria-hidden="true">
+                  <svg class="colorbar-extend colorbar-extend-over" viewBox="0 0 12 9" preserveAspectRatio="none">
+                    <path d="M6 0.5 11.5 8.5H0.5Z" />
+                  </svg>
+                  <svg class="colorbar-extend colorbar-extend-under" viewBox="0 0 12 9" preserveAspectRatio="none">
+                    <path d="M6 0.5 11.5 8.5H0.5Z" />
+                  </svg>
+                </div>
                 <span id="colorbar-min">—</span>
                 <strong id="colorbar-label">场强</strong>
+                <span class="sr-only" id="colorbar-extent"></span>
               </div>
 
               <div class="loading-overlay" id="loading-overlay" role="status" aria-live="polite">
@@ -125,6 +142,7 @@
               <span class="caption-mark" aria-hidden="true">i</span>
               <span class="caption-text">
                 <span id="projection-note">曲线沿局部场方向积分；颜色表示场强大小。</span>
+                <span class="caption-seed" id="caption-seed">播种：— · 渲染 — / 抑制 —</span>
               </span>
             </figcaption>
           </figure>
@@ -219,9 +237,17 @@
             <aside class="guide-note" aria-labelledby="guide-heading">
               <h2 id="guide-heading">
                 <span class="guide-icon" aria-hidden="true">⌖</span>
-                画布交互
+                读图与交互
               </h2>
               <p id="interaction-help">拖动场源改变位置；移动指针可探测坐标与场强。</p>
+              <ul class="reading-list">
+                <li>颜色表示色标标题中的量（<span class="nowrap">|E| 或 |B|</span>）的大小；对数色标按数量级着色。</li>
+                <li>色标两端已截断：尖角表示有格点超出范围并按端色显示，精确值请用探针。</li>
+                <li>场线上的箭头只标方向：每条线按弧长放 1–3 个，大小固定，不表示强弱。</li>
+                <li>场线疏密取决于播种方式和预算，不能直接读成场的强弱；圆环为等通量播种，见“播种说明”。</li>
+                <li>探针显示指针坐标，以及离它最近的网格点上的原值（未按色标截断、不插值）。</li>
+                <li>斜线区未着色：场源排除区（半径为数值设定）或非有限值；对数色标下为 0 的格点也不着色。</li>
+              </ul>
             </aside>
 
             <aside class="details-panel side-card" aria-labelledby="details-heading">

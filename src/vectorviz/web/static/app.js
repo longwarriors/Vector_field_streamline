@@ -1,5 +1,6 @@
 import { CANVAS_THEME } from "./canvas-theme.js";
 import {
+  PALETTE,
   colorForScalar,
   getScaleType,
   paletteCssGradient,
@@ -81,6 +82,9 @@ import {
     colorbarMax: document.querySelector("#colorbar-max"),
     colorbarMin: document.querySelector("#colorbar-min"),
     colorbarLabel: document.querySelector("#colorbar-label"),
+    colorbarExtent: document.querySelector("#colorbar-extent"),
+    legendUncolored: document.querySelector("#legend-uncolored"),
+    captionSeed: document.querySelector("#caption-seed"),
     lineCount: document.querySelector("#line-count"),
     gridSize: document.querySelector("#grid-size"),
     fieldUnit: document.querySelector("#field-unit"),
@@ -112,6 +116,7 @@ import {
     scale: null,
     presentationStatus: "idle",
     presetCapabilities: new Map(),
+    pixelRatio: 1,
   };
 
   function finiteNumber(value, fallback = 0) {
@@ -575,6 +580,23 @@ import {
     elements.colorbar.hidden = false;
     elements.colorbarMax.textContent = formatValue(scale.maximum);
     elements.colorbarMin.textContent = formatValue(scale.minimum);
+    // The limits are display choices: flag coloured cells drawn in an end colour.
+    let over = 0;
+    let under = 0;
+    scalar.values.forEach((raw, index) => {
+      if (scalar.mask[index]) return;
+      const value = Number(raw);
+      if (!Number.isFinite(value) || (scale.type === "log" && value <= 0)) return;
+      if (value > scale.maximum) over += 1;
+      else if (value < scale.minimum) under += 1;
+    });
+    elements.colorbar.toggleAttribute("data-extend-over", over > 0);
+    elements.colorbar.toggleAttribute("data-extend-under", under > 0);
+    elements.colorbarExtent.textContent =
+      `${over} 个格点高于上限、${under} 个格点低于下限，按端色显示。`;
+    elements.captionSeed.textContent = `播种：${
+      SEED_MODE_LABELS[scene.metadata.seed_mode] || scene.metadata.seed_mode
+    } · 渲染 ${scene.metadata.rendered_line_count} / 抑制 ${scene.metadata.suppressed_count}`;
     elements.colorbarLabel.textContent = quantityWithUnit(scalar.label || "场强", scalar.unit);
     const draggableSourceCount = sourcesAreEditable() ? scene.sources.length : 0;
     elements.canvas.dataset.draggable = String(draggableSourceCount > 0);
@@ -611,6 +633,7 @@ import {
       elements.canvas.height = height;
     }
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    state.pixelRatio = ratio;
     return { width: rect.width, height: rect.height };
   }
 
@@ -634,15 +657,16 @@ import {
     state.transform = createCoordinateTransform(state.scene.domain, state.plotRect);
     publishPlotRect(size.width);
     if (state.presentationStatus === "stale") {
-      drawGridAndAxes();
+      drawGridAndAxes({ onField: false });
       drawSources();
       return;
     }
     state.scale = resolveScale(state.scene.scalar);
-    drawHeatmap();
-    drawGridAndAxes();
+    const uncoloredCells = drawHeatmap();
+    drawGridAndAxes({ onField: true });
     drawStreamlines();
     drawSources();
+    elements.legendUncolored.hidden = !hatchShowsBesideMarkers(uncoloredCells);
   }
 
   // Overlays such as the colorbar are laid out against the plot, not the stage.
@@ -669,8 +693,10 @@ import {
     const image = offscreenContext.createImageData(scalar.nx, scalar.ny);
 
     // The API uses row-major values, with y descending from ymax to ymin.
+    const uncolored = [];
     for (let index = 0; index < scalar.values.length; index += 1) {
       const color = colorForScalar(scalar.values[index], Boolean(scalar.mask?.[index]), state.scale);
+      if (color[3] === 0) uncolored.push(index);
       const offset = index * 4;
       image.data[offset] = color[0];
       image.data[offset + 1] = color[1];
@@ -684,6 +710,11 @@ import {
     // last texel centre instead of stretching whole texels across the plot.
     const { left, top, right, bottom } = state.plotRect;
     context.save();
+    // Transparent cells blend toward this grey, never toward white paper.
+    if (uncolored.length) {
+      context.fillStyle = CANVAS_THEME.hatch.base;
+      context.fillRect(left, top, right - left, bottom - top);
+    }
     context.imageSmoothingEnabled = true;
     context.drawImage(
       offscreen,
@@ -697,6 +728,67 @@ import {
       bottom - top,
     );
     context.restore();
+    const cells = uncolored.map(cellRect);
+    if (cells.length) drawHatch(cells);
+    return cells;
+  }
+
+  // The nearest-node cell of a scalar sample, clipped to the plot.
+  function cellRect(index) {
+    const { nx, ny } = state.scene.scalar;
+    const { left, top, right, bottom } = state.plotRect;
+    const dx = (right - left) / (nx - 1);
+    const dy = (bottom - top) / (ny - 1);
+    const x = left + (index % nx) * dx;
+    const y = top + Math.floor(index / nx) * dy;
+    return {
+      left: Math.max(left, x - dx / 2),
+      top: Math.max(top, y - dy / 2),
+      right: Math.min(right, x + dx / 2),
+      bottom: Math.min(bottom, y + dy / 2),
+    };
+  }
+
+  function drawHatch(cells) {
+    const { left, top, right, bottom } = state.plotRect;
+    const height = bottom - top;
+    context.save();
+    context.beginPath();
+    cells.forEach((cell) => {
+      context.rect(cell.left, cell.top, cell.right - cell.left, cell.bottom - cell.top);
+    });
+    context.clip();
+    context.beginPath();
+    for (let offset = -height; offset < right - left; offset += CANVAS_THEME.hatch.spacing) {
+      context.moveTo(left + offset, bottom);
+      context.lineTo(left + offset + height, top);
+    }
+    context.strokeStyle = CANVAS_THEME.hatch.line;
+    context.lineWidth = 1 / state.pixelRatio;
+    context.stroke();
+    context.restore();
+  }
+
+  // A marker's outer ring ends at r = 13, so hatching inside r = 14 is hidden.
+  const MARKER_COVER_RADIUS =
+    CANVAS_THEME.marker.outerRingRadius + CANVAS_THEME.marker.outerRingWidth / 2 + 1;
+
+  // The legend only names hatching that can be seen beside the markers.
+  function hatchShowsBesideMarkers(cells) {
+    const centres = state.scene.sources.map((source) =>
+      worldToCanvas(finiteNumber(source.x), finiteNumber(source.y)),
+    );
+    return cells.some((cell) => {
+      const corners = [
+        [cell.left, cell.top],
+        [cell.right, cell.top],
+        [cell.left, cell.bottom],
+        [cell.right, cell.bottom],
+      ];
+      return !centres.some(([cx, cy]) =>
+        corners.every(([x, y]) => Math.hypot(x - cx, y - cy) <= MARKER_COVER_RADIUS),
+      );
+    });
   }
 
   function niceTicks(minimum, maximum, count = 5) {
@@ -713,7 +805,7 @@ import {
     return ticks;
   }
 
-  function drawGridAndAxes() {
+  function drawGridAndAxes({ onField }) {
     const { left, top, right, bottom } = state.plotRect;
     const [xmin, xmax] = state.scene.domain.x;
     const [ymin, ymax] = state.scene.domain.y;
@@ -721,7 +813,7 @@ import {
     context.lineWidth = 1;
     context.font = CANVAS_THEME.axes.font;
     context.fillStyle = CANVAS_THEME.axes.tick;
-    context.strokeStyle = CANVAS_THEME.axes.grid;
+    context.strokeStyle = onField ? CANVAS_THEME.axes.gridOnField : CANVAS_THEME.axes.gridOnPaper;
 
     niceTicks(xmin, xmax).forEach((tick) => {
       const [x] = worldToCanvas(tick, ymin);
@@ -745,8 +837,12 @@ import {
       context.fillText(formatAxisValue(tick), left - 7, y);
     });
 
+    // One device pixel, centred on a pixel row, so the frame stays crisp.
+    const ratio = state.pixelRatio;
+    const snap = (value) => (Math.round(value * ratio) + 0.5) / ratio;
     context.strokeStyle = CANVAS_THEME.axes.frame;
-    context.strokeRect(left, top, right - left, bottom - top);
+    context.lineWidth = 1 / ratio;
+    context.strokeRect(snap(left), snap(top), snap(right) - snap(left), snap(bottom) - snap(top));
 
     const unit = String(state.scene.domain.unit || "").trim();
     const axisTitle = (axis) => (unit ? `${axis} / ${unit}` : axis);
@@ -874,22 +970,25 @@ import {
   }
 
   function drawSources() {
+    const { marker } = CANVAS_THEME;
     state.scene.sources.forEach((source, index) => {
       const [x, y] = worldToCanvas(finiteNumber(source.x), finiteNumber(source.y));
       const style = sourceStyle(source);
       context.save();
-      context.shadowColor = CANVAS_THEME.marker.shadow;
-      context.shadowBlur = CANVAS_THEME.marker.shadowBlur;
       context.beginPath();
       context.arc(x, y, 10, 0, Math.PI * 2);
       context.fillStyle = style.fill;
       context.fill();
-      context.shadowBlur = 0;
-      context.strokeStyle = CANVAS_THEME.marker.ring;
-      context.lineWidth = CANVAS_THEME.marker.ringWidth;
+      context.strokeStyle = marker.ring;
+      context.lineWidth = marker.ringWidth;
       context.stroke();
-      context.fillStyle = CANVAS_THEME.marker.glyph;
-      context.font = CANVAS_THEME.marker.glyphFont;
+      context.beginPath();
+      context.arc(x, y, marker.outerRingRadius, 0, Math.PI * 2);
+      context.strokeStyle = marker.outerRing;
+      context.lineWidth = marker.outerRingWidth;
+      context.stroke();
+      context.fillStyle = marker.glyph;
+      context.font = marker.glyphFont;
       context.textAlign = "center";
       context.textBaseline = "middle";
       if (Number.isFinite(style.rotation)) {
@@ -902,11 +1001,15 @@ import {
         context.fillText(style.symbol, x, y + 0.5);
       }
       if (index === state.selectedSource) {
+        // A white under-ring keeps the blue dashes visible on teal viridis.
         context.beginPath();
         context.arc(x, y, 16, 0, Math.PI * 2);
-        context.strokeStyle = CANVAS_THEME.marker.selection;
+        context.strokeStyle = marker.selectionUnder;
+        context.lineWidth = 4;
+        context.stroke();
+        context.strokeStyle = marker.selection;
         context.lineWidth = 2;
-        context.setLineDash([3, 3]);
+        context.setLineDash([4, 3]);
         context.stroke();
       }
       context.restore();
@@ -1328,11 +1431,13 @@ import {
     return new Intl.NumberFormat("zh-CN", { maximumSignificantDigits: 4 }).format(value);
   }
 
+  // Tick labels use the typographic minus sign (U+2212).
   function formatAxisValue(value) {
-    if (Math.abs(value) >= 1000 || (Math.abs(value) > 0 && Math.abs(value) < 0.01)) {
-      return value.toExponential(1);
-    }
-    return Number(value.toPrecision(3)).toString();
+    const text =
+      Math.abs(value) >= 1000 || (Math.abs(value) > 0 && Math.abs(value) < 0.01)
+        ? value.toExponential(1)
+        : Number(value.toPrecision(3)).toString();
+    return text.replace(/^-/, "\u2212");
   }
 
   function formatEditorValue(value) {
@@ -1391,6 +1496,9 @@ import {
   document.querySelectorAll(".brand-pole").forEach((pole) => {
     pole.style.fill = CANVAS_THEME.marker.fill[pole.dataset.pole];
   });
+  const [bottomColor, topColor] = [PALETTE[0][1], PALETTE.at(-1)[1]];
+  elements.colorbar.style.setProperty("--colormap-bottom", `rgb(${bottomColor.join(", ")})`);
+  elements.colorbar.style.setProperty("--colormap-top", `rgb(${topColor.join(", ")})`);
   elements.colorbar.style.setProperty("--colormap-vertical", paletteCssGradient("to top"));
   elements.colorbar.style.setProperty("--colormap-horizontal", paletteCssGradient("to right"));
   updateRange(elements.density, elements.densityOutput, (value) => String(value));
