@@ -472,6 +472,19 @@ def test_trace_cache_reuses_lines_when_only_resolution_changes(
     assert len(traced) == 3
 
 
+def test_editing_a_scene_response_does_not_change_later_responses() -> None:
+    request = SceneRequest(preset="uniform", density=6, resolution=32)
+    first = build_scene(request)
+    expected = build_scene(request).model_dump_json()
+
+    first.lines[0].points[0] = (123.0, 456.0)
+    first.lines[0].points.append((7.0, 8.0))
+    first.lines[0].termination = "edited"
+    first.lines.pop()
+
+    assert build_scene(request).model_dump_json() == expected
+
+
 def test_trace_cache_is_bounded_by_entries_and_estimated_bytes() -> None:
     def summary(points: int) -> object:
         line = web_schemas.LinePayload(

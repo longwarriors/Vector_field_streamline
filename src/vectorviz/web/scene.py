@@ -475,9 +475,10 @@ class _TraceSummary:
 
 TRACE_CACHE_MAX_ENTRIES = 32
 TRACE_CACHE_MAX_BYTES = 64 * 1024 * 1024
-# Estimated CPython footprint of cached lines: each point is a tuple of two
-# floats (56 + 2 * 24 bytes); each line adds its model, list and strings.
-_CACHED_POINT_BYTES = 104
+# Estimated CPython footprint of cached lines: each point is a list slot
+# holding a tuple of two floats (8 + 56 + 2 * 24 bytes); each line adds its
+# model, list and strings.
+_CACHED_POINT_BYTES = 112
 _CACHED_LINE_BYTES = 512
 
 
@@ -486,9 +487,10 @@ class _TraceCache:
 
     Tracing depends on the preset, the seed budget and the source list but not
     on the sampling resolution, so a resolution change reuses the lines. A hit
-    returns the summary computed for an identical key, so responses are
-    unchanged; cached summaries are never mutated. Byte sizes are estimates of
-    the Python objects held and only bound memory use.
+    returns the summary computed for an identical key, and each response gets
+    its own copies of the lines, so a caller that edits a response cannot
+    change later ones. Byte sizes are estimates of the Python objects held and
+    only bound memory use.
     """
 
     def __init__(self, max_entries: int, max_bytes: int) -> None:
@@ -696,7 +698,8 @@ def build_scene(request: SceneRequest) -> SceneResponse:
             unit="m",
         ),
         scalar=_sample_scalar(model, request.resolution),
-        lines=traces.lines,
+        # Copy each cached line and its point list; the points are tuples.
+        lines=[line.model_copy(update={"points": list(line.points)}) for line in traces.lines],
         sources=list(model.sources),
         metadata=MetadataPayload(
             title=model.title,
