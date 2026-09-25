@@ -725,7 +725,7 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
     assert pixel(0)[3] == 0
     assert pixel(1)[3] == 0
     assert pixel(4)[3] == 0
-    assert pixel(3) == [253, 231, 37, 255]
+    assert pixel(3) == [100, 79, 172, 255]
     expect(page.locator("#colorbar-max")).to_have_text("10")
 
     result = page.evaluate(
@@ -756,7 +756,7 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
     assert result["invalid"][3] == 0
     assert result["masked"] != result["validMaximum"]
     assert result["invalid"] != result["validMaximum"]
-    assert result["validMaximum"] == [253, 231, 37, 255]
+    assert result["validMaximum"] == [100, 79, 172, 255]
     assert page_errors == []
 
 
@@ -921,16 +921,16 @@ def test_heatmap_texel_centers_align_with_scalar_nodes(
           });
         }"""
     )
-    yellow = [253, 231, 37]
+    maximum = [100, 79, 172]
 
-    def closest_to_yellow(pixels: list[list[int]]) -> int:
+    def closest_to_maximum(pixels: list[list[int]]) -> int:
         return min(
-            max(abs(channel - expected) for channel, expected in zip(pixel, yellow, strict=True))
+            max(abs(channel - expected) for channel, expected in zip(pixel, maximum, strict=True))
             for pixel in pixels
         )
 
     for pixels in samples:
-        assert closest_to_yellow(pixels) <= 3, pixels
+        assert closest_to_maximum(pixels) <= 3, pixels
 
     # The transposed pattern checks the vertical axis: rows alternate and
     # nodes y = -0.5 and -1.5 lie between the integer y ticks.
@@ -969,7 +969,7 @@ def test_heatmap_texel_centers_align_with_scalar_nodes(
         }"""
     )
     for pixels in vertical:
-        assert closest_to_yellow(pixels) <= 3, pixels
+        assert closest_to_maximum(pixels) <= 3, pixels
     assert page_errors == []
 
 
@@ -1289,7 +1289,8 @@ def test_uncolored_cells_and_colorbar_extend_follow_scene_state(
     hatched = pixel_at(-0.5, -1.5)
     assert max(hatched) - min(hatched) <= 20, hatched
     assert min(hatched) < 235, hatched
-    assert _srgb_luminance(hatched) < _srgb_luminance([253, 231, 37]), hatched
+    # Much lighter than the darkest colormap colour, so never read as the strongest field.
+    assert _srgb_luminance(hatched) > 1.5 * _srgb_luminance([100, 79, 172]), hatched
 
     # RGB of a 16 CSS px horizontal run centred on a world point.
     def pixel_run(x: float, y: float) -> list[list[int]]:

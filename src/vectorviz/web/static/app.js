@@ -1006,7 +1006,7 @@ import {
         context.fillText(style.symbol, x, y + 0.5);
       }
       if (index === state.selectedSource) {
-        // A white under-ring keeps the blue dashes visible on teal viridis.
+        // A white under-ring keeps the blue dashes visible on the dark colormap end.
         context.beginPath();
         context.arc(x, y, 16, 0, Math.PI * 2);
         context.strokeStyle = marker.selectionUnder;

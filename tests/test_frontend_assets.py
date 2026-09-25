@@ -125,6 +125,6 @@ def test_stylesheet_tokens_meet_contrast_floors() -> None:
     ]
     assert failures == []
 
-    # Brand yellow reads as a high field value next to viridis: wordmark only.
+    # Brand yellow would read as a dipole marker next to the plot: wordmark only.
     brand_rules = re.findall(r"([^{}]+)\{[^{}]*var\(\s*--vv-brand\b", outside_root)
     assert [selector.strip() for selector in brand_rules] == [".brand strong::before"]

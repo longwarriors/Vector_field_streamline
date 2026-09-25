@@ -1,13 +1,16 @@
 /** Pure scalar-scale and pixel-color functions used by the heatmap renderer. */
 
-// Viridis nodes; the heatmap and the colorbar gradient both read this table.
+// Lavender nodes on one CIE LCh hue (304 deg): L* falls 97, 84.5, 71, 55.5,
+// 40 and chroma rises, so a stronger field is always a darker colour, also
+// between nodes where the renderer interpolates in sRGB. The heatmap and the
+// colorbar gradient both read this table.
 export const PALETTE = Object.freeze(
   [
-    [0.0, [68, 1, 84]],
-    [0.25, [59, 82, 139]],
-    [0.52, [33, 145, 140]],
-    [0.76, [94, 201, 98]],
-    [1.0, [253, 231, 37]],
+    [0.0, [248, 245, 254]],
+    [0.25, [217, 206, 237]],
+    [0.5, [183, 165, 222]],
+    [0.75, [142, 120, 199]],
+    [1.0, [100, 79, 172]],
   ].map(([stop, color]) => Object.freeze([stop, Object.freeze(color)])),
 );
 // Masked and uncolorable cells stay transparent; the renderer hatches them.

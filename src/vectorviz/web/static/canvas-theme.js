@@ -18,34 +18,38 @@ export const CANVAS_THEME = deepFreeze({
     font: `14px ${FONT_STACK}`,
     tick: "#1c1c1e",
     // Grid lines over the heatmap, and over bare paper while the field is stale.
-    gridOnField: "rgba(255, 255, 255, 0.16)",
+    gridOnField: "rgba(28, 28, 30, 0.07)",
     gridOnPaper: "#e0e2e8",
-    // Steel: 5.0:1 on paper, so the plot edge stays visible where viridis is pale.
+    // Steel: 5.0:1 on paper, so the plot edge stays visible where the field is weak.
     frame: "#6b6f7e",
     title: "#1c1c1e",
     titleFont: `600 14px ${FONT_STACK}`,
   },
+  // Ink lines on a white halo: the ink reads on the pale end of the colormap
+  // and the halo keeps 6.4:1 against its darkest colour.
   line: {
-    halo: "rgba(0, 8, 12, 0.5)",
-    haloWidth: 3.4,
-    core: "rgba(248, 255, 253, 0.88)",
-    coreWidth: 1.15,
+    halo: "rgba(255, 255, 255, 0.75)",
+    haloWidth: 3.2,
+    core: "#1c1c1e",
+    coreWidth: 1.35,
   },
   arrow: {
-    fill: "rgba(255, 255, 255, 0.94)",
-    stroke: "rgba(0, 8, 12, 0.58)",
-    strokeWidth: 2.6,
+    fill: "#1c1c1e",
+    stroke: "rgba(255, 255, 255, 0.9)",
+    strokeWidth: 1.6,
   },
   marker: {
+    // Category colours; none is lavender, so a source never blends into
+    // the colormap.
     fill: {
-      positive: "#ff725f",
-      negative: "#65b9ff",
-      dipole: "#ffe08a",
-      wire_out: "#ffb45f",
-      wire_into: "#ffb45f",
+      positive: "#e45f95",
+      negative: "#5fa5ff",
+      dipole: "#fff09a",
+      wire_out: "#7fa052",
+      wire_into: "#7fa052",
     },
     // A white inner ring and an ink outer ring: on any background one of the
-    // two keeps at least 4:1, so markers read on viridis and on bare paper.
+    // two keeps at least 4:1, so markers read on the colormap and on bare paper.
     ring: "#ffffff",
     ringWidth: 2,
     outerRing: "#1c1c1e",
@@ -56,10 +60,11 @@ export const CANVAS_THEME = deepFreeze({
     selection: "#4262ff",
     selectionUnder: "#ffffff",
   },
-  // Cells that cannot be coloured: a grey darker than the colormap maximum,
-  // so a hole is never read as a stronger field, crossed by ink hatching.
+  // Cells that cannot be coloured: a neutral grey, unlike any lavender, much
+  // lighter than the colormap maximum so a hole is never read as the
+  // strongest field, crossed by ink hatching.
   hatch: {
-    base: "#c7cad5",
+    base: "#d9dade",
     line: "rgba(28, 28, 30, 0.5)",
     spacing: 4,
   },
