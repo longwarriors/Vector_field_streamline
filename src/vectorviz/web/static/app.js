@@ -654,10 +654,23 @@ import {
     }
     offscreenContext.putImageData(image, 0, 0);
 
+    // Scalar nodes include both domain endpoints, so texel centres (i + 0.5)
+    // must land on the plot edges: sample the source from the first to the
+    // last texel centre instead of stretching whole texels across the plot.
     const { left, top, right, bottom } = state.plotRect;
     context.save();
     context.imageSmoothingEnabled = true;
-    context.drawImage(offscreen, left, top, right - left, bottom - top);
+    context.drawImage(
+      offscreen,
+      0.5,
+      0.5,
+      scalar.nx - 1,
+      scalar.ny - 1,
+      left,
+      top,
+      right - left,
+      bottom - top,
+    );
     context.restore();
   }
 

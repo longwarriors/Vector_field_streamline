@@ -255,8 +255,11 @@ def _instrument_canvas(page: Page) -> None:
 
             const originalDrawImage = prototype.drawImage;
             prototype.drawImage = function (...args) {
+              // Record the destination rectangle of 5- and 9-argument calls.
               if (args.length === 5) {
                 calls.drawImages.push(args.slice(1).map(Number));
+              } else if (args.length === 9) {
+                calls.drawImages.push(args.slice(5).map(Number));
               }
               return originalDrawImage.apply(this, args);
             };
@@ -847,6 +850,63 @@ def test_probe_value_remains_consistent_after_resize(
     expect(page.locator("#probe")).to_be_visible()
     expect(page.locator("#probe-position")).to_have_text("x 1 m · y -1 m")
     expect(page.locator("#probe-value")).to_have_text("|F| 5 u")
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_heatmap_texel_centers_align_with_scalar_nodes(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    # The server samples an endpoint-inclusive grid, so node i sits at
+    # xmin + i * dx; the heatmap must put texel centres on those nodes.
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    scalar = scene["scalar"]
+    metadata = scene["metadata"]
+    assert isinstance(scalar, dict)
+    assert isinstance(metadata, dict)
+    scalar.update(
+        {
+            "nx": 5,
+            "ny": 3,
+            "values": [1.0, 9.0, 1.0, 9.0, 1.0] * 3,
+            "mask": [False] * 15,
+            "vmin": 1.0,
+            "vmax": 9.0,
+        }
+    )
+    scene["lines"] = []
+    scene["sources"] = []
+    metadata.update(
+        {"termination_counts": {}, "suppressed_count": 0, "rendered_line_count": 0}
+    )
+    _open_ready_scene(page, frontend_url, scene)
+
+    # Nodes x = -0.5 and x = 2.5 lie between x ticks; y = -1.5 lies between
+    # y ticks, and every row is identical, so grid lines cannot pollute them.
+    samples = page.evaluate(
+        """async () => {
+          const canvas = document.querySelector('#field-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const domain = {x: [-2, 4], y: [-3, 1]};
+          const {calculatePlotRect, createCoordinateTransform} =
+            await import('/coordinates.js');
+          const transform = createCoordinateTransform(
+            domain, calculatePlotRect(rect.width, rect.height, domain),
+          );
+          const context = canvas.getContext('2d');
+          const ratio = canvas.width / rect.width;
+          return [-0.5, 2.5].map((x) => {
+            const [px, py] = transform.worldToCanvas(x, -1.5);
+            return Array.from(context.getImageData(
+              Math.floor(px * ratio), Math.floor(py * ratio), 1, 1,
+            ).data);
+          });
+        }"""
+    )
+    for pixel in samples:
+        assert pixel[:3] == pytest.approx([253, 231, 37], abs=3)
     assert page_errors == []
 
 
