@@ -480,11 +480,14 @@ class CircularLoopField(_CircularLoopGeometry):
         The field tracer calls this once per solver stage, where NumPy's
         per-call overhead on one-element arrays dominates. The geometry reuses
         the batch code, so the dot product and norms are the same operations.
-        The general-region formulas then run on Python floats using only
-        ``+ - * /`` and ``sqrt``, which IEEE 754 rounds identically for floats
-        and arrays, and the same SciPy elliptic ufuncs. Near-axis and singular
-        points keep the batch path, whose fractional powers may be vectorised
-        differently from a scalar ``pow``.
+        The general-region formulas then run on Python floats using ``+ - * /``,
+        ``sqrt`` and the same Python ``radius**2`` as the batch path, which
+        IEEE 754 rounds identically for floats and arrays, and the same SciPy
+        elliptic ufuncs. Near-axis and singular points keep the batch path,
+        whose fractional powers may be vectorised differently from a scalar
+        ``pow``. So do points whose denominators underflow to zero or are not
+        finite, where Python raises ``ZeroDivisionError`` but NumPy returns
+        ``inf`` or ``nan``.
         """
 
         (
@@ -505,6 +508,10 @@ class CircularLoopField(_CircularLoopGeometry):
         inner = radius - rho
         q_squared = outer * outer + z * z
         wire_distance_squared = inner * inner + z * z
+        # Non-singular points have wire/q >= (32 eps)^2 / 4, so after this
+        # check no denominator below is zero.
+        if not (wire_distance_squared > 0.0 and q_squared < math.inf):
+            return self._evaluate_batch(coordinates)
         complementary_parameter = wire_distance_squared / q_squared
         if complementary_parameter < 0.1:
             parameter = 1.0 - complementary_parameter

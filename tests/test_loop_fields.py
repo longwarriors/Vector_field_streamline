@@ -374,9 +374,10 @@ def _point_in_loop_frame(
 
 def test_single_point_evaluation_matches_the_one_row_batch_bit_for_bit() -> None:
     # The tracer evaluates one point per solver stage through a scalar fast
-    # path; it must return exactly what the batch code returns for that point
-    # in every region: general, near the wire, far field (small m), near the
-    # axis, on the axis and on the filament.
+    # path; it must return exactly the bytes the batch code returns for that
+    # point in every region: general, near the wire, far field (small m), near
+    # the axis, on the axis, on the filament, on each branch threshold and
+    # where the squared wire distance underflows to zero.
     rng = np.random.default_rng(20260926)
     loops = (
         CircularLoopField(1.0, 1.0, normal=(0.0, 1.0, 0.0)),
@@ -412,8 +413,35 @@ def test_single_point_evaluation_matches_the_one_row_batch_bit_for_bit() -> None
         cases += [(radius, 0.0, angle) for angle in (0.0, 1.0)]
 
         for rho, z, angle in cases:
-            point = _point_in_loop_frame(loop, rho, z, angle)
-            single = loop.evaluate(point)
-            batch = loop.evaluate(point[np.newaxis, :])[0]
-            assert single.shape == (3,)
-            assert np.array_equal(single, batch, equal_nan=True), (point, single, batch)
+            _assert_single_point_matches_batch(loop, _point_in_loop_frame(loop, rho, z, angle))
+
+    # On the aligned unit loop rho and z are exact, so these points sit on the
+    # branch thresholds: rho = 1e-3 * sqrt(a^2 + z^2) (near axis), wire/q = 0.1
+    # and 4 a rho / q = 1e-2. Their float neighbours fall on either side.
+    unit_loop = CircularLoopField(1.0, 1.0)
+    near_axis = (1.0e-3, 0.0)
+    wire_ratio = (1.5, float(np.nextafter(np.sqrt(5.0 / 12.0), np.inf)))
+    small_parameter = (1.0, float(np.sqrt(396.0)))
+    assert near_axis[0] == 1.0e-3 * np.sqrt(1.0 + near_axis[1] ** 2)
+    assert (0.25 + wire_ratio[1] * wire_ratio[1]) / (6.25 + wire_ratio[1] * wire_ratio[1]) == 0.1
+    assert 4.0 / (4.0 + small_parameter[1] * small_parameter[1]) == 1.0e-2
+    for rho, z, varied in ((*near_axis, 0), (*wire_ratio, 2), (*small_parameter, 2)):
+        point = np.array([rho, 0.0, z])
+        for direction in (-np.inf, np.inf):
+            neighbour = point.copy()
+            neighbour[varied] = np.nextafter(point[varied], direction)
+            _assert_single_point_matches_batch(unit_loop, neighbour)
+        _assert_single_point_matches_batch(unit_loop, point)
+
+    # (radius - rho)^2 + z^2 underflows to zero off the filament; the batch
+    # path then divides by zero and returns nan, as v0.3.2 did.
+    tiny_loop = CircularLoopField(1.0, 1.0e-160)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        _assert_single_point_matches_batch(tiny_loop, np.array([1.0000001e-160, 0.0, 1.0e-167]))
+
+
+def _assert_single_point_matches_batch(loop: CircularLoopField, point: np.ndarray) -> None:
+    single = loop.evaluate(point)
+    batch = loop.evaluate(point[np.newaxis, :])[0]
+    assert single.shape == (3,)
+    assert single.tobytes() == batch.tobytes(), (point, single, batch)
