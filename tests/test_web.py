@@ -6,6 +6,7 @@ import json
 import math
 import re
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -429,6 +430,80 @@ _TraceScript = dict[
     tuple[float, float],
     tuple[list[tuple[float, float]], TerminationReason],
 ]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_trace_cache() -> Iterator[None]:
+    web_scene._TRACE_CACHE.clear()
+    yield
+    web_scene._TRACE_CACHE.clear()
+
+
+def test_trace_cache_reuses_lines_when_only_resolution_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    traced: list[object] = []
+    original = web_scene._trace_lines
+
+    def counting_trace_lines(model: object) -> object:
+        traced.append(model)
+        return original(model)
+
+    monkeypatch.setattr(web_scene, "_trace_lines", counting_trace_lines)
+    coarse = build_scene(SceneRequest(preset="electric_dipole", density=8, resolution=32))
+    fine = build_scene(SceneRequest(preset="electric_dipole", density=8, resolution=48))
+
+    assert len(traced) == 1
+    assert fine.lines == coarse.lines
+    assert fine.metadata == coarse.metadata
+    assert (coarse.scalar.nx, fine.scalar.nx) == (32, 48)
+
+    build_scene(SceneRequest(preset="electric_dipole", density=9, resolution=32))
+    moved = SceneRequest(
+        preset="electric_dipole",
+        density=8,
+        resolution=32,
+        sources=[
+            SourceInput(x=-0.8, y=0.0, kind="positive", strength=1.0),
+            SourceInput(x=0.85, y=0.0, kind="negative", strength=-1.0),
+        ],
+    )
+    build_scene(moved)
+    assert len(traced) == 3
+
+
+def test_trace_cache_is_bounded_by_entries_and_estimated_bytes() -> None:
+    def summary(points: int) -> object:
+        line = web_schemas.LinePayload(
+            points=[(0.0, float(index)) for index in range(points)],
+            direction=1,
+            termination="domain_exit",
+        )
+        return web_scene._TraceSummary(
+            lines=[line],
+            termination_counts=Counter({"domain_exit": 1}),
+            start_termination_counts=Counter(),
+            suppressed_count=0,
+        )
+
+    small = summary(2)
+    size = web_scene._TraceCache.estimated_bytes(small)
+    cache = web_scene._TraceCache(max_entries=2, max_bytes=3 * size)
+    cache.put("a", small)
+    cache.put("b", summary(2))
+    assert cache.get("a") is small  # refreshes "a", so "b" is now the oldest
+    cache.put("c", summary(2))
+    assert (cache.get("a") is small, cache.get("b"), len(cache)) == (True, None, 2)
+
+    large = summary(40)
+    assert web_scene._TraceCache.estimated_bytes(large) > 3 * size
+    cache.put("large", large)
+    assert cache.get("large") is None and len(cache) == 2
+
+    byte_bound = web_scene._TraceCache(max_entries=10, max_bytes=2 * size)
+    for key in "xyz":
+        byte_bound.put(key, summary(2))
+    assert [byte_bound.get(key) is not None for key in "xyz"] == [False, True, True]
 
 
 def _install_scripted_tracer(

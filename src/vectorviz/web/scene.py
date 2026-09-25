@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections import Counter
+import threading
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from typing import Literal
 
@@ -472,6 +473,77 @@ class _TraceSummary:
     suppressed_count: int
 
 
+TRACE_CACHE_MAX_ENTRIES = 32
+TRACE_CACHE_MAX_BYTES = 64 * 1024 * 1024
+# Estimated CPython footprint of cached lines: each point is a tuple of two
+# floats (56 + 2 * 24 bytes); each line adds its model, list and strings.
+_CACHED_POINT_BYTES = 104
+_CACHED_LINE_BYTES = 512
+
+
+class _TraceCache:
+    """Bounded LRU memo of traced lines, keyed by every input tracing reads.
+
+    Tracing depends on the preset, the seed budget and the source list but not
+    on the sampling resolution, so a resolution change reuses the lines. A hit
+    returns the summary computed for an identical key, so responses are
+    unchanged; cached summaries are never mutated. Byte sizes are estimates of
+    the Python objects held and only bound memory use.
+    """
+
+    def __init__(self, max_entries: int, max_bytes: int) -> None:
+        self._max_entries = max_entries
+        self._max_bytes = max_bytes
+        self._entries: OrderedDict[str, tuple[_TraceSummary, int]] = OrderedDict()
+        self._bytes = 0
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def estimated_bytes(summary: _TraceSummary) -> int:
+        points = sum(len(line.points) for line in summary.lines)
+        return _CACHED_POINT_BYTES * points + _CACHED_LINE_BYTES * len(summary.lines)
+
+    def get(self, key: str) -> _TraceSummary | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            self._entries.move_to_end(key)
+            return entry[0]
+
+    def put(self, key: str, summary: _TraceSummary) -> None:
+        size = self.estimated_bytes(summary)
+        if size > self._max_bytes:
+            return
+        with self._lock:
+            previous = self._entries.pop(key, None)
+            if previous is not None:
+                self._bytes -= previous[1]
+            self._entries[key] = (summary, size)
+            self._bytes += size
+            while len(self._entries) > self._max_entries or self._bytes > self._max_bytes:
+                _, (_, evicted_size) = self._entries.popitem(last=False)
+                self._bytes -= evicted_size
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._bytes = 0
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+
+_TRACE_CACHE = _TraceCache(TRACE_CACHE_MAX_ENTRIES, TRACE_CACHE_MAX_BYTES)
+
+
+def _trace_cache_key(request: SceneRequest) -> str:
+    """Everything in the request except the sampling resolution."""
+
+    return request.model_dump_json(exclude={"resolution"})
+
+
 def _trace_branches(
     result: TraceResult,
     direction: TraceDirection,
@@ -611,7 +683,11 @@ def build_scene(request: SceneRequest) -> SceneResponse:
     """Compute one complete scene for the browser client."""
 
     model = _build_model(request)
-    traces = _trace_lines(model)
+    cache_key = _trace_cache_key(request)
+    traces = _TRACE_CACHE.get(cache_key)
+    if traces is None:
+        traces = _trace_lines(model)
+        _TRACE_CACHE.put(cache_key, traces)
     return SceneResponse(
         domain=DomainPayload(
             x=(float(DOMAIN.lower[0]), float(DOMAIN.upper[0])),
