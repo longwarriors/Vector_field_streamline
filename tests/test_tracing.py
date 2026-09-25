@@ -99,6 +99,33 @@ class _BadShapeField(VectorField):
         return np.zeros((*coordinates.shape[:-1], 3), dtype=float)
 
 
+class _BufferReusingRotationalField(_RotationalField):
+    """F=(-y, x) that overwrites one output array on every single-point call."""
+
+    def __init__(self) -> None:
+        self._buffer = np.zeros(2)
+
+    def evaluate(self, points: ArrayLike) -> NDArray[np.float64]:
+        coordinates = np.asarray(points, dtype=float)
+        if coordinates.ndim != 1:
+            return super().evaluate(coordinates)
+        self._buffer[:] = (-coordinates[1], coordinates[0])
+        return self._buffer
+
+
+class _FieldProbingExclusion:
+    """Excludes nothing, but evaluates the field elsewhere on every call."""
+
+    dimension = 2
+
+    def __init__(self, field: VectorField) -> None:
+        self._field = field
+
+    def margin(self, points: ArrayLike) -> float:
+        self._field.evaluate((2.0, 1.0))
+        return 1.0
+
+
 def _options(**overrides: float | str | None) -> TraceOptions:
     values: dict[str, float | str | None] = {
         "max_arc_length": 5.0,
@@ -371,6 +398,29 @@ def test_rotational_field_stops_after_one_closed_orbit() -> None:
     # Closure tolerance is a geometric acceptance test, not an implicit step
     # size. This bound catches the former O(1 / tolerance) RHS explosion.
     assert result.forward.nfev < 5_000
+
+
+def test_tracing_does_not_depend_on_a_field_reusing_its_output_array() -> None:
+    # The tracer reuses the field value at the point it just evaluated; a
+    # field that overwrites one output array between calls must still trace
+    # exactly like the same field returning fresh arrays.
+    options = _options(
+        max_arc_length=10.0,
+        max_step=0.1,
+        output_step=0.05,
+        closure_tolerance=5.0e-3,
+        closure_min_arc_length=0.6,
+    )
+    results = []
+    for field in (_RotationalField(), _BufferReusingRotationalField()):
+        tracer = FieldLineTracer(field, options=options, exclusions=[_FieldProbingExclusion(field)])
+        results.append(tracer.trace((1.0, 0.0), direction="forward").forward)
+
+    fresh, reused = results
+    assert fresh is not None and reused is not None
+    assert fresh.termination is TerminationReason.CLOSED_LOOP
+    assert (reused.termination, reused.nfev) == (fresh.termination, fresh.nfev)
+    assert reused.points.tobytes() == fresh.points.tobytes()
 
 
 def test_closure_detection_is_opt_in() -> None:

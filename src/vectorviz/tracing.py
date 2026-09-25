@@ -259,7 +259,8 @@ class FieldLineTracer:
         # The solver evaluates the event functions at the point where it has
         # just evaluated the right-hand side; remember that one value so the
         # events do not evaluate the field there again. Keys are the exact
-        # coordinate bytes, so a hit returns the identical result.
+        # coordinate bytes, so a hit returns the identical result. The vector
+        # is copied because a field may reuse its output array between calls.
         cached_key: bytes | None = None
         cached_value: tuple[FloatArray, float] | None = None
 
@@ -267,7 +268,8 @@ class FieldLineTracer:
             nonlocal cached_key, cached_value
             key = point.tobytes()
             if key != cached_key or cached_value is None:
-                cached_value = self._field_at(point)
+                vector, magnitude = self._field_at(point)
+                cached_value = (vector.copy(), magnitude)
                 cached_key = key
             return cached_value
 
