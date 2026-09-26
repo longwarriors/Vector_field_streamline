@@ -16,19 +16,22 @@ from scipy.integrate import solve_ivp
 from .core import Domain, ExclusionRegion, FloatArray, VectorField, _as_points
 
 # The right-hand side is the unit flow direction, so along a smooth line it
-# turns only a little within one error-controlled step. A step whose end
-# direction opposes its start direction has straddled a reversal: the branch
-# has run head-on into a null point (or an unregistered discontinuity). A
-# line that reaches the null threshold on its next step ends there as it
-# always has; when no step end enters the threshold, the solver instead hops
-# back and forth across the reversal in a limit cycle of tiny steps until
-# the arc budget is spent. Every step reverses in one such cycle (a saddle
-# approached along its axis) and every other step in another (a sink with a
-# threshold far below the hop size), so three reversals within the last
-# eight steps end the integration and the branch locates the null instead.
+# turns only a little within one error-controlled step; a step whose end
+# direction opposes its start direction has straddled a reversal, which only
+# happens where the branch runs head-on into a null point (or an
+# unregistered discontinuity). Usually a step end then lands inside the null
+# threshold within a few hops and the null event ends the branch as it
+# always has (the measured cases hopped at most 44 steps, reversing on about
+# half of them). When no step end ever enters the threshold, the solver hops
+# back and forth across the reversal in a limit cycle of tiny steps, again
+# reversing on about half of them, for as long as the arc budget lasts. The
+# rate cannot tell the two apart; the duration can: 48 reversals within the
+# last 128 steps is a sustained cycle, so the solver stops there and the
+# branch locates the null instead. Every convergent hop sequence shorter
+# than that keeps its original result bitwise.
 STALL_DIRECTION_COSINE = -0.5
-STALL_WINDOW_STEPS = 8
-STALL_REVERSALS_IN_WINDOW = 3
+STALL_WINDOW_STEPS = 128
+STALL_REVERSALS_IN_WINDOW = 48
 
 _STALL_AWARE_SOLVERS: dict[str, type] = {}
 
