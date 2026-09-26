@@ -60,11 +60,12 @@ vectors = field.evaluate(points)
 | `PointChargeField` | 二维或三维点电荷电场 |
 | `MagneticDipoleField` | 磁偶极近似与远场模型 |
 | `CircularLoopField` | 理想细圆电流环的三维磁感应强度 |
+| `ChargedRingField` | 均匀带电理想细圆环的三维电场，圆环的静电孪生 |
 | `CompositeField` | 对多个同维场做线性叠加 |
 
 所有物理场内部应采用一致单位。输入源参数的单位与坐标系不得只存在于图标题里。
 
-奇点集合只由源几何决定：`PointChargeField` 与 `MagneticDipoleField` 在源位置、`CircularLoopField` 在导线上都返回显式 `NaN`，即使该源的电荷、磁矩或电流为 0。零强度源在 Web 场景层构建场之前就被剔除；核心不会把源点软化成普通采样点。
+奇点集合只由源几何决定：`PointChargeField` 与 `MagneticDipoleField` 在源位置、`CircularLoopField` 与 `ChargedRingField` 在细环上都返回显式 `NaN`，即使该源的电荷、磁矩或电流为 0。零强度源在 Web 场景层构建场之前就被剔除；核心不会把源点软化成普通采样点。
 
 #### `CircularLoopField`
 
@@ -82,6 +83,23 @@ psi = loop.flux_function(points)
 `current`、`radius` 和 `center` 分别使用 A、m 和 m；默认 `permeability` 使用 `scipy.constants.mu_0`，因此 `evaluate()` 返回 T。单位法向由构造器归一化，并与正电流按右手定则绑定。模型维数固定为 3；`center` 与 `normal` 是只读数组。
 
 理想细导线圆周是显式 `NaN` 奇点，即使电流为 0 也不把源几何点伪装成普通采样点。`flux_function()` 返回轴对称磁通函数 $\psi=\rho A_\phi$：结果形状是 `points.shape[:-1]`，轴上取 0，细导线上取 `NaN`。测试中的直接 Biot–Savart 求积是独立验证 oracle，不是另一个公共运行时场类。
+
+#### `ChargedRingField`
+
+```python
+ring = ChargedRingField(
+    charge=1.0e-9,
+    radius=0.8,
+    center=(0.0, 0.0, 0.0),
+    normal=(0.0, 0.0, 1.0),
+)
+field = ring.evaluate(points)
+psi = ring.flux_function(points)
+```
+
+`charge` 是整个圆环的总电荷，单位 C；`radius` 与 `center` 使用 m；默认 `permittivity` 使用 `scipy.constants.epsilon_0`，因此 `evaluate()` 返回 V/m。几何参数与 `CircularLoopField` 完全相同，`normal` 只固定环面，不带方向意义。细环本身是显式 `NaN` 奇点，与电荷值无关。
+
+`flux_function()` 返回电场的轴对称通量函数 $\Psi$：穿过与轴同心、半径为 $\rho$、轴向位置为 $z$ 的圆盘的电通量除以 $2\pi$，满足 $E_\rho=-\rho^{-1}\partial_z\Psi$、$E_z=\rho^{-1}\partial_\rho\Psi$。它在轴上为 0、关于 $z$ 为奇函数、细环上为 `NaN`；环外的平面 $z=0$ 是割线，$\Psi$ 在那里跳变 $Q/(2\pi\varepsilon_0)$，恰好落在割线上的点取 $z\to0^+$ 的值。实现用圆盘对环上一点所张立体角的 Paxton 闭式（完全与不完全椭圆积分），测试与沿半径的直接通量求积比较。
 
 ### `TraceOptions`
 
@@ -181,11 +199,12 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 - `magnetic_dipole`
 - `halbach_array`
 - `current_loop`
+- `charged_ring`
 - `uniform`
 
 此端点是可用预设及其交互能力的权威目录；当前无构建客户端随版本静态提供同一组选项，并由契约测试防止两边漂移。客户端不应假设列表永久不变。
 
-`electric_dipole`、`electric_quadrupole`、`electric_hexagon`、`electric_hexagon_alternating`、`magnetic_dipole` 与 `halbach_array` 是可编辑点源预设，因此返回 `source_separation`。`exclusive_minimum: 0.322` 表示任意两个实际拥有排除区域的源中心距离必须**严格大于** 0.322 m；等于该值仍冲突。固定的 `current_loop` 与 `uniform` 没有这项能力，响应省略该字段；兼容客户端也应把缺失或 `null` 都解释为“不提供源间距交互”。
+`electric_dipole`、`electric_quadrupole`、`electric_hexagon`、`electric_hexagon_alternating`、`magnetic_dipole` 与 `halbach_array` 是可编辑点源预设，因此返回 `source_separation`。`exclusive_minimum: 0.322` 表示任意两个实际拥有排除区域的源中心距离必须**严格大于** 0.322 m；等于该值仍冲突。固定的 `current_loop`、`charged_ring` 与 `uniform` 没有这项能力，响应省略该字段；兼容客户端也应把缺失或 `null` 都解释为“不提供源间距交互”。
 
 ### `POST /api/scene`
 
@@ -210,9 +229,9 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 | `preset` | 否 | `/api/presets` 返回的稳定标识符；默认 `electric_dipole` |
 | `density` | 否 | 种子总预算，整数范围 6–40，默认 18，不代表物理场强；每个参与播种的源至少分配 1 个种子 |
 | `resolution` | 否 | 两个方向共同使用的标量网格分辨率，整数范围 32–144 |
-| `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；电四极子、六个正电荷和三对交替电荷预设接受 1–8 个任意符号的电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及固定的 `current_loop`/`uniform` 预设 override 会被拒绝 |
+| `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；电四极子、六个正电荷和三对交替电荷预设接受 1–8 个任意符号的电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及固定的 `current_loop`/`charged_ring`/`uniform` 预设 override 会被拒绝 |
 
-`sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m，范围均为 $[-2.8,2.8]$。请求模型 `SourceInput.kind` 只接受 `positive`、`negative`、`dipole`、`uniform`；响应专用的 `wire_out`/`wire_into` 不能提交。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。单位由预设决定，请求不得提交 `strength_unit`。
+`sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m，范围均为 $[-2.8,2.8]$。请求模型 `SourceInput.kind` 只接受 `positive`、`negative`、`dipole`、`uniform`；响应专用的 `wire_out`/`wire_into`/`ring_charge` 不能提交。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。单位由预设决定，请求不得提交 `strength_unit`。
 
 可编辑点源场景无论使用默认源还是 `sources` 覆盖，电荷都拥有圆形排除区域；磁偶极和 Halbach 则只有 `strength != 0` 的 active 偶极拥有排除区域。服务端对这些 active 源逐对检查 `/api/presets` 公布的下限；显式源中心距小于或等于 0.322 m 时返回 422，`detail` 精确指出原请求中的 0-based 下标，例如 `sources[1] 与 sources[2] 的中心距离必须大于 0.322 m`。浏览器的预判与吸附只改善交互，服务端校验仍是权威边界。
 
@@ -238,6 +257,7 @@ $$
 - 单个 active 磁偶极沿随参数角度旋转的赤道线按距离等距覆盖并双向追踪，`seed_mode: "coverage"`；负强度会反转实际磁矩，但不会改变同一条赤道几何；
 - 默认 Halbach 在 $x\in[-2.1,2.1]$、$y=\pm0.45$ m 的两条平行轨道上等距覆盖并双向追踪；上轨分到 $\lceil density/2\rceil$ 个 job，下轨分到 $\lfloor density/2\rfloor$ 个，`seed_mode: "coverage"`；
 - 圆环在环内赤道段调用公开的 `CircularLoopField.flux_function()`，以求根方式选择等 $\psi$ 的镜像轮廓；奇数预算再增加一条轴线特征线，整体 `seed_mode: "equal_flux"`；
+- 带电圆环在两个截面周围半径 0.162 m 的种子圆上调用公开的 `ChargedRingField.flux_function()`：环外赤道割线上下的 $\Psi$ 从 $+Q/(4\pi\varepsilon_0)$ 单调降到 $-Q/(4\pi\varepsilon_0)$，取 $\lfloor density/2\rfloor$ 个等分区间的中点为目标求根，再镜像到另一截面；目标恰为 0 的种子直接放在环内赤道上，因为它通向中心鞍点，任何离轴舍入都会把它偏转。奇数预算另加一条从 $+x$ 截面沿环面向外的赤道射线（上下两半场的分界线），整体 `seed_mode: "equal_flux"`；
 - 匀强场仍从左边界等距覆盖播种，`seed_mode: "coverage"`。
 
 每个 job 无论是否最终渲染，都恰好给 `metadata.termination_counts` 的一个原因加 1，所以 `sum(termination_counts.values()) == density`。对 `BOTH` job，`termination` 和 `termination_counts` 记录点序末端的正向分支，`start_termination` 与 `start_termination_counts` 另记点序起点的反向分支；非双向场景的起点端统计为空对象。双向曲线的点始终从反向端经过种子排到正向端，因此 `direction` 为 `1`。
@@ -329,6 +349,8 @@ $$
 
 `halbach_array` 的默认响应包含 8 个等间距 `dipole`：位置沿 $x\in[-2.1,2.1]$ 排列，`strength=1 A·m²`，角度序列为 $0^\circ,90^\circ,180^\circ,270^\circ$ 并重复两次。它是理想点偶极近似的教学预设，只承诺有限阵列的一侧场增强，不等同于有限尺寸永磁体，也不声称弱侧严格为零。用户一旦增删、移动或旋转源，响应元数据会把场景称为“可编辑面内磁偶极子阵列”，不再把任意排列冒充标准 Halbach 几何。
 
+`charged_ring` 固定返回两个只读 `ring_charge` 标记，画作带正号的圆点：它们是同一个均匀带电圆环与 z=0 子午面的两个交点，`strength` 都是同一个非零总电荷 `1 nC`。该场景使用与点电荷相同的 $10^{-6}\ \mathrm{V/m}$ 零场终止阈值，环内赤道线在中心零场点以 `null_field` 停止。
+
 `current_loop` 固定返回两个只读标记：`wire_out` 画作 ⊙（电流出屏），`wire_into` 画作 ⊗（电流入屏）。两者是**同一个环形导体与 z=0 子午面的两个交点**，不是两根独立导线；二者的 `strength` 完全相同，表示同一个非负回路电流幅值，单位 `A`。电流方向只由 `kind` 承载，不使用一正一负的有符号电流。`strength_unit` 与 `wire_*` 都是只读响应元数据，不得混入后续 `SourceInput` 请求；前端也不得拖动或用键盘移动这两个固定标记。
 
 #### `metadata`
@@ -400,6 +422,10 @@ $$
       heading_level: 4
 
 ::: vectorviz.fields.CircularLoopField
+    options:
+      heading_level: 4
+
+::: vectorviz.fields.ChargedRingField
     options:
       heading_level: 4
 

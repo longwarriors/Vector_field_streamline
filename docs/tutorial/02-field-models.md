@@ -257,6 +257,54 @@ $$
 
 二维 mask 是三维 `ToroidalExclusion` 与这个子午面的精确截面，因而表现为 $x=\pm a$ 处的两个圆盘；这两个 mask 圆盘的半径只控制数值终止和图上的未着色斜线区，不是物理线径。种子半径由环内赤道段上等间隔的 $\psi$ 目标求根得到，再镜像到轴线两侧，属于等通量播种，见[切片与验证](04-slices-and-validation.md)中的“等通量播种”。靠近导线的闭轨启用 `closed_loop` 后只走一周；会离开视域的轨迹从赤道正向积分，再用严格的赤道镜面对称补齐另一半，拼接后的点序仍沿 $+\mathbf B$。
 
+## 带电圆环：电流线圈的静电孪生
+
+把线圈里的电流换成均匀分布的总电荷 $Q$，几何一个字不改，就得到均匀带电细圆环。它的电势是
+
+$$
+\varphi(\rho,z)=\frac{Q}{2\pi^2\varepsilon_0}\frac{K(m)}{s},
+\qquad
+s^2=(a+\rho)^2+z^2,\quad d^2=(a-\rho)^2+z^2,\quad m=\frac{4a\rho}{s^2},
+$$
+
+$m$ 正是线圈用的椭圆参数。对 $\varphi$ 取负梯度：
+
+$$
+E_z=\frac{Q}{2\pi^2\varepsilon_0}\frac{z\,E(m)}{s\,d^2},
+\qquad
+E_\rho=\frac{Q}{4\pi^2\varepsilon_0\,\rho s}\left[-P(m)+\frac{2\rho^2E(m)}{d^2}\right],
+$$
+
+其中 $P=-K+(1-m/2)E/(1-m)$ 就是线圈径向分量里那个从 $m^2$ 起始的组合。两项在近轴都是 $O(\rho^2)$，所以 $E_\rho=O(\rho)$ 不靠相消得到；轴线、极近轴、近环和远场四个区域的处理与线圈一样，只是轴线函数换成 $E_z(0,z)=Qz/[4\pi\varepsilon_0(a^2+z^2)^{3/2}]$ 及其前四阶导数。`ChargedRingField` 与 `CircularLoopField` 共用同一个几何基类和同一套椭圆积分代码。
+
+静电场没有矢势，但轴对称、无散的区域仍有通量函数。取 $\Psi(\rho,z)$ 为穿过同轴圆盘（半径 $\rho$、轴向位置 $z$）的电通量除以 $2\pi$，则
+
+$$
+E_\rho=-\frac{1}{\rho}\frac{\partial\Psi}{\partial z},
+\qquad
+E_z=\frac{1}{\rho}\frac{\partial\Psi}{\partial\rho},
+$$
+
+子午面上 $\Psi$ 的等值线就是电场线，相邻等值线之间的完整三维电通量是 $2\pi\Delta\Psi$。圆盘的通量等于 $Q/\varepsilon_0$ 乘以圆盘对环上任一点所张立体角除以 $4\pi$（环上各点看到的立体角相同），而离轴点对圆盘的立体角有 Paxton 的闭式：[^paxton]
+
+$$
+\Omega=\begin{cases}
+-\dfrac{2|z|}{s}K(m)+\pi\Lambda_0(\xi,m), & \rho<a,\\[1.2em]
+2\pi-\dfrac{2|z|}{s}K(m)-\pi\Lambda_0(\xi,m), & \rho>a,
+\end{cases}
+\qquad
+\xi=\arctan\frac{|z|}{|a-\rho|},
+$$
+
+$\Lambda_0(\xi,m)=\tfrac{2}{\pi}\left[E(m)F(\xi\,|\,1-m)+K(m)E(\xi\,|\,1-m)-K(m)F(\xi\,|\,1-m)\right]$ 是 Heuman 的 $\Lambda$ 函数，由 SciPy 的不完全椭圆积分 `ellipkinc`/`ellipeinc` 计算。[^scipy-incomplete] $\Psi=Q\Omega/(8\pi^2\varepsilon_0)$ 对 $z$ 取奇函数。环外的平面 $z=0$ 是割线：一半通量向上、一半向下，$\Psi$ 在那里跳变 $Q/(2\pi\varepsilon_0)$。这不是数值瑕疵，而是“圆盘包含了环”这一事实。
+
+三个可以立即做的检查：轴上 $E_z$ 与初等公式一致；随机点与沿环的直接 Coulomb 求积一致；$\Psi$ 的有限差分回代出 $E_\rho,E_z$，并与沿半径的通量求积一致。远场按 $Q/(4\pi\varepsilon_0r^2)$ 收敛，首阶修正来自圆环的四极矩，量级 $(a/r)^2$。
+
+浏览器的 `charged_ring` 预设取 $a=1\ \mathrm m$、$Q=1\ \mathrm{nC}$、法向 $+y$，显示真实的 $z=0$ 子午面；两个只读标记是同一带电圆环的两个截面。中心 $\mathbf x=\mathbf 0$ 是零场点，在子午面内是鞍点：沿环面指向内的赤道线在那里以 `null_field` 停下，其余线绕过它沿轴离开。种子在截面周围按等间隔 $\Psi$ 求根，见[切片与验证](04-slices-and-validation.md)中的“等通量播种”。
+
+!!! example "对照阅读：matplotlib 三角剖分画法"
+    知乎文章[《python 绘制理想圆环的电场》](https://zhuanlan.zhihu.com/p/430569468)用数值求积算电势，再对三角剖分上的三次插值取梯度。    它适合看等势线的画法，但奇点软化和插值梯度不能照搬进场模型；逐条说明见[参考页的勘误](../references.md#zhihu-charged-ring)。
+
 ## 三类场模型
 
 | 类型 | 怎样得到 $\mathbf F(\mathbf x)$ | 优点 | 主要误差 |
@@ -284,6 +332,7 @@ vectors = field.evaluate(points)  # points.shape == vectors.shape == (..., D)
 - [ ] 圆线圈同时用轴线公式和直接求积验证。
 - [ ] 奇点进入 mask，不填零，也不加入任意大的 epsilon。
 - [ ] 轴对称磁场画 $\psi=\rho A_\phi$，并检查是否存在 $B_\phi$。
+- [ ] 轴对称无散电场画通量函数 $\Psi$，并写明割线在哪里。
 
 下一章把已经能求值的 $\mathbf F(\mathbf x)$ 交给自适应 ODE 求解器。
 
@@ -299,4 +348,6 @@ vectors = field.evaluate(points)  # points.shape == vectors.shape == (..., D)
 [^openstax-current-loop]: OpenStax, [§12.1 Biot–Savart Law](https://openstax.org/books/university-physics-volume-2/pages/12-1-the-biot-savart-law) 与 [§12.4 Magnetic Field of a Current Loop](https://openstax.org/books/university-physics-volume-2/pages/12-4-magnetic-field-of-a-current-loop)。
 [^nasa-loop]: J. C. Simpson et al., [“Simple Analytic Expressions for the Magnetic Field of a Circular Current Loop”](https://ntrs.nasa.gov/citations/20010038494), NASA Technical Reports Server, 2001。
 [^scipy-elliptic]: SciPy，[`ellipk`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipk.html)、[`ellipe`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipe.html) 与 [`ellipkm1`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipkm1.html)；前两者使用参数 $m$，后者直接使用 $p=1-m$。
+[^paxton]: F. Paxton, [“Solid Angle Calculation for a Circular Disk”](https://doi.org/10.1063/1.1716590), *Review of Scientific Instruments* 30 (1959), 254–258。离轴点对圆盘所张立体角的椭圆积分闭式。
+[^scipy-incomplete]: SciPy，[`ellipkinc`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipkinc.html) 与 [`ellipeinc`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipeinc.html)，不完全椭圆积分，参数约定同样是 $m=k^2$。
 [^ogilvie-flux]: G. I. Ogilvie, [“Astrophysical fluid dynamics”](https://doi.org/10.1017/S0022377816000489), *Journal of Plasma Physics* 82 (2016), §9.2。

@@ -105,6 +105,7 @@ electric_dipole -> PointChargeField(批量异号电荷)
 magnetic_dipole -> MagneticDipoleField(...) 的 z=0 不变平面适配器
 halbach_array    -> 单个批量 MagneticDipoleField（默认八个点偶极源）的可编辑组合
 current_loop    -> CircularLoopField(...) 的 z=0 子午面适配器
+charged_ring    -> ChargedRingField(...) 的 z=0 子午面适配器
 uniform         -> UniformField(...)
 ```
 
@@ -114,7 +115,7 @@ uniform         -> UniformField(...)
 
 磁偶极与 Halbach 场景都只把 HTTP 中的面内角度转换成三维磁矩，再复用核心的批量 `MagneticDipoleField`；Web 层不复制磁偶极公式。单个 active 磁偶极沿旋转赤道线生成 `BOTH` job；多个 active 偶极使用逐源外向半球覆盖。Halbach 默认几何由八个等间距点偶极组成，相邻方向转过 90°，其专用 `BOTH` job 位于 $y=\pm0.45$ m 两条轨道。用户编辑后它成为普通的可编辑面内偶极阵列，退回逐源覆盖，响应元数据也不再把任意排列冒充标准 Halbach 几何。
 
-圆环是三维理想细导线模型；二维 Web 追踪器使用它的真实不变子午面。三维环面排除管在该平面上的截面是两个圆盘，因此 Web 层传给二维追踪器的是两个 `SphericalExclusion`，而不是维数不匹配的 `ToroidalExclusion`。响应中的两个 wire 标记仅表示同一圆环与子午面的交点，不是两个独立场源。环内非轴 job 由等间隔 $\psi$ 目标反解并成对镜像，奇数预算另含一条轴线特征 job。
+圆环是三维理想细导线模型；二维 Web 追踪器使用它的真实不变子午面。三维环面排除管在该平面上的截面是两个圆盘，因此 Web 层传给二维追踪器的是两个 `SphericalExclusion`，而不是维数不匹配的 `ToroidalExclusion`。响应中的两个 wire 标记仅表示同一圆环与子午面的交点，不是两个独立场源。环内非轴 job 由等间隔 $\psi$ 目标反解并成对镜像，奇数预算另含一条轴线特征 job。带电圆环复用同一个子午面适配器和同样的两个圆盘排除区，种子改在两个截面周围的种子圆上按等间隔 $\Psi$ 反解角度并镜像；零通量目标直接放在环内赤道上，奇数预算另含一条环外赤道射线。
 
 ## 缓存边界 { #cache-boundaries }
 

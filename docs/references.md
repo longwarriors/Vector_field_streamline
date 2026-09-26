@@ -37,6 +37,8 @@
 
 9. K. Halbach, [“Design of Permanent Multipole Magnets with Oriented Rare Earth Cobalt Material”](https://doi.org/10.1016/0029-554X(80)90094-4), *Nuclear Instruments and Methods* **169** (1980), 1–10。定向永磁多极结构的经典设计论文；有限点偶极模型不等同于论文中的实际磁块几何。
 
+10. F. Paxton, [“Solid Angle Calculation for a Circular Disk”](https://doi.org/10.1063/1.1716590), *Review of Scientific Instruments* **30** (1959), 254–258。离轴点对圆盘所张立体角的椭圆积分闭式；本项目用它给出带电圆环电场的通量函数。
+
 ## 数值积分与向量场可视化
 
 1. J. R. Dormand, P. J. Prince, [“A family of embedded Runge–Kutta formulae”](https://doi.org/10.1016/0771-050X(80)90013-3), *Journal of Computational and Applied Mathematics* **6** (1980), 19–26。
@@ -45,7 +47,8 @@
 
     - [`scipy.integrate.solve_ivp`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.solve_ivp.html)：自适应 ODE、事件和稠密输出。本项目的闭环候选使用距种子平方的一半对弧长的导数从负到正过零定位局部最近点，再独立校验距离和切向；
     - [Regular grid interpolation](https://docs.scipy.org/doc/scipy/tutorial/interpolate/ND_regular_grid.html)：规则网格多分量插值；
-    - [`scipy.special.ellipk`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipk.html)、[`ellipe`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipe.html) 与 [`ellipkm1`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipkm1.html)：完全椭圆积分。前两者的参数是 $m=k^2$；`ellipkm1` 直接接受 $p=1-m$，用于保留近导线极限中的小补参数。
+    - [`scipy.special.ellipk`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipk.html)、[`ellipe`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipe.html) 与 [`ellipkm1`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipkm1.html)：完全椭圆积分。前两者的参数是 $m=k^2$；`ellipkm1` 直接接受 $p=1-m$，用于保留近导线极限中的小补参数；
+    - [`scipy.special.ellipkinc`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipkinc.html) 与 [`ellipeinc`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipeinc.html)：不完全椭圆积分，用于 Heuman $\Lambda$ 函数和带电圆环的通量函数。
 
 3. M. Steffen et al., [“Investigation of Smoothness-Increasing Accuracy-Conserving Filters for Improving Streamline Integration through Discontinuous Fields”](https://doi.org/10.1109/TVCG.2008.9), *IEEE Transactions on Visualization and Computer Graphics* **14** (2008), 680–692。讨论场光滑性、重建与积分误差。
 
@@ -147,6 +150,20 @@
 - 原文用模数 $k$ 定义 $K(k),E(k)$；SciPy 的 [`ellipk`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipk.html) 和 [`ellipe`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipe.html) 接收的是参数 $m=k^2$。轴上 $k\to0$ 要走极限分支，不能把闭式中的 $0/0$ 直接交给浮点计算。
 
 这些错误不推翻回答的主线，也不影响它给出的轴上式和磁偶极远场；球谐级数部分不能原样抄进代码。
+
+### 用 matplotlib 三角剖分画带电圆环 { #zhihu-charged-ring }
+
+**原文：** 多说无益，[《python 绘制理想圆环的电场》](https://zhuanlan.zhihu.com/p/430569468)，编辑于 2021-11-07。改自 matplotlib 官方的三角网格插值示例。
+
+**适合参考：** 文章把“逐点数值求积算电势 → Delaunay 三角剖分 → 三次插值 → 取负梯度画箭头、画等势线”串成一个完整例子，并在子午面和环平面各画一张；掩蔽奇点附近三角形、箭头只表示方向、等势线与场线正交，这些做法都对。
+
+**勘误与边界：**
+
+- 电势被积函数在根号里加了 `eps=1e-5`，这是奇点软化：离环约 $\sqrt{\varepsilon}\approx3\times10^{-3}a$ 以内的电势和梯度都被系统性压低。VectorViz 把细环保持为显式 `NaN`，在其外用闭式，不加 epsilon。
+- 电场不是解析求值，而是三角剖分上三次插值的梯度。它的精度取决于点云密度，尤其在被掩蔽的三角形旁边没有误差控制；要作为场模型使用时，应直接对电势的闭式取梯度，或用本项目的 `ChargedRingField`。
+- `quiver` 把所有箭头归一化成等长，图上只有方向信息；等势线的疏密才反映场强，这一点原文没有说明。
+- 子午面 `xoz` 与环平面 `xoy` 都是该轴对称场的不变平面，所以两张图里的方向都是真实场线方向，不是投影；环平面内的场线全部沿径向，中心是零场点。
+- 逐点 `quad` 的电势可以作为独立 oracle，验证本项目的 $\varphi=QK(m)/(2\pi^2\varepsilon_0s)$，但计算量大，不适合放进交互路径。
 
 ### 一个 3D 场线渲染框架 { #zhihu-3d-field-lines }
 

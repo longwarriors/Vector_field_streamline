@@ -6,6 +6,7 @@
 
 ### Added
 
+- `ChargedRingField`：均匀带电理想细圆环的三维电场，与 `CircularLoopField` 共用几何和椭圆积分代码，`flux_function()` 用 Paxton 的圆盘立体角闭式给出电通量函数。新预设 `charged_ring` 在 z=0 子午面显示真实电场线，两个只读 `ring_charge` 标记表示同一圆环的截面；种子按等间隔通量函数值围绕截面求根，`seed_mode` 为 `equal_flux`，奇数预算另含环外赤道射线。
 - 三个电荷排布预设：`electric_quadrupole`（正方形顶点上正负交替的四个电荷）、`electric_hexagon`（正六边形顶点上六个等量正电荷）和 `electric_hexagon_alternating`（同一六边形上正负交替）。它们与 `electric_dipole` 共用点电荷契约：可增删、拖动电荷，公布源间距能力，按 $|q|$ 分配预算并抑制重复返线；收到 `sources` 覆盖后标题改为“可编辑点电荷组的电场线”。
 
 ### Changed
