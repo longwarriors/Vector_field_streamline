@@ -172,9 +172,12 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 ]
 ```
 
-首批预设标识符为：
+当前预设标识符为：
 
 - `electric_dipole`
+- `electric_quadrupole`
+- `electric_hexagon`
+- `electric_hexagon_alternating`
 - `magnetic_dipole`
 - `halbach_array`
 - `current_loop`
@@ -182,7 +185,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 
 此端点是可用预设及其交互能力的权威目录；当前无构建客户端随版本静态提供同一组选项，并由契约测试防止两边漂移。客户端不应假设列表永久不变。
 
-`electric_dipole`、`magnetic_dipole` 与 `halbach_array` 是可编辑点源预设，因此返回 `source_separation`。`exclusive_minimum: 0.322` 表示任意两个实际拥有排除区域的源中心距离必须**严格大于** 0.322 m；等于该值仍冲突。固定的 `current_loop` 与 `uniform` 没有这项能力，响应省略该字段；兼容客户端也应把缺失或 `null` 都解释为“不提供源间距交互”。
+`electric_dipole`、`electric_quadrupole`、`electric_hexagon`、`electric_hexagon_alternating`、`magnetic_dipole` 与 `halbach_array` 是可编辑点源预设，因此返回 `source_separation`。`exclusive_minimum: 0.322` 表示任意两个实际拥有排除区域的源中心距离必须**严格大于** 0.322 m；等于该值仍冲突。固定的 `current_loop` 与 `uniform` 没有这项能力，响应省略该字段；兼容客户端也应把缺失或 `null` 都解释为“不提供源间距交互”。
 
 ### `POST /api/scene`
 
@@ -207,7 +210,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 | `preset` | 否 | `/api/presets` 返回的稳定标识符；默认 `electric_dipole` |
 | `density` | 否 | 种子总预算，整数范围 6–40，默认 18，不代表物理场强；每个参与播种的源至少分配 1 个种子 |
 | `resolution` | 否 | 两个方向共同使用的标量网格分辨率，整数范围 32–144 |
-| `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及固定的 `current_loop`/`uniform` 预设 override 会被拒绝 |
+| `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；电四极子、六个正电荷和三对交替电荷预设接受 1–8 个任意符号的电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及固定的 `current_loop`/`uniform` 预设 override 会被拒绝 |
 
 `sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m，范围均为 $[-2.8,2.8]$。请求模型 `SourceInput.kind` 只接受 `positive`、`negative`、`dipole`、`uniform`；响应专用的 `wire_out`/`wire_into` 不能提交。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。单位由预设决定，请求不得提交 `strength_unit`。
 
@@ -221,11 +224,15 @@ $$
 
 其中 $s$ 是有符号 `strength`，所以负值会把实际方向再翻转 $180^\circ$；单个 $s=0$ 仍是允许且会原样返回的显示 marker，但不参与场、播种、排除区域、源间距或种子预算。`magnetic_dipole` 与 `halbach_array` 场景必须至少有一个非零偶极；全零请求返回 422，`detail` 为 `至少需要一个非零磁偶极`。`angle_deg` 只能出现在 `dipole` 中，电荷即使提交 `null` 也会返回 422。这个参数化存在 $(s,\theta)$ 与 $(-s,\theta+180^\circ)$ 的等价表示，是为兼容 pre-1.0 已有的有符号强度契约而保留。
 
+四个电荷预设共用同一套点电荷契约：默认源不同，其余（排除区域、源间距、按 $|q|$ 分配预算、返线抑制、`nC` 单位）完全相同。`electric_quadrupole` 把正负交替的四个 1 nC 电荷放在 $(\pm0.9,\pm0.9)$ m 的正方形顶点；`electric_hexagon` 把六个 $+1$ nC 电荷放在半径 0.9 m 的正六边形顶点；`electric_hexagon_alternating` 用同一六边形、符号交替。六边形顶点坐标由同一对舍入后的数值镜像生成，因此场在浮点意义下严格对称，正对中心的线不会漂离对称线。这三个预设一旦收到 `sources` 覆盖，标题改为“可编辑点电荷组的电场线”，不再冒充命名几何；`electric_dipole` 保持原有的“至少各含一个正、负电荷”约束和标题。
+
+点电荷场景的零场终止阈值为 $10^{-6}\ \mathrm{V/m}$：默认源是相距约 1 m 的 1 nC 电荷，$|\mathbf E|$ 的量级为 10 V/m，线在离线性零点约 $10^{-7}$ m 处以 `null_field` 停止。这是与场同单位的数值截止值，不是新的物理零点；把整个场景乘以常数时它不会自动缩放。
+
 服务端必须为密度、分辨率、源数量和数值范围设置上限，防止一次交互请求耗尽内存或 CPU。
 
 `density` 是一次场景请求的**整数 trace-job 总预算**，不是“每个源各放多少条”，范围为 6–40；浏览器滑块步长为 1，因此圆环的奇数预算轴线分支可达。电偶极的全部正、负电荷都参与预算：每个源先得到 1 个 job，其余按 $|q|$ 用稳定最大余数法分配；正电荷正向追踪，负电荷反向追踪。自定义磁偶极和 Halbach 场景只让非零 active 偶极参与逐源预算；若参与数量超过 `density`，服务端返回 422，例如 `electric_dipole 有 8 个电荷参与播种，density 至少为 8`。默认 Halbach 使用两条独立轨道，所以最低密度仍是 API 下限 6，不受八个显示偶极数量约束。浏览器在所有 POST 路径上执行相同预判并自动抬高不足的预算。
 
-五个预设的策略分别是：
+各预设的策略分别是：
 
 - 电荷与自定义多磁偶极使用逐源几何覆盖，`seed_mode: "coverage"`；
 - 单个 active 磁偶极沿随参数角度旋转的赤道线按距离等距覆盖并双向追踪，`seed_mode: "coverage"`；负强度会反转实际磁矩，但不会改变同一条赤道几何；
@@ -237,7 +244,7 @@ $$
 
 电荷场会先完成全部 job，再按实际终止源对去重。若某条可渲染正电荷 $P\to N$ 轨迹已出现，随后终止于同一 $P$ 的负电荷反向 $N\to P$ 轨迹会被抑制；没有正向代表的源对以及负源到计算域边界的轨迹都保留。这里不做浮点几何相似判定。`suppressed_count` 记录被抑制的可渲染轨迹数，`rendered_line_count` 精确等于 `len(lines)`；若还存在不足两个有限点的退化结果，则 `rendered_line_count + suppressed_count <= density`。
 
-固定回归场景 $+1\ \mathrm{nC}$（$x=-0.85$ m）、$-5\ \mathrm{nC}$（$x=0.85$ m）、`density=18` 会分配 4 个正向和 14 个反向 job。实际终止为 9 次 `exclusion_hit`（4 条 $P\to N$ 加 5 条 $N\to P$）与 9 次 `domain_exit`；去重只抑制后 5 条返线，故最终 `suppressed_count=5`、`rendered_line_count=13`。九条从边界进入负源的线全部保留。
+固定回归场景 $+1\ \mathrm{nC}$（$x=-0.85$ m）、$-5\ \mathrm{nC}$（$x=0.85$ m）、`density=18` 会分配 4 个正向和 14 个反向 job。实际终止为 8 次 `exclusion_hit`（3 条 $P\to N$ 加 5 条 $N\to P$）、1 次 `null_field` 与 9 次 `domain_exit`：从正电荷背向负电荷出发的那条轴线在 $x=-0.85\,(1+\sqrt5)/(\sqrt5-1)\approx-2.225$ m 的真实零场点停止。去重只抑制 5 条返线，故最终 `suppressed_count=5`、`rendered_line_count=13`。九条从边界进入负源的线全部保留。
 
 成功响应结构如下。为便于阅读，示意片段把网格缩成 $2\times2$，并只展示渲染轨迹中的 1 条；实际端点接受的 `resolution` 不低于 32，数组会相应更长。
 
@@ -289,7 +296,7 @@ $$
     "field_model": "三维点电荷场在 z=0 对称平面上的限制",
     "seed_mode": "coverage",
     "seed_description": "正负电荷按绝对强度共享总预算，并从各自排除面沿场的外向方向覆盖播种；线密度不代表场强。",
-    "termination_counts": {"exclusion_hit": 9, "domain_exit": 9},
+    "termination_counts": {"exclusion_hit": 8, "null_field": 1, "domain_exit": 9},
     "start_termination_counts": {},
     "suppressed_count": 5,
     "rendered_line_count": 13

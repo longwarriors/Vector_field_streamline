@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- 三个电荷排布预设：`electric_quadrupole`（正方形顶点上正负交替的四个电荷）、`electric_hexagon`（正六边形顶点上六个等量正电荷）和 `electric_hexagon_alternating`（同一六边形上正负交替）。它们与 `electric_dipole` 共用点电荷契约：可增删、拖动电荷，公布源间距能力，按 $|q|$ 分配预算并抑制重复返线；收到 `sources` 覆盖后标题改为“可编辑点电荷组的电场线”。
+
+### Changed
+
+- 点电荷场景的零场终止阈值从 $10^{-14}$ 提高到 $10^{-6}\ \mathrm{V/m}$，与默认源 10 V/m 的量级匹配；落入零场点的线现在以 `null_field` 停在零点，六个正电荷的中心汇点因此可见。
+
+### Fixed
+
+- $+1/-5$ nC 回归场景中，从正电荷背向负电荷出发的轴线此前会数值地穿过 $x\approx-2.225$ m 的真实零场点，绕行 5.4 m 后终止在负电荷上并计作 `exclusion_hit`；现在它在零场点以 `null_field` 停止。渲染数 13 与抑制数 5 不变，终止统计改为 8 次 `exclusion_hit`、1 次 `null_field`、9 次 `domain_exit`。
+
 ## [0.3.4] - 2026-09-26
 
 ### Changed
