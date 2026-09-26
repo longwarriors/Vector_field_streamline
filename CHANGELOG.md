@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-09-26
+
 ### Added
 
 - 图框左侧的竖向工具栏提供热图、场线、方向箭头、场源、网格五个图层开关。切换只改显示、不发请求；关掉热图时色标与“未着色”图例一起隐藏，关掉场线时方向图例一起隐藏，关掉场源后标记不能拖动或用方向键微调，坐标输入框仍可用；拖动后的“场待重算”状态优先于开关。窄屏上工具栏横排在图框上方，宽屏的图框左边距相应加宽。
@@ -141,7 +143,8 @@
 - `density` 定义为整个场景的种子总预算，并在服务端与浏览器提交前共同校验。
 - 场景元数据区分真实不变平面场线与投影流线，并公开播种说明和终止统计。
 
-[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.2...v0.3.3
