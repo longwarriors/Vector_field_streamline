@@ -733,12 +733,16 @@ import {
     return cells;
   }
 
-  // Samples per cell for the masked path: each spans about 2 device px, and
-  // at least 4 keep the smoothing between samples inside the uncoloured cells.
+  // Samples per cell for the masked path: about one per 2 device px, at most
+  // 16 per cell and about 1024 across the plot (so a large, dense display
+  // stays near 20 ms), and never fewer than 4, which keeps the smoothing
+  // between samples inside the uncoloured cells.
   function samplesPerCell(scalar) {
     const { left, top, right, bottom } = state.plotRect;
+    const cells = Math.max(scalar.nx, scalar.ny) - 1;
     const cell = Math.max((right - left) / (scalar.nx - 1), (bottom - top) / (scalar.ny - 1));
-    return Math.min(16, Math.max(4, Math.ceil((cell * state.pixelRatio) / 2)));
+    const wanted = Math.ceil((cell * state.pixelRatio) / 2);
+    return Math.max(4, Math.min(16, wanted, Math.floor(1024 / cells)));
   }
 
   // Smoothing the raw raster would blend each coloured cell toward its

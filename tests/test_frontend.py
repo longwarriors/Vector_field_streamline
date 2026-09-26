@@ -755,6 +755,9 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
             const constantOutside = resolveScale({
               scale: 'linear', vmin: 2, vmax: 3, values: [1, 1],
             });
+            const constantAbove = resolveScale({
+              scale: 'linear', vmin: 1, vmax: 2, values: [10, 10],
+            });
             return {
               scale,
               zero: normalizeScalar(0, scale),
@@ -768,6 +771,7 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
               micro: [1, 1.0000005].map((value) => normalizeScalar(value, micro)),
               narrow: [0.1, 10].map((value) => normalizeScalar(value, narrow)),
               constantOutside: normalizeScalar(1, constantOutside),
+              constantAbove: normalizeScalar(10, constantAbove),
             };
         }"""
     )
@@ -790,6 +794,7 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
     assert result["micro"] == [0, 1]
     assert result["narrow"] == [0, 1]
     assert result["constantOutside"] == 0
+    assert result["constantAbove"] == 1
     assert page_errors == []
 
 
