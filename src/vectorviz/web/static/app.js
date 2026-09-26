@@ -20,6 +20,7 @@ import {
   createSource,
   densityForSeedBudget,
   effectiveDipoleAngleDeg,
+  isElectricPreset,
   normalizeAngleDeg,
   seedingSourceCount,
   serializeSource,
@@ -41,6 +42,9 @@ import {
   });
   const EDITABLE_SOURCE_PRESETS = new Set([
     "electric_dipole",
+    "electric_quadrupole",
+    "electric_hexagon",
+    "electric_hexagon_alternating",
     "magnetic_dipole",
     "halbach_array",
   ]);
@@ -617,6 +621,9 @@ import {
   function presetLabel(value) {
     return {
       electric_dipole: "电偶极子场",
+      electric_quadrupole: "电四极子场",
+      electric_hexagon: "六个正电荷的电场",
+      electric_hexagon_alternating: "三对交替电荷的电场",
       magnetic_dipole: "磁偶极子场",
       halbach_array: "Halbach 阵列磁场",
       current_loop: "圆形电流线圈磁场",
@@ -1120,8 +1127,9 @@ import {
     const sourceLimitReached = sources.length >= SOURCE_COUNT_LIMIT;
     elements.resetSources.disabled = sources.length === 0 || !editable;
     elements.sourceActions.hidden = !editable;
-    elements.addPositiveSource.hidden = preset !== "electric_dipole";
-    elements.addNegativeSource.hidden = preset !== "electric_dipole";
+    const electric = isElectricPreset(preset);
+    elements.addPositiveSource.hidden = !electric;
+    elements.addNegativeSource.hidden = !electric;
     elements.addDipoleSource.hidden =
       preset !== "magnetic_dipole" && preset !== "halbach_array";
     // Sources can only be added to a loaded scene.
@@ -1130,7 +1138,7 @@ import {
     elements.addNegativeSource.disabled = cannotAdd;
     elements.addDipoleSource.disabled = cannotAdd;
     elements.sourceHelp.textContent = editable
-      ? preset === "electric_dipole"
+      ? electric
         ? "可增删电荷；拖动标记或输入坐标。"
         : "可增删磁偶极子并编辑面内方向。"
       : "固定预设只显示只读几何标记。";

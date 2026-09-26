@@ -76,6 +76,24 @@ def _browser_presets() -> list[dict[str, object]]:
             "source_separation": editable,
         },
         {
+            "id": "electric_quadrupole",
+            "label": "电四极子",
+            "description": "fixture",
+            "source_separation": editable,
+        },
+        {
+            "id": "electric_hexagon",
+            "label": "六个正电荷",
+            "description": "fixture",
+            "source_separation": editable,
+        },
+        {
+            "id": "electric_hexagon_alternating",
+            "label": "三对交替电荷",
+            "description": "fixture",
+            "source_separation": editable,
+        },
+        {
             "id": "magnetic_dipole",
             "label": "磁偶极子",
             "description": "fixture",
@@ -2245,6 +2263,29 @@ def test_source_control_module_encodes_angle_budget_and_request_contract(
             defaultHalbachSeedCount: controls.seedingSourceCount(
               'halbach_array', null,
             ),
+            defaultHexagonSeedCount: controls.seedingSourceCount(
+              'electric_hexagon', null,
+            ),
+            quadrupoleSeedCount: controls.seedingSourceCount('electric_quadrupole', [
+              {kind: 'positive', strength: 1},
+              {kind: 'negative', strength: -1},
+              {kind: 'negative', strength: -1},
+            ]),
+            electricFamily: controls.ELECTRIC_PRESETS.filter(controls.isElectricPreset),
+            canRemoveToOneCharge: controls.canRemoveSource(
+              'electric_hexagon',
+              [{kind: 'positive', strength: 1}, {kind: 'positive', strength: 1}],
+              0,
+            ),
+            cannotRemoveOnlyDipolePolarity: controls.canRemoveSource(
+              'electric_dipole',
+              [
+                {kind: 'positive', strength: 1},
+                {kind: 'positive', strength: 1},
+                {kind: 'negative', strength: -1},
+              ],
+              2,
+            ),
             nonzeroDipoleSeedCount: controls.seedingSourceCount('magnetic_dipole', [
               {kind: 'dipole', strength: 0},
               {kind: 'dipole', strength: -0},
@@ -2353,6 +2394,16 @@ def test_source_control_module_encodes_angle_budget_and_request_contract(
         "defaultElectricSeedCount": 2,
         "defaultMagneticSeedCount": 1,
         "defaultHalbachSeedCount": 0,
+        "defaultHexagonSeedCount": 6,
+        "quadrupoleSeedCount": 3,
+        "electricFamily": [
+            "electric_dipole",
+            "electric_quadrupole",
+            "electric_hexagon",
+            "electric_hexagon_alternating",
+        ],
+        "canRemoveToOneCharge": True,
+        "cannotRemoveOnlyDipolePolarity": False,
         "nonzeroDipoleSeedCount": 1,
         "zeroDipoleIsActive": False,
         "zeroChargeIsActive": True,

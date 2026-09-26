@@ -1,8 +1,18 @@
 export const SOURCE_COORDINATE_LIMIT = 2.8;
 export const SOURCE_COUNT_LIMIT = 8;
 
+// Presets that share the point-charge contract with electric_dipole.
+export const ELECTRIC_PRESETS = Object.freeze([
+  "electric_dipole",
+  "electric_quadrupole",
+  "electric_hexagon",
+  "electric_hexagon_alternating",
+]);
 const DEFAULT_SEEDING_SOURCE_COUNTS = Object.freeze({
   electric_dipole: 2,
+  electric_quadrupole: 4,
+  electric_hexagon: 6,
+  electric_hexagon_alternating: 6,
   magnetic_dipole: 1,
   halbach_array: 0,
 });
@@ -20,6 +30,10 @@ const SOURCE_PLACEMENT_CANDIDATES = Object.freeze([
 function finiteNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+export function isElectricPreset(preset) {
+  return ELECTRIC_PRESETS.includes(preset);
 }
 
 export function normalizeAngleDeg(value) {
@@ -54,7 +68,7 @@ export function effectiveDipoleAngleDeg(source) {
 
 export function seedingSourceCount(preset, sources) {
   if (!Array.isArray(sources)) return DEFAULT_SEEDING_SOURCE_COUNTS[preset] ?? 0;
-  if (preset === "electric_dipole") {
+  if (isElectricPreset(preset)) {
     return sources.filter(({ kind }) => kind === "positive" || kind === "negative").length;
   }
   if (preset === "magnetic_dipole" || preset === "halbach_array") {
@@ -67,7 +81,7 @@ export function seedingSourceCount(preset, sources) {
 
 export function sourceIsActive(preset, source) {
   if (!source || typeof source !== "object") return false;
-  if (preset === "electric_dipole") return true;
+  if (isElectricPreset(preset)) return true;
   if (preset === "magnetic_dipole" || preset === "halbach_array") {
     return source.kind === "dipole" && Number(source.strength) !== 0;
   }
@@ -237,6 +251,10 @@ export function canRemoveSource(preset, sources, index) {
       remaining.some(({ kind }) => kind === "positive") &&
       remaining.some(({ kind }) => kind === "negative")
     );
+  }
+  if (isElectricPreset(preset)) {
+    // Other charge arrangements only need one charge to keep a field.
+    return remaining.some(({ kind }) => kind === "positive" || kind === "negative");
   }
   if (preset === "magnetic_dipole" || preset === "halbach_array") {
     return remaining.some((source) => sourceIsActive(preset, source));
