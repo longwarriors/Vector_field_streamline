@@ -13,6 +13,7 @@ from numpy.typing import NDArray
 
 from vectorviz.core import Domain, SphericalExclusion, VectorField
 from vectorviz.fields import (
+    ChargedRingField,
     CircularLoopField,
     MagneticDipoleField,
     PointChargeField,
@@ -41,6 +42,7 @@ from .schemas import (
 )
 from .seeding import (
     TraceJob,
+    charged_ring_equal_flux_jobs,
     current_loop_equal_flux_jobs,
     electric_source_jobs,
     halbach_rail_jobs,
@@ -56,6 +58,9 @@ MIN_SOURCE_SEPARATION = SOURCE_RADIUS + SOURCE_SEED_RADIUS
 CURRENT_LOOP_RADIUS = 1.0
 CURRENT_LOOP_CURRENT = 1.0
 CURRENT_LOOP_EXCLUSION_RADIUS = 0.16
+CHARGED_RING_RADIUS = 1.0
+CHARGED_RING_CHARGE_NC = 1.0
+CHARGED_RING_EXCLUSION_RADIUS = 0.16
 HALBACH_SOURCE_COUNT = 8
 HALBACH_X_EXTENT = 2.1
 ELECTRIC_ARRANGEMENT_RADIUS = 0.9
@@ -120,10 +125,10 @@ class _PlanarMagneticDipoleField(VectorField):
         return self._field.evaluate(embedded)[..., :2]
 
 
-class _PlanarCircularLoopField(VectorField):
-    """The invariant z=0 meridional plane of a y-axis circular loop."""
+class _PlanarMeridionalField(VectorField):
+    """The invariant z=0 meridional plane of a centred, y-axis circular filament."""
 
-    def __init__(self, field: CircularLoopField) -> None:
+    def __init__(self, field: CircularLoopField | ChargedRingField) -> None:
         expected_normal = np.array((0.0, 1.0, 0.0))
         if not np.array_equal(field.center, np.zeros(3)) or not np.array_equal(
             field.normal, expected_normal
@@ -316,7 +321,7 @@ def _build_model(request: SceneRequest) -> _SceneModel:
             ),
         )
         return _SceneModel(
-            field=_PlanarCircularLoopField(loop),
+            field=_PlanarMeridionalField(loop),
             sources=markers,
             exclusions=(SphericalExclusion(wire_centers, CURRENT_LOOP_EXCLUSION_RADIUS),),
             trace_jobs=tuple(
@@ -338,6 +343,46 @@ def _build_model(request: SceneRequest) -> _SceneModel:
                 "轴线特征线。线数不表示磁感应强度本身。"
             ),
             reflect_y_symmetric_domain_exits=True,
+        )
+
+    if request.preset == "charged_ring":
+        ring = ChargedRingField(
+            CHARGED_RING_CHARGE_NC * 1.0e-9,
+            CHARGED_RING_RADIUS,
+            normal=(0.0, 1.0, 0.0),
+        )
+        section_centers = np.array(
+            ((-CHARGED_RING_RADIUS, 0.0), (CHARGED_RING_RADIUS, 0.0)),
+            dtype=float,
+        )
+        markers = tuple(
+            SourcePayload(
+                x=float(x),
+                y=0.0,
+                kind="ring_charge",
+                strength=CHARGED_RING_CHARGE_NC,
+                strength_unit="nC",
+            )
+            for x in (-CHARGED_RING_RADIUS, CHARGED_RING_RADIUS)
+        )
+        return _SceneModel(
+            field=_PlanarMeridionalField(ring),
+            sources=markers,
+            exclusions=(SphericalExclusion(section_centers, CHARGED_RING_EXCLUSION_RADIUS),),
+            trace_jobs=tuple(
+                charged_ring_equal_flux_jobs(ring, request.density, SOURCE_SEED_RADIUS)
+            ),
+            trace_options=ELECTRIC_TRACE_OPTIONS,
+            scalar_label="|E|",
+            scalar_unit="V/m",
+            title="带电圆环的电场线",
+            field_model="三维均匀带电理想细圆环在 z=0 子午面上的限制",
+            projection_note="z=0 子午面是该轴对称场的不变平面，所示曲线是真实三维电场线。",
+            seed_mode=SeedMode.EQUAL_FLUX,
+            seed_description=(
+                "在两个截面周围按等间隔的电通量函数值求根播种，相邻线代表相等电通量间隔；"
+                "奇数预算另含一条沿环面向外的赤道特征线，不带等通量权重。线数不表示电场强度本身。"
+            ),
         )
 
     inputs = list(_default_sources(request.preset) if request.sources is None else request.sources)

@@ -5,11 +5,12 @@ from dataclasses import FrozenInstanceError, dataclass
 import numpy as np
 import pytest
 
-from vectorviz import CircularLoopField, Domain, TraceDirection
+from vectorviz import ChargedRingField, CircularLoopField, Domain, TraceDirection
 from vectorviz.web.schemas import SourceInput
 from vectorviz.web.seeding import (
     TraceJob,
     allocate_seed_counts,
+    charged_ring_equal_flux_jobs,
     current_loop_equal_flux_jobs,
     electric_source_jobs,
     halbach_rail_jobs,
@@ -379,6 +380,55 @@ def test_odd_current_loop_budget_adds_one_translated_axis_feature() -> None:
     np.testing.assert_allclose(np.diff(flux), np.diff(flux)[0], rtol=2.0e-11)
 
 
+def test_charged_ring_jobs_are_mirrored_and_equispaced_in_public_flux() -> None:
+    ring = ChargedRingField(1.0e-9, 1.0, normal=(0.0, 1.0, 0.0))
+
+    jobs = charged_ring_equal_flux_jobs(ring, total=8, seed_radius=0.162)
+
+    assert len(jobs) == 8
+    assert all(job.direction is TraceDirection.FORWARD for job in jobs)
+    assert all(job.origin_source_index is None for job in jobs)
+    points = _seed_array(jobs)
+    np.testing.assert_allclose(points[0::2, 0], -points[1::2, 0], rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(points[0::2, 1], points[1::2, 1], rtol=0.0, atol=0.0)
+    right = points[1::2]
+    np.testing.assert_allclose(np.hypot(right[:, 0] - 1.0, right[:, 1]), 0.162, rtol=1.0e-14)
+    flux = ring.flux_function(np.column_stack((right, np.zeros(4))))
+    cut = float(ring.flux_function((1.162, 0.0, 0.0)))
+    np.testing.assert_allclose(flux, cut * np.array((-0.75, -0.25, 0.25, 0.75)), rtol=1.0e-9)
+    # Equal flux is not equal angle: the seeds crowd toward the outer equator.
+    angles = np.arctan2(right[:, 1], right[:, 0] - 1.0)
+    assert not np.allclose(np.diff(np.sort(angles)), np.diff(np.sort(angles))[0])
+
+
+def test_odd_charged_ring_budget_adds_the_outer_equatorial_ray() -> None:
+    ring = ChargedRingField(1.0e-9, 1.0, center=(0.3, -0.2, 0.0), normal=(0.0, 1.0, 0.0))
+
+    odd_jobs = charged_ring_equal_flux_jobs(ring, total=7, seed_radius=0.162)
+    even_jobs = charged_ring_equal_flux_jobs(ring, total=6, seed_radius=0.162)
+
+    assert odd_jobs[0] == TraceJob((1.462, -0.2), TraceDirection.FORWARD)
+    assert odd_jobs[1:] == even_jobs
+    points = _seed_array(even_jobs)
+    np.testing.assert_allclose(points[0::2, 0] + points[1::2, 0], 0.6, atol=2.0e-15)
+    # Three targets straddle zero flux: the middle pair is the inward equator.
+    np.testing.assert_allclose(points[2:4], ((0.3 - 0.838, -0.2), (0.3 + 0.838, -0.2)), atol=1.0e-9)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: charged_ring_equal_flux_jobs(CircularLoopField(1, 1, normal=(0, 1, 0)), 8, 0.162),
+        lambda: charged_ring_equal_flux_jobs(ChargedRingField(1e-9, 1, normal=(0, 1, 0)), 0, 0.162),
+        lambda: charged_ring_equal_flux_jobs(ChargedRingField(1e-9, 1, normal=(0, 1, 0)), 8, 1.0),
+        lambda: charged_ring_equal_flux_jobs(ChargedRingField(1e-9, 1, normal=(0, 0, 1)), 8, 0.162),
+    ],
+)
+def test_charged_ring_planner_rejects_invalid_inputs(factory: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        factory()  # type: ignore[operator]
+
+
 @pytest.mark.parametrize(
     "jobs",
     [
@@ -404,6 +454,7 @@ def test_odd_current_loop_budget_adds_one_translated_axis_feature() -> None:
         ),
         lambda: halbach_rail_jobs(8),
         lambda: current_loop_equal_flux_jobs(CircularLoopField(1, 1, normal=(0, 1, 0)), 8, -2.9999),
+        lambda: charged_ring_equal_flux_jobs(ChargedRingField(1e-9, 1, normal=(0, 1, 0)), 8, 0.162),
     ],
 )
 def test_every_planner_returns_exactly_the_finite_requested_budget(jobs: object) -> None:

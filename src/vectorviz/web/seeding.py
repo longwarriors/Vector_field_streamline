@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import operator
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ from numpy.typing import ArrayLike, NDArray
 from scipy.optimize import brentq
 
 from vectorviz.core import Domain
-from vectorviz.fields import CircularLoopField
+from vectorviz.fields import ChargedRingField, CircularLoopField
 from vectorviz.tracing import TraceDirection
 
 
@@ -375,9 +376,89 @@ def current_loop_equal_flux_jobs(
     return jobs
 
 
+def _ring_flux_on_seed_circle(angle: float, ring: ChargedRingField, seed_radius: float) -> float:
+    """Public flux function at ``angle`` around the +x ring cross-section."""
+
+    point = np.array(ring.center, dtype=float, copy=True)
+    point[0] += ring.radius + seed_radius * math.cos(angle)
+    point[1] += seed_radius * math.sin(angle)
+    flux = float(np.asarray(ring.flux_function(point)))
+    if not np.isfinite(flux):  # pragma: no cover - finite off the filament by construction
+        raise ValueError("ring flux must be finite on the seed circle")
+    return flux
+
+
+def _ring_flux_residual(
+    angle: float,
+    ring: ChargedRingField,
+    seed_radius: float,
+    target: float,
+) -> float:
+    return _ring_flux_on_seed_circle(angle, ring, seed_radius) - target
+
+
+def charged_ring_equal_flux_jobs(
+    ring: ChargedRingField,
+    total: int,
+    seed_radius: float,
+) -> list[TraceJob]:
+    """Seed both ring cross-sections at equal steps of the public flux function.
+
+    Around the +x cross-section the flux function falls monotonically from
+    ``+Q/(4 pi eps0)`` just above the outer equator to ``-Q/(4 pi eps0)`` just
+    below it, so ``total // 2`` targets at the midpoints of equal flux steps
+    are inverted to angles on the seed circle and mirrored to the -x section.
+    An odd budget adds the outer equatorial ray, the separatrix between the
+    upper and lower half-planes, which carries no equal-flux weight.
+    """
+
+    if not isinstance(ring, ChargedRingField):
+        raise TypeError("ring must be a ChargedRingField")
+    budget = _positive_integer(total, "total")
+    radius = _finite_positive(seed_radius, "seed_radius")
+    if radius >= ring.radius:
+        raise ValueError("seed_radius must be smaller than the ring radius")
+    normal = np.asarray(ring.normal)
+    if normal[0] != 0.0 or abs(normal[1]) != 1.0 or normal[2] != 0.0:
+        raise ValueError("ring normal must be parallel to the web y-axis")
+
+    center_x = float(ring.center[0])
+    center_y = float(ring.center[1])
+    pair_count = budget // 2
+    jobs: list[TraceJob] = []
+    if budget % 2:
+        jobs.append(TraceJob((center_x + ring.radius + radius, center_y), TraceDirection.FORWARD))
+    if pair_count == 0:
+        return jobs
+
+    # The z -> 0+ value on the outer cut; the seed circle spans (-cut, +cut).
+    cut_flux = _ring_flux_on_seed_circle(0.0, ring, radius)
+    targets = cut_flux * (-1.0 + (2.0 * np.arange(pair_count) + 1.0) / pair_count)
+    for target in targets:
+        if target == 0.0:
+            # The zero-flux line is the inward equator by symmetry. It runs
+            # into the saddle at the centre, which any off-axis rounding would
+            # deflect, so place it on the axis exactly instead of via a root.
+            offset_x = ring.radius - radius
+            offset_y = 0.0
+        else:
+            angle = brentq(
+                _ring_flux_residual,
+                1.0e-9,
+                2.0 * np.pi - 1.0e-9,
+                args=(ring, radius, float(target)),
+            )
+            offset_x = ring.radius + radius * math.cos(angle)
+            offset_y = radius * math.sin(angle)
+        jobs.append(TraceJob((center_x - offset_x, center_y + offset_y), TraceDirection.FORWARD))
+        jobs.append(TraceJob((center_x + offset_x, center_y + offset_y), TraceDirection.FORWARD))
+    return jobs
+
+
 __all__ = [
     "TraceJob",
     "allocate_seed_counts",
+    "charged_ring_equal_flux_jobs",
     "current_loop_equal_flux_jobs",
     "electric_source_jobs",
     "halbach_rail_jobs",

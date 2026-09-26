@@ -74,6 +74,11 @@ PRESETS = [
         description="固定理想细圆环在 z=0 子午面中的真实磁力线。",
     ),
     PresetPayload(
+        id="charged_ring",
+        label="带电圆环",
+        description="固定均匀带电细圆环在 z=0 子午面中的真实电场线；与电流线圈同几何。",
+    ),
+    PresetPayload(
         id="uniform",
         label="匀强电场",
         description="用于验证积分器的直线基准场。",

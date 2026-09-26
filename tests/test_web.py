@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from vectorviz import CircularLoopField, MagneticDipoleField, __version__
+from vectorviz import ChargedRingField, CircularLoopField, MagneticDipoleField, __version__
 from vectorviz.tracing import TerminationReason, TraceBranch, TraceDirection, TraceResult
 from vectorviz.web import app as web_app
 from vectorviz.web import scene as web_scene
@@ -24,7 +24,7 @@ from vectorviz.web.app import STATIC_DIR, create_app
 from vectorviz.web.scene import (
     SOURCE_RADIUS,
     _build_model,
-    _PlanarCircularLoopField,
+    _PlanarMeridionalField,
     build_scene,
 )
 from vectorviz.web.schemas import SceneRequest, SeedMode, SourceInput, SourcePayload
@@ -48,6 +48,7 @@ from vectorviz.web.seeding import TraceJob, allocate_seed_counts
         ("magnetic_dipole", {"dipole"}, {"A·m²"}, "|B|", "T", 6),
         ("halbach_array", {"dipole"}, {"A·m²"}, "|B|", "T", 8),
         ("current_loop", {"wire_out", "wire_into"}, {"A"}, "|B|", "T", 6),
+        ("charged_ring", {"ring_charge"}, {"nC"}, "|E|", "V/m", 6),
         # A uniform field has no localized source marker.
         ("uniform", set(), set(), "|E|", "V/m", 6),
     ],
@@ -790,9 +791,105 @@ def test_current_loop_uses_response_only_markers_and_closed_loop_tracing() -> No
     assert scene.metadata.start_termination_counts == {}
 
 
+def test_charged_ring_uses_response_only_markers_and_equal_flux_seeding(
+    client: TestClient,
+) -> None:
+    request = SceneRequest(preset="charged_ring", density=8, resolution=32)
+
+    model = _build_model(request)
+    scene = build_scene(request)
+
+    assert [source.model_dump(exclude_none=True) for source in scene.sources] == [
+        {"x": -1.0, "y": 0.0, "kind": "ring_charge", "strength": 1.0, "strength_unit": "nC"},
+        {"x": 1.0, "y": 0.0, "kind": "ring_charge", "strength": 1.0, "strength_unit": "nC"},
+    ]
+    seeds = model.seeds
+    assert seeds.shape == (request.density, 2)
+    assert np.all(model.exclusions[0].margin(seeds) > 0.0)
+    np.testing.assert_allclose(seeds[0::2, 0], -seeds[1::2, 0], rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(seeds[0::2, 1], seeds[1::2, 1], rtol=0.0, atol=0.0)
+    right = seeds[1::2]
+    np.testing.assert_allclose(np.hypot(right[:, 0] - 1.0, right[:, 1]), web_scene.SOURCE_SEED_RADIUS)
+    ring = ChargedRingField(1.0e-9, 1.0, normal=(0.0, 1.0, 0.0))
+    flux = np.sort(ring.flux_function(np.column_stack((right, np.zeros(right.shape[0])))))
+    np.testing.assert_allclose(np.diff(flux), np.diff(flux)[0], rtol=1.0e-9)
+    np.testing.assert_allclose(flux, -flux[::-1], rtol=1.0e-9)
+    assert all(job.direction is TraceDirection.FORWARD for job in model.trace_jobs)
+    assert model.trace_options.null_threshold == web_scene.ELECTRIC_NULL_THRESHOLD
+    assert model.trace_options.closure_tolerance is None
+    assert scene.metadata.termination_counts == {"domain_exit": request.density}
+    assert len(scene.lines) == request.density
+    for line in scene.lines:
+        points = np.asarray(line.points)
+        segments = np.diff(points, axis=0)
+        vectors = model.field.evaluate(0.5 * (points[:-1] + points[1:]))
+        tangent_cosine = np.einsum("ij,ij->i", segments, vectors) / (
+            np.linalg.norm(segments, axis=1) * np.linalg.norm(vectors, axis=1)
+        )
+        assert np.min(tangent_cosine) > 0.99
+    assert scene.scalar.label == "|E|" and scene.scalar.unit == "V/m"
+    assert scene.metadata.field_model.startswith("三维均匀带电")
+    assert "子午面" in scene.metadata.projection_note
+    assert scene.metadata.seed_mode is SeedMode.EQUAL_FLUX
+    assert "相等电通量间隔" in scene.metadata.seed_description
+    assert "线数不表示电场强度" in scene.metadata.seed_description
+    assert scene.metadata.start_termination_counts == {}
+
+    rejected = client.post(
+        "/api/scene",
+        json={
+            "preset": "charged_ring",
+            "sources": [{"x": 0.0, "y": 0.0, "kind": "positive", "strength": 1.0}],
+        },
+    )
+    assert rejected.status_code == 422
+    assert "does not accept" in json.dumps(rejected.json())
+
+
+def test_charged_ring_odd_budget_adds_the_outer_equatorial_ray_and_inner_null_lines() -> None:
+    request = SceneRequest(preset="charged_ring", density=7, resolution=32)
+
+    model = _build_model(request)
+    scene = build_scene(request)
+
+    feature = model.trace_jobs[0]
+    assert feature.seed == (1.0 + web_scene.SOURCE_SEED_RADIUS, 0.0)
+    assert feature.direction is TraceDirection.FORWARD
+    # Three flux targets straddle zero, so the middle pair are the inward
+    # equatorial lines: both end at the central null point without crossing.
+    assert scene.metadata.termination_counts == {"domain_exit": 5, "null_field": 2}
+    null_lines = [line for line in scene.lines if line.termination == "null_field"]
+    ends = np.asarray([line.points[-1] for line in null_lines])
+    assert np.all(np.hypot(ends[:, 0], ends[:, 1]) < 1.0e-6)
+    assert np.all(np.asarray([line.points[0] for line in null_lines])[:, 1] == 0.0)
+    ray = scene.lines[0]
+    assert ray.termination == "domain_exit"
+    assert np.all(np.asarray(ray.points)[:, 1] == 0.0)
+    assert ray.points[-1][0] == pytest.approx(3.0, abs=1.0e-3)
+
+
+def test_ring_charge_marker_kind_is_response_only_and_needs_a_nonzero_nc_charge(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={
+            "preset": "electric_dipole",
+            "sources": [{"x": 0.0, "y": 0.0, "kind": "ring_charge", "strength": 1.0}],
+        },
+    )
+    assert response.status_code == 422
+
+    base = {"x": 1.0, "y": 0.0, "kind": "ring_charge", "strength": 1.0, "strength_unit": "nC"}
+    SourcePayload(**base)
+    for update in ({"strength_unit": "A"}, {"strength": 0.0}, {"angle_deg": 90.0}):
+        with pytest.raises(ValueError):
+            SourcePayload(**{**base, **update})
+
+
 def test_current_loop_planar_adapter_matches_the_invariant_3d_field() -> None:
     loop = CircularLoopField(1.0, 1.0, normal=(0.0, 1.0, 0.0))
-    planar = _PlanarCircularLoopField(loop)
+    planar = _PlanarMeridionalField(loop)
     points = np.array(((0.4, 0.3), (-0.4, 0.3), (0.4, -0.3)))
     embedded = np.column_stack((points, np.zeros(points.shape[0])))
 
@@ -1391,7 +1488,7 @@ def test_source_input_and_payload_publish_separate_kind_vocabularies(
     payload_kinds = set(SourcePayload.model_json_schema()["properties"]["kind"]["enum"])
 
     assert input_kinds == {"positive", "negative", "dipole", "uniform"}
-    assert payload_kinds == input_kinds | {"wire_out", "wire_into"}
+    assert payload_kinds == input_kinds | {"wire_out", "wire_into", "ring_charge"}
     openapi_schemas = client.get("/openapi.json").json()["components"]["schemas"]
     assert set(openapi_schemas["SourceInput"]["properties"]["kind"]["enum"]) == input_kinds
     assert set(openapi_schemas["SourcePayload"]["properties"]["kind"]["enum"]) == payload_kinds
@@ -1538,6 +1635,7 @@ def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
         "magnetic_dipole",
         "halbach_array",
         "current_loop",
+        "charged_ring",
         "uniform",
     }
     assert all(preset["label"] and preset["description"] for preset in payload)
@@ -1548,7 +1646,7 @@ def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
     }
     for preset_id in (*sorted(web_schemas.ELECTRIC_PRESETS), "magnetic_dipole", "halbach_array"):
         assert by_id[preset_id]["source_separation"] == expected_capability
-    for preset_id in ("current_loop", "uniform"):
+    for preset_id in ("current_loop", "charged_ring", "uniform"):
         assert "source_separation" not in by_id[preset_id]
 
 

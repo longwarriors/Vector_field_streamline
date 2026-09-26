@@ -21,8 +21,11 @@ PresetName = Literal[
     "magnetic_dipole",
     "halbach_array",
     "current_loop",
+    "charged_ring",
     "uniform",
 ]
+# Presets whose geometry is fixed by the server and returned as read-only markers.
+FIXED_PRESETS = frozenset({"current_loop", "charged_ring", "uniform"})
 # Presets that share the point-charge contract: charge-only overrides,
 # circular exclusions, budget by |q| and return-pair suppression.
 ELECTRIC_PRESETS = frozenset(
@@ -41,6 +44,7 @@ SourcePayloadKind = Literal[
     "uniform",
     "wire_out",
     "wire_into",
+    "ring_charge",
 ]
 SourceStrengthUnit = Literal["nC", "A·m²", "A"]
 
@@ -133,10 +137,8 @@ class SceneRequest(BaseModel):
             raise ValueError(f"{self.preset} only accepts positive and negative sources")
         if self.preset in {"magnetic_dipole", "halbach_array"} and kinds != {"dipole"}:
             raise ValueError(f"{self.preset} accepts dipole sources only")
-        if self.preset == "uniform":
-            raise ValueError("uniform preset does not accept source overrides")
-        if self.preset == "current_loop":
-            raise ValueError("current_loop preset does not accept source overrides")
+        if self.preset in FIXED_PRESETS:
+            raise ValueError(f"{self.preset} preset does not accept source overrides")
         return self
 
 
@@ -232,6 +234,11 @@ class SourcePayload(_ResponsePayload):
                 raise ValueError("wire source strength_unit must be A")
             if self.strength < 0.0:
                 raise ValueError("wire source strength must be non-negative")
+        elif self.kind == "ring_charge":
+            if self.strength_unit != "nC":
+                raise ValueError("ring_charge source strength_unit must be nC")
+            if self.strength == 0.0:
+                raise ValueError("ring_charge source strength must be nonzero")
         return self
 
 
