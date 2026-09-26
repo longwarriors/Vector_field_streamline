@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -185,6 +186,13 @@ class FieldLineTracer:
     configured null threshold the right-hand side is exactly zero and a
     terminal event is located; no epsilon regularization carries a line through
     a point where its direction is undefined.
+
+    ``interfaces`` are surfaces across which the field is discontinuous, such
+    as a material boundary, given as regions with a signed ``margin``. A line
+    reaching one stops the solver on the surface and restarts a hair beyond
+    it along the local tangent, so the kink is located by an event instead
+    of being smeared over an adaptive step. A branch whose field vanishes or
+    is non-finite just beyond the surface ends there with that reason.
     """
 
     def __init__(
@@ -193,6 +201,7 @@ class FieldLineTracer:
         domain: Domain | None = None,
         options: TraceOptions | None = None,
         exclusions: Iterable[ExclusionRegion] = (),
+        interfaces: Iterable[ExclusionRegion] = (),
     ) -> None:
         if not isinstance(field, VectorField):
             raise TypeError("field must implement VectorField.")
@@ -201,10 +210,14 @@ class FieldLineTracer:
         exclusion_values = tuple(exclusions)
         if any(exclusion.dimension != field.dimension for exclusion in exclusion_values):
             raise ValueError("exclusion geometry and field dimensions must match.")
+        interface_values = tuple(interfaces)
+        if any(interface.dimension != field.dimension for interface in interface_values):
+            raise ValueError("interface geometry and field dimensions must match.")
         self.field = field
         self.domain = domain
         self.options = options if options is not None else TraceOptions()
         self.exclusions = exclusion_values
+        self.interfaces = interface_values
         self._vector_shape = (field.dimension,)
 
     def _field_at(self, point: FloatArray) -> tuple[FloatArray, float]:
@@ -216,6 +229,43 @@ class FieldLineTracer:
             )
         # Exactly what np.linalg.norm evaluates for a real vector.
         return vector, float(np.sqrt(vector.dot(vector)))
+
+    def _restart_beyond_interface(
+        self,
+        point: FloatArray,
+        approach: FloatArray,
+        crossed: list[tuple[ExclusionRegion, float]],
+    ) -> tuple[FloatArray, TerminationReason | None]:
+        """Step a hair past the interface just reached, along the approach chord.
+
+        ``approach`` is the direction of the last solver step, which is the
+        direction of motion that reached the surface; the field at the surface
+        point itself may already belong to the far side and point back.
+        ``crossed`` pairs each interface that fired with the side the branch
+        was on before this chunk. The nudge doubles from a few ulps until every
+        crossed margin has changed sign; a grazing contact that never does
+        simply resumes on the original side.
+        """
+
+        options = self.options
+        chord = float(np.sqrt(approach.dot(approach)))
+        direction = approach / chord if chord > 0.0 else approach
+        nudge = 64.0 * float(np.finfo(float).eps) * max(1.0, float(np.max(np.abs(point))))
+        candidate = point + nudge * direction
+        for _attempt in range(24):
+            if all(
+                math.copysign(1.0, float(interface.margin(candidate))) != side
+                for interface, side in crossed
+            ):
+                break
+            nudge *= 2.0
+            candidate = point + nudge * direction
+        vector, magnitude = self._field_at(candidate)
+        if not np.all(np.isfinite(vector)) or not np.isfinite(magnitude):
+            return point, TerminationReason.NONFINITE_FIELD
+        if magnitude <= options.null_threshold:
+            return point, TerminationReason.NULL_FIELD
+        return candidate, None
 
     def _branch_without_integration(
         self,
@@ -327,6 +377,21 @@ class FieldLineTracer:
             events.append(exclusion_event)
             event_reasons.append(TerminationReason.EXCLUSION_HIT)
 
+        interface_indices: list[int] = []
+        for interface in self.interfaces:
+
+            def interface_event(
+                _parameter: float,
+                point: FloatArray,
+                interface: ExclusionRegion = interface,
+            ) -> float:
+                return float(interface.margin(point))
+
+            interface_event.terminal = True  # type: ignore[attr-defined]
+            interface_event.direction = 0.0  # type: ignore[attr-defined]
+            interface_indices.append(len(events))
+            events.append(interface_event)
+
         closure_enabled = options.closure_tolerance is not None
         closure_min_arc_length = options.closure_min_arc_length
         closure_candidate_index: int | None = None
@@ -366,11 +431,11 @@ class FieldLineTracer:
                 ),
                 None,
             )
-            return (
-                event_reasons[triggered_index]
-                if triggered_index is not None
-                else TerminationReason.SOLVER_FAILURE
-            )
+            if triggered_index is not None:
+                return event_reasons[triggered_index]
+            if any(solution.t_events[index].size > 0 for index in interface_indices):
+                return None  # an interface restart, handled by the chunk loop
+            return TerminationReason.SOLVER_FAILURE
 
         def is_closed_candidate(solution: Any, parameter: float) -> bool:
             if not closure_enabled or parameter < closure_min_arc_length:
@@ -412,8 +477,13 @@ class FieldLineTracer:
         closure_parameter: float | None = None
         termination: TerminationReason | None = None
         integration_first_step = options.first_step
+        stalled_restarts = 0
         while branch_start < options.max_arc_length:
             branch_end = min(options.max_arc_length, branch_start + chunk_length)
+            interface_sides = [
+                math.copysign(1.0, float(interface.margin(branch_state)))
+                for interface in self.interfaces
+            ]
             if integration_first_step is not None:
                 integration_first_step = min(
                     integration_first_step,
@@ -464,6 +534,37 @@ class FieldLineTracer:
             if solution.status < 0:
                 termination = TerminationReason.SOLVER_FAILURE
                 break
+            crossed = [
+                (interface, side)
+                for interface, side, index in zip(
+                    self.interfaces, interface_sides, interface_indices, strict=True
+                )
+                if solution.t_events[index].size > 0
+            ]
+            if solution.status == 1 and crossed:
+                # A branch whose field points back across the surface it just
+                # left slides along the interface without progress; stop it
+                # instead of restarting forever.
+                progress = float(solution.t[-1]) - branch_start
+                stalled_restarts = (
+                    stalled_restarts + 1 if progress <= 1.0e-6 * max(1.0, branch_start) else 0
+                )
+                branch_start = float(solution.t[-1])
+                if stalled_restarts >= 3:
+                    termination = TerminationReason.SOLVER_FAILURE
+                    break
+                crossing = np.asarray(solution.y[:, -1], dtype=float)
+                approach = crossing - np.asarray(solution.y[:, -2], dtype=float)
+                branch_state, restart_reason = self._restart_beyond_interface(
+                    crossing, approach, crossed
+                )
+                if restart_reason is not None:
+                    termination = restart_reason
+                    break
+                if branch_start >= options.max_arc_length:
+                    termination = TerminationReason.MAX_ARC_LENGTH
+                    break
+                continue
             if branch_end >= options.max_arc_length:
                 termination = TerminationReason.MAX_ARC_LENGTH
                 break
@@ -490,7 +591,15 @@ class FieldLineTracer:
             )
             parameters = parameters[parameters <= end_parameter]
         else:
-            parameters = solutions[-1].t
+            # Interface restarts split a branch into chunks; keep every chunk's
+            # solver points and drop each restart point, a hair past the event
+            # point that ends the chunk before it.
+            parameters = np.concatenate(
+                [
+                    solution.t if index == 0 else solution.t[1:]
+                    for index, solution in enumerate(solutions)
+                ]
+            )
 
         if parameters.size == 0 or not np.isclose(parameters[-1], end_parameter):
             parameters = np.append(parameters, end_parameter)
@@ -512,7 +621,12 @@ class FieldLineTracer:
                 sampled_points.append(np.asarray(interpolant(parameter), dtype=float))
             points = np.stack(sampled_points, axis=0)
         else:
-            points = np.asarray(solutions[-1].y.T, dtype=float)
+            points = np.concatenate(
+                [
+                    np.asarray(solution.y.T if index == 0 else solution.y.T[1:], dtype=float)
+                    for index, solution in enumerate(solutions)
+                ]
+            )
 
         magnitudes = np.linalg.norm(self.field.evaluate(points), axis=-1)
 
@@ -520,6 +634,8 @@ class FieldLineTracer:
             termination = TerminationReason.NONFINITE_FIELD
 
         message = solutions[-1].message
+        if stalled_restarts >= 3:
+            message = "the branch is trapped sliding along an interface"
         if termination is TerminationReason.NONFINITE_FIELD:
             message = "integration encountered a non-finite field value"
         elif termination is TerminationReason.CLOSED_LOOP:
@@ -620,6 +736,7 @@ def trace_field_line(
     options: TraceOptions | None = None,
     direction: TraceDirection | str = TraceDirection.BOTH,
     exclusions: Iterable[ExclusionRegion] = (),
+    interfaces: Iterable[ExclusionRegion] = (),
 ) -> TraceResult:
     """Convenience wrapper around `FieldLineTracer`."""
 
@@ -628,6 +745,7 @@ def trace_field_line(
         domain=domain,
         options=options,
         exclusions=exclusions,
+        interfaces=interfaces,
     ).trace(seed, direction=direction)
 
 

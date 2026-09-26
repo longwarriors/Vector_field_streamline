@@ -567,6 +567,143 @@ def test_bidirectional_closed_orbit_is_not_duplicated_in_merged_points() -> None
     np.testing.assert_allclose(result.arc_length[-1], 2.0 * np.pi, atol=3.0e-3)
 
 
+class _KinkedField(VectorField):
+    """Unit flow along +x outside the unit disk; (1, slope) inside it."""
+
+    def __init__(self, slope: float) -> None:
+        self.slope = slope
+
+    @property
+    def dimension(self) -> int:
+        return 2
+
+    def evaluate(self, points: ArrayLike) -> NDArray[np.float64]:
+        coordinates = np.asarray(points, dtype=float)
+        inside = np.einsum("...d,...d->...", coordinates, coordinates) < 1.0
+        values = np.zeros_like(coordinates)
+        values[..., 0] = 1.0
+        values[..., 1] = np.where(inside, self.slope, 0.0)
+        return values
+
+
+def _kinked_exit_height(seed_y: float, slope: float) -> float:
+    """Where a line entering the unit disk at height ``seed_y`` leaves it."""
+
+    entry_x = -np.sqrt(1.0 - seed_y**2)
+    # Inside: y = seed_y + slope (x - entry_x); solve x^2 + y^2 = 1 for the exit.
+    offset = seed_y - slope * entry_x
+    a = 1.0 + slope**2
+    b = 2.0 * slope * offset
+    c = offset**2 - 1.0
+    exit_x = (-b + np.sqrt(b * b - 4.0 * a * c)) / (2.0 * a)
+    return float(seed_y + slope * (exit_x - entry_x))
+
+
+def test_interface_restart_locates_the_kink_on_the_surface() -> None:
+    # With slope 1/4 the line leaves the disk on its right half, where the
+    # outer flow carries it away; the exit height is then exactly known.
+    field = _KinkedField(slope=0.25)
+    domain = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
+    interface = SphericalExclusion((0.0, 0.0), 1.0)
+    options = TraceOptions(max_arc_length=12.0, max_step=0.09, rtol=2.0e-6, atol=1.0e-8)
+    seed = np.array((-2.5, 0.3))
+    expected_exit = _kinked_exit_height(0.3, 0.25)
+
+    with_interface = FieldLineTracer(
+        field, domain=domain, options=options, interfaces=(interface,)
+    ).trace(seed, direction=TraceDirection.FORWARD).forward
+    without_interface = FieldLineTracer(field, domain=domain, options=options).trace(
+        seed, direction=TraceDirection.FORWARD
+    ).forward
+
+    assert with_interface.termination is TerminationReason.DOMAIN_EXIT
+    # The events put both crossing points on the circle; the remaining error
+    # is the local error of the one step that straddles the surface, which the
+    # error controller keeps at the tolerance scale.
+    radii = np.hypot(with_interface.points[:, 0], with_interface.points[:, 1])
+    assert np.count_nonzero(np.abs(radii - 1.0) < 1.0e-9) == 2
+    guarded_error = abs(with_interface.points[-1, 1] - expected_exit)
+    smeared_error = abs(without_interface.points[-1, 1] - expected_exit)
+    assert guarded_error < 1.0e-5
+    assert guarded_error < smeared_error
+
+
+def test_interface_sliding_contact_stops_instead_of_restarting_forever() -> None:
+    # With slope 1 the line leaves the disk on its upper-left arc, where the
+    # outer flow points straight back in: a sliding contact with no solution.
+    branch = trace_field_line(
+        _KinkedField(slope=1.0),
+        (-2.5, 0.3),
+        domain=Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0)),
+        options=TraceOptions(max_arc_length=12.0, max_step=0.09),
+        direction=TraceDirection.FORWARD,
+        interfaces=(SphericalExclusion((0.0, 0.0), 1.0),),
+    ).forward
+
+    assert branch.termination is TerminationReason.SOLVER_FAILURE
+    assert "sliding" in branch.message
+    assert np.hypot(*branch.points[-1]) == pytest.approx(1.0, abs=1.0e-9)
+    assert branch.points[-1, 1] == pytest.approx(_kinked_exit_height(0.3, 1.0), abs=1.0e-5)
+
+
+def test_interface_restart_ends_where_the_field_vanishes_beyond_the_surface() -> None:
+    field = _KinkedField(slope=0.0)
+
+    class _Dead(VectorField):
+        @property
+        def dimension(self) -> int:
+            return 2
+
+        def evaluate(self, points: ArrayLike) -> NDArray[np.float64]:
+            values = field.evaluate(points)
+            coordinates = np.asarray(points, dtype=float)
+            inside = np.einsum("...d,...d->...", coordinates, coordinates) < 1.0
+            values[inside] = 0.0
+            return values
+
+    branch = trace_field_line(
+        _Dead(),
+        (-2.0, 0.3),
+        domain=Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0)),
+        options=TraceOptions(max_arc_length=12.0, max_step=0.09),
+        direction=TraceDirection.FORWARD,
+        interfaces=(SphericalExclusion((0.0, 0.0), 1.0),),
+    ).forward
+
+    assert branch.termination is TerminationReason.NULL_FIELD
+    assert np.hypot(*branch.points[-1]) == pytest.approx(1.0, abs=1.0e-9)
+    assert branch.points[-1, 1] == pytest.approx(0.3, abs=1.0e-12)
+
+
+def test_interfaces_leave_lines_that_never_cross_them_bitwise_unchanged() -> None:
+    field = UniformField((1.0, 0.28))
+    domain = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
+    options = TraceOptions(max_arc_length=12.0, max_step=0.09, output_step=0.045)
+    seed = (-2.9999, -2.5)
+
+    plain = trace_field_line(field, seed, domain=domain, options=options)
+    guarded = trace_field_line(
+        field,
+        seed,
+        domain=domain,
+        options=options,
+        interfaces=(SphericalExclusion((2.0, 2.0), 0.5),),
+    )
+
+    assert plain.points.tobytes() == guarded.points.tobytes()
+    assert plain.forward is not None and guarded.forward is not None
+    assert plain.forward.nfev == guarded.forward.nfev
+    assert plain.forward.termination is guarded.forward.termination
+
+
+def test_tracer_rejects_interfaces_of_the_wrong_dimension() -> None:
+    with pytest.raises(ValueError, match="interface geometry"):
+        FieldLineTracer(
+            UniformField((1.0, 0.0)),
+            interfaces=(SphericalExclusion((0.0, 0.0, 0.0), 1.0),),
+        )
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
