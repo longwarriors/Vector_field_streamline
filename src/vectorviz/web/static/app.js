@@ -706,26 +706,22 @@ import {
       image.data[offset + 3] = color[3];
     }
     offscreenContext.putImageData(image, 0, 0);
-    extendIntoUncoloredTexels(offscreenContext, image.data, uncolored, scalar.nx, scalar.ny);
+    const source = uncolored.length
+      ? interpolateOverColoredNodes(image.data, scalar.nx, scalar.ny, samplesPerCell(scalar))
+      : offscreen;
 
     // Scalar nodes include both domain endpoints, so texel centres (i + 0.5)
     // must land on the plot edges: sample the source from the first to the
     // last texel centre instead of stretching whole texels across the plot.
     const { left, top, right, bottom } = state.plotRect;
     context.save();
-    // Texels with no coloured neighbour stay transparent; they lie inside
-    // hatched cells, and sit on the hatch grey rather than on white paper.
-    if (uncolored.length) {
-      context.fillStyle = CANVAS_THEME.hatch.base;
-      context.fillRect(left, top, right - left, bottom - top);
-    }
     context.imageSmoothingEnabled = true;
     context.drawImage(
-      offscreen,
+      source,
       0.5,
       0.5,
-      scalar.nx - 1,
-      scalar.ny - 1,
+      source.width - 1,
+      source.height - 1,
       left,
       top,
       right - left,
@@ -737,34 +733,67 @@ import {
     return cells;
   }
 
-  // Smoothing blends each coloured cell toward its uncoloured neighbours, and
-  // on this colormap any colour there reads as a weaker or a stronger field.
-  // Give each uncoloured texel the mean colour of its coloured 8-neighbours,
-  // so a coloured cell keeps its own colour up to the mask edge; hatching then
-  // covers the uncoloured cells. The raster in `data` itself is unchanged.
-  function extendIntoUncoloredTexels(target, data, uncolored, nx, ny) {
-    for (const index of uncolored) {
-      const i = index % nx;
-      const j = Math.floor(index / nx);
-      const sum = [0, 0, 0];
-      let count = 0;
-      for (let dj = -1; dj <= 1; dj += 1) {
-        for (let di = -1; di <= 1; di += 1) {
-          const ii = i + di;
-          const jj = j + dj;
-          if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
-          const offset = (jj * nx + ii) * 4;
-          if (data[offset + 3] === 0) continue;
-          sum[0] += data[offset];
-          sum[1] += data[offset + 1];
-          sum[2] += data[offset + 2];
-          count += 1;
-        }
+  // Samples per cell for the masked path: each spans about 2 device px, and
+  // at least 4 keep the smoothing between samples inside the uncoloured cells.
+  function samplesPerCell(scalar) {
+    const { left, top, right, bottom } = state.plotRect;
+    const cell = Math.max((right - left) / (scalar.nx - 1), (bottom - top) / (scalar.ny - 1));
+    return Math.min(16, Math.max(4, Math.ceil((cell * state.pixelRatio) / 2)));
+  }
+
+  // Smoothing the raw raster would blend each coloured cell toward its
+  // uncoloured neighbours, and on this colormap any colour there reads as a
+  // field value. Interpolate bilinearly over the coloured nodes only: each
+  // sample is the weight-normalised mean of the coloured corners of its cell,
+  // so no colour crosses into, out of or across an uncoloured node, and a
+  // sample whose weighted corners are all uncoloured stays transparent (it
+  // lies in a hatched cell). Where all four corners are coloured this is the
+  // ordinary bilinear value; drawImage then smooths between the samples.
+  function interpolateOverColoredNodes(data, nx, ny, factor) {
+    const width = (nx - 1) * factor + 1;
+    const height = (ny - 1) * factor + 1;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const target = canvas.getContext("2d");
+    const image = target.createImageData(width, height);
+    const out = image.data;
+    let weight = 0;
+    let red = 0;
+    let green = 0;
+    let blue = 0;
+    const add = (offset, corner) => {
+      if (corner === 0 || data[offset + 3] === 0) return;
+      weight += corner;
+      red += corner * data[offset];
+      green += corner * data[offset + 1];
+      blue += corner * data[offset + 2];
+    };
+    for (let row = 0; row < height; row += 1) {
+      const j = Math.min(Math.floor(row / factor), ny - 2);
+      const fy = row / factor - j;
+      for (let column = 0; column < width; column += 1) {
+        const i = Math.min(Math.floor(column / factor), nx - 2);
+        const fx = column / factor - i;
+        const corner = (j * nx + i) * 4;
+        weight = 0;
+        red = 0;
+        green = 0;
+        blue = 0;
+        add(corner, (1 - fx) * (1 - fy));
+        add(corner + 4, fx * (1 - fy));
+        add(corner + nx * 4, (1 - fx) * fy);
+        add(corner + nx * 4 + 4, fx * fy);
+        if (weight === 0) continue;
+        const offset = (row * width + column) * 4;
+        out[offset] = Math.round(red / weight);
+        out[offset + 1] = Math.round(green / weight);
+        out[offset + 2] = Math.round(blue / weight);
+        out[offset + 3] = 255;
       }
-      if (count === 0) continue;
-      target.fillStyle = `rgb(${sum.map((channel) => Math.round(channel / count)).join(", ")})`;
-      target.fillRect(i, j, 1, 1);
     }
+    target.putImageData(image, 0, 0);
+    return canvas;
   }
 
   // The nearest-node cell of a scalar sample, clipped to the plot.
@@ -801,7 +830,8 @@ import {
       context.lineTo(left + offset + height, top);
     }
     context.strokeStyle = CANVAS_THEME.hatch.line;
-    context.lineWidth = 1 / state.pixelRatio;
+    // One CSS px at every pixel ratio, so the hatching never thins out.
+    context.lineWidth = 1;
     context.stroke();
     context.restore();
   }

@@ -63,7 +63,9 @@ export const CANVAS_THEME = deepFreeze({
   // Cells that cannot be coloured: a mid neutral grey, at least 18 CIEDE2000
   // from every colormap colour (the ramp has chroma 30-46 at this lightness)
   // and 3.2 times as luminous as its maximum, so a hole reads as neither a
-  // weak nor the strongest field, crossed by ink hatching at 3:1.
+  // weak nor the strongest field. Hatch lines are 1 CSS px of 60% ink: 3.1:1
+  // against the base where a line covers a whole pixel; antialiased 45 deg
+  // lines at pixel ratio 1 show about 2.3:1.
   hatch: {
     base: "#a3a3a3",
     line: "rgba(28, 28, 30, 0.6)",

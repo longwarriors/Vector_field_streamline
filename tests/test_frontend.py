@@ -742,7 +742,18 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
             const unit = {type: 'linear', minimum: 0, maximum: 1};
             // A uniform field: the server widens vmax by 1e-12.
             const constant = resolveScale({
-              scale: 'linear', vmin: 1.038, vmax: 1.038 * (1 + 1e-12), values: [1.038],
+              scale: 'linear',
+              vmin: 1.038,
+              vmax: 1.038 * (1 + 1e-12),
+              values: [1.038, 1.038, null],
+              mask: [false, false, true],
+            });
+            const micro = resolveScale({
+              scale: 'linear', vmin: 1, vmax: 1.0000005, values: [1, 1.0000005],
+            });
+            const narrow = {type: 'linear', minimum: 1, maximum: 1.000000000001};
+            const constantOutside = resolveScale({
+              scale: 'linear', vmin: 2, vmax: 3, values: [1, 1],
             });
             return {
               scale,
@@ -754,11 +765,14 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
               ramp: Array.from({length: 257}, (_, i) => colorForScalar(i / 256, false, unit)),
               constant: colorForScalar(1.038, false, constant),
               middle: colorForScalar(0.5, false, unit),
+              micro: [1, 1.0000005].map((value) => normalizeScalar(value, micro)),
+              narrow: [0.1, 10].map((value) => normalizeScalar(value, narrow)),
+              constantOutside: normalizeScalar(1, constantOutside),
             };
         }"""
     )
 
-    assert result["scale"] == {"type": "log", "minimum": 1, "maximum": 10}
+    assert result["scale"] == {"type": "log", "minimum": 1, "maximum": 10, "constant": False}
     assert result["zero"] is None
     assert result["negative"] is None
     assert result["masked"][3] == 0
@@ -770,7 +784,12 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
     lightness = [_cie_lightness(rgba[:3]) for rgba in result["ramp"]]
     assert all(later <= earlier for earlier, later in pairwise(lightness)), lightness
     assert lightness[0] - lightness[-1] > 50
+    # Only a truly constant field inside the limits gets the middle colour:
+    # a real tiny variation keeps the full ramp and clipped values their ends.
     assert result["constant"] == result["middle"]
+    assert result["micro"] == [0, 1]
+    assert result["narrow"] == [0, 1]
+    assert result["constantOutside"] == 0
     assert page_errors == []
 
 
@@ -1282,16 +1301,16 @@ def test_colored_cells_keep_their_color_up_to_the_mask_edge(
     browser_page: tuple[Page, list[str]],
     frontend_url: str,
 ) -> None:
-    # Every coloured node is above vmax. Smoothing must not fade the cells
-    # beside the masked column toward the hatch grey: on this colormap the
-    # fade reads as a weaker field right next to a source.
+    # The masked column separates two constant regions, one at each end of
+    # the scale. Neither may fade toward the hatch grey (on this colormap
+    # that reads as a weaker field beside a source) or toward the other side.
     page, page_errors = browser_page
     scene = _browser_scene()
     scalar = scene["scalar"]
     metadata = scene["metadata"]
     assert isinstance(scalar, dict)
     assert isinstance(metadata, dict)
-    row = [20.0, 20.0, None, 20.0, 20.0]
+    row = [1.0, 1.0, None, 10.0, 10.0]
     scalar.update(
         {
             "nx": 5,
@@ -1308,7 +1327,7 @@ def test_colored_cells_keep_their_color_up_to_the_mask_edge(
         {"termination_counts": {}, "suppressed_count": 0, "rendered_line_count": 0}
     )
     _open_ready_scene(page, frontend_url, scene)
-    maximum = _colormap_ramp(page)[-1]
+    ramp = _colormap_ramp(page)
 
     # Nodes sit at x = -2, -0.5, 1, 2.5, 4; the masked cell spans 0.25-1.75.
     # These points lie in the coloured cells, off the integer grid lines.
@@ -1332,8 +1351,9 @@ def test_colored_cells_keep_their_color_up_to_the_mask_edge(
         }""",
         [-0.8, -0.3, 0.1, 1.9, 2.3, 2.8],
     )
-    for pixel in pixels:
-        assert max(abs(a - b) for a, b in zip(pixel, maximum, strict=True)) <= 3, pixels
+    expected = [ramp[0]] * 3 + [ramp[-1]] * 3
+    for pixel, colour in zip(pixels, expected, strict=True):
+        assert max(abs(a - b) for a, b in zip(pixel, colour, strict=True)) <= 3, pixels
     assert page_errors == []
 
 
@@ -1416,7 +1436,8 @@ def test_uncolored_cells_and_colorbar_extend_follow_scene_state(
     distance = min(max(abs(a - b) for a, b in zip(base, colour, strict=True)) for colour in ramp)
     assert distance >= 24, (base, distance)
     assert _srgb_luminance(base) > 2 * _srgb_luminance(ramp[-1]), base
-    assert (_srgb_luminance(base) + 0.05) / (_srgb_luminance(line) + 0.05) >= 1.8, (base, line)
+    # 1 CSS px lines of 60% ink measure about 2.3:1 at pixel ratio 1 (50% ink: 2.0).
+    assert (_srgb_luminance(base) + 0.05) / (_srgb_luminance(line) + 0.05) >= 2.1, (base, line)
     # The cell at x = 2.5 holds 20 > vmax: it shows the colormap maximum,
     # smoothed only toward the lighter x = 1 and x = 4 cells, and a stray
     # hatch line would pull a channel below the maximum's.

@@ -51,22 +51,18 @@ export function resolveScale(scalar) {
   if (!(maximum > minimum)) {
     maximum = minimum + Math.max(Math.abs(minimum) * 1e-6, 1e-12);
   }
-  return { type, minimum, maximum };
+  // Every coloured value is the same number, as in a uniform field.
+  const constant = Number.isFinite(dataMinimum) && dataMinimum === dataMaximum;
+  return { type, minimum, maximum, constant };
 }
-
-// A range this narrow relative to its values (the server widens a constant
-// field's range by 1e-12) holds a single value up to rounding: show it in the
-// middle colour instead of spreading noise over the ramp or painting the pale
-// floor, which would look like an empty plot.
-const FLAT_RELATIVE_SPAN = 1e-6;
 
 export function normalizeScalar(value, scale) {
   if (!Number.isFinite(value)) return null;
   if (scale.type === "log" && value <= 0) return null;
-  const span = scale.maximum - scale.minimum;
-  if (span <= FLAT_RELATIVE_SPAN * Math.max(Math.abs(scale.minimum), Math.abs(scale.maximum))) {
-    return 0.5;
-  }
+  // A constant field inside the colour limits has one value to show: the
+  // middle colour, not the pale floor, which would look like an empty plot.
+  // Values outside the limits keep their end colours.
+  if (scale.constant && value >= scale.minimum && value <= scale.maximum) return 0.5;
   if (scale.type === "log") {
     const minimum = Math.log10(scale.minimum);
     const maximum = Math.log10(scale.maximum);
