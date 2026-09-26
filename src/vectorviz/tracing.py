@@ -190,9 +190,16 @@ class FieldLineTracer:
     ``interfaces`` are surfaces across which the field is discontinuous, such
     as a material boundary, given as regions with a signed ``margin``. A line
     reaching one stops the solver on the surface and restarts a hair beyond
-    it along the local tangent, so the kink is located by an event instead
-    of being smeared over an adaptive step. A branch whose field vanishes or
-    is non-finite just beyond the surface ends there with that reason.
+    it along its approach direction, so the kink is located by an event
+    instead of being smeared over an adaptive step. Integration proceeds in
+    chunks no longer than the distance to the nearest interface, because a
+    unit-speed line cannot reach a surface before travelling that far; a
+    chunk therefore cannot enter and leave a surface unnoticed. The chunk
+    length has a floor of ``1e-4 * max_step``, so a grazing pass whose
+    chord inside the surface is shorter than that floor can still be
+    missed. A seed lying exactly on an interface is first moved a few ulps
+    along its field direction. A branch whose field vanishes or is
+    non-finite just beyond a surface ends there with that reason.
     """
 
     def __init__(
@@ -230,10 +237,27 @@ class FieldLineTracer:
         # Exactly what np.linalg.norm evaluates for a real vector.
         return vector, float(np.sqrt(vector.dot(vector)))
 
+    def _nudge_off_interfaces(
+        self, point: FloatArray, direction: FloatArray
+    ) -> FloatArray:
+        """Move ``point`` along ``direction`` until no interface margin is exactly zero."""
+
+        if not any(float(interface.margin(point)) == 0.0 for interface in self.interfaces):
+            return point
+        nudge = 64.0 * float(np.finfo(float).eps) * max(1.0, float(np.max(np.abs(point))))
+        candidate = point + nudge * direction
+        for _attempt in range(24):
+            if all(float(interface.margin(candidate)) != 0.0 for interface in self.interfaces):
+                break
+            nudge *= 2.0
+            candidate = point + nudge * direction
+        return candidate
+
     def _restart_beyond_interface(
         self,
         point: FloatArray,
         approach: FloatArray,
+        sign: float,
         crossed: list[tuple[ExclusionRegion, float]],
     ) -> tuple[FloatArray, TerminationReason | None]:
         """Step a hair past the interface just reached, along the approach chord.
@@ -249,7 +273,15 @@ class FieldLineTracer:
 
         options = self.options
         chord = float(np.sqrt(approach.dot(approach)))
-        direction = approach / chord if chord > 0.0 else approach
+        if chord > 0.0:
+            direction = approach / chord
+        else:
+            vector, magnitude = self._field_at(point)
+            if not np.all(np.isfinite(vector)) or not np.isfinite(magnitude):
+                return point, TerminationReason.NONFINITE_FIELD
+            if magnitude <= options.null_threshold:
+                return point, TerminationReason.NULL_FIELD
+            direction = sign * vector / magnitude
         nudge = 64.0 * float(np.finfo(float).eps) * max(1.0, float(np.max(np.abs(point))))
         candidate = point + nudge * direction
         for _attempt in range(24):
@@ -304,6 +336,25 @@ class FieldLineTracer:
                 TerminationReason.NULL_FIELD,
                 "the field direction is undefined at the seed",
             )
+        start_state = seed
+        if self.interfaces:
+            start_state = self._nudge_off_interfaces(seed, sign * seed_vector / seed_magnitude)
+            if start_state is not seed:
+                start_vector, start_magnitude = self._field_at(start_state)
+                if not np.all(np.isfinite(start_vector)) or not np.isfinite(start_magnitude):
+                    return self._branch_without_integration(
+                        seed,
+                        direction,
+                        TerminationReason.NONFINITE_FIELD,
+                        "the field is non-finite just beyond the interface at the seed",
+                    )
+                if start_magnitude <= options.null_threshold:
+                    return self._branch_without_integration(
+                        seed,
+                        direction,
+                        TerminationReason.NULL_FIELD,
+                        "the field vanishes just beyond the interface at the seed",
+                    )
 
         encountered_nonfinite = False
         # The solver evaluates the event functions at the point where it has
@@ -472,18 +523,21 @@ class FieldLineTracer:
             )
 
         solutions: list[Any] = []
+        restart_parameters: list[float] = []
+        interface_floor = 1.0e-4 * options.max_step
         branch_start = 0.0
-        branch_state = seed
+        branch_state = start_state
         closure_parameter: float | None = None
         termination: TerminationReason | None = None
         integration_first_step = options.first_step
         stalled_restarts = 0
         while branch_start < options.max_arc_length:
             branch_end = min(options.max_arc_length, branch_start + chunk_length)
-            interface_sides = [
-                math.copysign(1.0, float(interface.margin(branch_state)))
-                for interface in self.interfaces
-            ]
+            interface_margins = [float(interface.margin(branch_state)) for interface in self.interfaces]
+            interface_sides = [math.copysign(1.0, margin) for margin in interface_margins]
+            if interface_margins:
+                clearance = max(min(abs(margin) for margin in interface_margins), interface_floor)
+                branch_end = min(branch_end, branch_start + clearance)
             if integration_first_step is not None:
                 integration_first_step = min(
                     integration_first_step,
@@ -556,8 +610,9 @@ class FieldLineTracer:
                 crossing = np.asarray(solution.y[:, -1], dtype=float)
                 approach = crossing - np.asarray(solution.y[:, -2], dtype=float)
                 branch_state, restart_reason = self._restart_beyond_interface(
-                    crossing, approach, crossed
+                    crossing, approach, sign, crossed
                 )
+                restart_parameters.append(branch_start)
                 if restart_reason is not None:
                     termination = restart_reason
                     break
@@ -582,6 +637,10 @@ class FieldLineTracer:
             parameters = np.arange(0.0, end_parameter, options.output_step)
             if parameters.size == 0 or parameters[0] != 0.0:
                 parameters = np.insert(parameters, 0, 0.0)
+            crossings = [value for value in restart_parameters if 0.0 < value < end_parameter]
+            if crossings:
+                # The kinks themselves belong in the polyline, not only the grid samples.
+                parameters = np.unique(np.concatenate((parameters, np.asarray(crossings))))
         elif closure_enabled:
             parameters = np.concatenate(
                 [

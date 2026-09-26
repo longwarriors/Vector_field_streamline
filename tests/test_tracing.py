@@ -675,7 +675,79 @@ def test_interface_restart_ends_where_the_field_vanishes_beyond_the_surface() ->
     assert branch.points[-1, 1] == pytest.approx(0.3, abs=1.0e-12)
 
 
-def test_interfaces_leave_lines_that_never_cross_them_bitwise_unchanged() -> None:
+def test_seed_on_an_interface_starts_on_the_side_its_field_points_to() -> None:
+    # The outer flow at (-1, 0) points into the disk: the seed is moved a few
+    # ulps inside, the line refracts once on the way out and leaves the domain.
+    field = _KinkedField(slope=0.25)
+    domain = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
+    interface = SphericalExclusion((0.0, 0.0), 1.0)
+    options = TraceOptions(max_arc_length=12.0, max_step=0.09, rtol=2.0e-6, atol=1.0e-8)
+
+    branch = FieldLineTracer(field, domain=domain, options=options, interfaces=(interface,)).trace(
+        (-1.0, 0.0), direction=TraceDirection.FORWARD
+    ).forward
+
+    assert branch.termination is TerminationReason.DOMAIN_EXIT
+    assert "sliding" not in branch.message
+    assert np.hypot(*branch.points[0]) == pytest.approx(1.0, abs=1.0e-12)
+    assert branch.points[-1, 1] == pytest.approx(_kinked_exit_height(0.0, 0.25), abs=1.0e-5)
+    radii = np.hypot(branch.points[:, 0], branch.points[:, 1])
+    assert np.count_nonzero(np.abs(radii - 1.0) < 1.0e-9) == 2
+
+    class _Dead(VectorField):
+        @property
+        def dimension(self) -> int:
+            return 2
+
+        def evaluate(self, points: ArrayLike) -> NDArray[np.float64]:
+            values = field.evaluate(points)
+            coordinates = np.asarray(points, dtype=float)
+            values[np.einsum("...d,...d->...", coordinates, coordinates) < 1.0] = 0.0
+            return values
+
+    dead = FieldLineTracer(_Dead(), domain=domain, options=options, interfaces=(interface,)).trace(
+        (-1.0, 0.0), direction=TraceDirection.FORWARD
+    ).forward
+    assert dead.termination is TerminationReason.NULL_FIELD
+    assert dead.nfev == 0
+    np.testing.assert_array_equal(dead.points, [[-1.0, 0.0]])
+
+
+def test_shallow_grazing_entry_is_not_skipped() -> None:
+    # The line dips 1e-9 into the disk near its top: the chord inside is about
+    # 9e-5, far shorter than max_step, so step-end events alone would miss it.
+    field = _KinkedField(slope=-0.25)
+    domain = Domain(lower=(-3.0, -3.0), upper=(2.0, 3.0))
+    seed_y = 1.0 - 1.0e-9
+    options = TraceOptions(max_arc_length=9.0, max_step=0.07, rtol=2.0e-7, atol=1.0e-10)
+
+    branch = FieldLineTracer(
+        field, domain=domain, options=options, interfaces=(SphericalExclusion((0.0, 0.0), 1.0),)
+    ).trace((-2.0, seed_y), direction=TraceDirection.FORWARD).forward
+
+    assert branch.termination is TerminationReason.DOMAIN_EXIT
+    # The polyline goes inside exactly once (two side changes), and the exit
+    # height follows the refracted straight line through the dip.
+    inside = np.hypot(branch.points[:, 0], branch.points[:, 1]) < 1.0 - 1.0e-12
+    assert np.count_nonzero(np.diff(inside.astype(int)) != 0) == 2
+    assert branch.points[-1, 1] == pytest.approx(_kinked_exit_height(seed_y, -0.25), abs=1.0e-6)
+
+
+def test_dense_output_keeps_the_interface_crossing_points() -> None:
+    field = _KinkedField(slope=0.25)
+    domain = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
+    options = TraceOptions(max_arc_length=12.0, max_step=0.09, output_step=0.045)
+
+    branch = FieldLineTracer(
+        field, domain=domain, options=options, interfaces=(SphericalExclusion((0.0, 0.0), 1.0),)
+    ).trace((-2.5, 0.3), direction=TraceDirection.FORWARD).forward
+
+    radii = np.hypot(branch.points[:, 0], branch.points[:, 1])
+    assert np.count_nonzero(np.abs(radii - 1.0) < 1.0e-9) == 2
+    assert np.all(np.diff(branch.arc_length) > 0.0)
+
+
+def test_a_distant_interface_leaves_the_sampled_line_unchanged() -> None:
     field = UniformField((1.0, 0.28))
     domain = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
     options = TraceOptions(max_arc_length=12.0, max_step=0.09, output_step=0.045)
@@ -690,9 +762,10 @@ def test_interfaces_leave_lines_that_never_cross_them_bitwise_unchanged() -> Non
         interfaces=(SphericalExclusion((2.0, 2.0), 0.5),),
     )
 
+    # Registering a far-away interface only splits the integration into
+    # distance-limited chunks; the sampled points and the outcome are the same.
     assert plain.points.tobytes() == guarded.points.tobytes()
     assert plain.forward is not None and guarded.forward is not None
-    assert plain.forward.nfev == guarded.forward.nfev
     assert plain.forward.termination is guarded.forward.termination
 
 
