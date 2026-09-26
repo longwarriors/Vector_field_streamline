@@ -1,7 +1,8 @@
 /*
  * Light whiteboard theme. Every colour literal lives in :root. Scientific
- * colours (viridis, source markers) come from color-scale.js and
- * canvas-theme.js at runtime and are not duplicated here.
+ * colours (the lavender colormap, source markers) come from color-scale.js
+ * and canvas-theme.js at runtime and are not duplicated here; the legend
+ * tokens below mirror the canvas line and hatching.
  */
 :root {
   color-scheme: light;
@@ -28,14 +29,15 @@
   /* Brand yellow: only the highlighter under the wordmark, never near the plot. */
   --vv-brand: #ffd02f;
 
-  --vv-note-positive: #ffc6c6;
+  /* Pale versions of the canvas marker colours, so a note matches its source. */
+  --vv-note-positive: #fcd7e6;
   --vv-note-negative: #d6e9ff;
   --vv-note-dipole: #fff4c4;
-  --vv-note-wire: #ffe6cd;
-  --vv-note-guide: #c3faf5;
+  --vv-note-wire: #e4efd6;
+  --vv-note-guide: #ede7fb;
 
-  --vv-ok-bg: #c3faf5;
-  --vv-ok-fg: #187574;
+  --vv-ok-bg: #e4efd6;
+  --vv-ok-fg: #3b5a1e;
   --vv-busy-bg: #fff8e0;
   --vv-busy-fg: #746019;
   --vv-idle-bg: #f7f8fa;
@@ -45,10 +47,10 @@
   --vv-danger-bar: #b42318;
 
   --vv-scrim: rgba(255, 255, 255, 0.72);
-  --vv-legend-core: #ffffff;
-  --vv-legend-halo: rgba(0, 8, 12, 0.5);
+  --vv-legend-core: #1c1c1e;
+  --vv-legend-halo: rgba(255, 255, 255, 0.75);
   /* The canvas hatching for uncoloured cells, mirrored by the legend chip. */
-  --vv-hatch-base: #c7cad5;
+  --vv-hatch-base: #d9dade;
   --vv-hatch-line: rgba(28, 28, 30, 0.5);
   --vv-scroll-shadow: rgba(5, 0, 56, 0.18);
 
