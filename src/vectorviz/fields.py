@@ -877,6 +877,163 @@ class ChargedRingField(_CircularFilamentGeometry):
         return result.reshape(original_shape[:-1])
 
 
+class DielectricSphereField(VectorField):
+    r"""Electric field of a dielectric or conducting sphere in a uniform field.
+
+    ``applied_field`` is the uniform field far from the sphere, in V/m; the
+    sphere of ``radius`` metres centred at ``center`` has relative
+    permittivity ``relative_permittivity`` (at least 1), or ``math.inf`` for
+    a conductor. Inside the sphere the field is the uniform
+    :math:`3\mathbf E_0/(\varepsilon_r+2)`, zero for a conductor. Outside it
+    is :math:`\mathbf E_0` plus the field of the induced dipole
+    :math:`\mathbf p=4\pi\varepsilon_0a^3\alpha\mathbf E_0` with
+    :math:`\alpha=(\varepsilon_r-1)/(\varepsilon_r+2)`. The field is finite
+    everywhere: the tangential component is continuous across the surface
+    and the normal component jumps by the bound surface charge. Points on the
+    surface take the exterior value. The model is the classic boundary-value
+    solution and does not depend on ``permittivity`` of the surroundings
+    beyond the ratio ``relative_permittivity``.
+    """
+
+    def __init__(
+        self,
+        applied_field: ArrayLike,
+        radius: float,
+        center: ArrayLike = (0.0, 0.0, 0.0),
+        *,
+        relative_permittivity: float,
+    ) -> None:
+        applied = np.asarray(applied_field, dtype=float)
+        if applied.shape != (3,):
+            raise ValueError("applied_field must have shape (3,).")
+        if not np.all(np.isfinite(applied)):
+            raise ValueError("applied_field must be finite.")
+        magnitude = float(np.linalg.norm(applied))
+        if magnitude == 0.0:
+            raise ValueError("applied_field must be nonzero.")
+        radius_value = _finite_scalar(radius, "radius")
+        if radius_value <= 0.0:
+            raise ValueError("radius must be positive.")
+        center_value = np.asarray(center, dtype=float)
+        if center_value.shape != (3,):
+            raise ValueError("center must have shape (3,).")
+        if not np.all(np.isfinite(center_value)):
+            raise ValueError("center must be finite.")
+        permittivity_value = float(relative_permittivity)
+        if math.isnan(permittivity_value) or permittivity_value < 1.0:
+            raise ValueError("relative_permittivity must be at least 1, or inf for a conductor.")
+
+        self._applied = _readonly(applied)
+        self._magnitude = magnitude
+        self._axis = _readonly(applied / magnitude)
+        self._radius = radius_value
+        self._center = _readonly(center_value)
+        self._relative_permittivity = permittivity_value
+        if math.isinf(permittivity_value):
+            self._polarizability = 1.0
+            self._interior_factor = 0.0
+        else:
+            self._polarizability = (permittivity_value - 1.0) / (permittivity_value + 2.0)
+            self._interior_factor = 3.0 / (permittivity_value + 2.0)
+
+    @property
+    def dimension(self) -> int:
+        return 3
+
+    @property
+    def applied_field(self) -> FloatArray:
+        return self._applied
+
+    @property
+    def radius(self) -> float:
+        return self._radius
+
+    @property
+    def center(self) -> FloatArray:
+        return self._center
+
+    @property
+    def relative_permittivity(self) -> float:
+        return self._relative_permittivity
+
+    @property
+    def is_conductor(self) -> bool:
+        return math.isinf(self._relative_permittivity)
+
+    @property
+    def polarizability(self) -> float:
+        r"""The dimensionless :math:`\alpha=(\varepsilon_r-1)/(\varepsilon_r+2)`, 1 for a conductor."""
+
+        return self._polarizability
+
+    @property
+    def interior_field(self) -> FloatArray:
+        """The uniform field inside the sphere."""
+
+        return self._interior_factor * self._applied
+
+    def _geometry(self, points: ArrayLike) -> tuple[tuple[int, ...], FloatArray, FloatArray, FloatArray]:
+        coordinates = _as_points(points, 3)
+        original_shape = coordinates.shape
+        displacement = coordinates.reshape(-1, 3) - self._center
+        radius_squared = np.einsum("pd,pd->p", displacement, displacement)
+        axial = displacement @ self._axis
+        return original_shape, displacement, radius_squared, axial
+
+    def evaluate(self, points: ArrayLike) -> FloatArray:
+        original_shape, displacement, radius_squared, axial = self._geometry(points)
+        values = np.empty_like(displacement)
+        inside_mask = radius_squared < self._radius**2
+        inside = _selection(inside_mask)
+        if inside is not None:
+            values[inside] = self._interior_factor * self._applied
+        outside = _selection(~inside_mask)
+        if outside is not None:
+            r2 = radius_squared[outside]
+            r5 = r2**2.5
+            dipole_scale = self._polarizability * self._radius**3 * self._magnitude
+            projected = axial[outside]
+            values[outside] = self._applied + dipole_scale * (
+                3.0 * projected[:, np.newaxis] * displacement[outside] / r5[:, np.newaxis]
+                - self._axis / r2[:, np.newaxis] ** 1.5
+            )
+        return values.reshape(original_shape)
+
+    def flux_function(self, points: ArrayLike) -> FloatArray:
+        r"""Return the axisymmetric flux function of :math:`\mathbf D/\varepsilon_0`.
+
+        With :math:`\rho` the distance from the axis through the centre along
+        the applied field, the result is the flux of
+        :math:`\varepsilon_r\mathbf E` (inside) or :math:`\mathbf E` (outside)
+        through the coaxial disk of radius :math:`\rho`, divided by
+        :math:`2\pi`. Because the normal component of :math:`\mathbf D` is
+        continuous across a dielectric surface, this function is continuous
+        and its level sets in any plane through the axis are the field lines
+        of both :math:`\mathbf E` and :math:`\mathbf D`. For a conductor the
+        interior value is 0 and the function jumps at the surface, where the
+        lines end on free surface charge.
+        """
+
+        original_shape, _displacement, radius_squared, axial = self._geometry(points)
+        rho_squared = np.maximum(radius_squared - axial**2, 0.0)
+        inside_mask = radius_squared < self._radius**2
+        result = np.empty(radius_squared.size, dtype=float)
+        inside = _selection(inside_mask)
+        if inside is not None:
+            interior = 0.0 if self.is_conductor else self._relative_permittivity * self._interior_factor
+            result[inside] = 0.5 * interior * self._magnitude * rho_squared[inside]
+        outside = _selection(~inside_mask)
+        if outside is not None:
+            r3 = radius_squared[outside] ** 1.5
+            result[outside] = (
+                0.5
+                * self._magnitude
+                * rho_squared[outside]
+                * (1.0 + 2.0 * self._polarizability * self._radius**3 / r3)
+            )
+        return result.reshape(original_shape[:-1])
+
+
 class CompositeField(VectorField):
     """Weighted linear superposition of vector fields with equal dimension.
 
