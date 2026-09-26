@@ -83,7 +83,9 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     if (layers.lines) drawStreamlines({ arrows: layers.arrows });
     drawRegions();
     if (layers.sources) drawSources();
-    return { hatchVisible: layers.heatmap && hatchShowsBesideMarkers(uncoloredCells) };
+    return {
+      hatchVisible: layers.heatmap && hatchShowsBesideMarkers(uncoloredCells, layers.sources),
+    };
   }
 
   // The offscreen raster depends only on the scalar grid, the colour scale
@@ -275,11 +277,14 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     theme.marker.outerRingWidth / 2 +
     theme.hatch.spacing;
 
-  // The legend only names hatching that can be seen beside the markers.
-  function hatchShowsBesideMarkers(cells) {
-    const centres = view.scene.sources.map((source) =>
-      worldToCanvas(finiteNumber(source.x), finiteNumber(source.y)),
-    );
+  // The legend only names hatching that can be seen beside the markers; with
+  // the marker layer off nothing covers the hatching, so any cell counts.
+  function hatchShowsBesideMarkers(cells, markersDrawn = true) {
+    const centres = markersDrawn
+      ? view.scene.sources.map((source) =>
+          worldToCanvas(finiteNumber(source.x), finiteNumber(source.y)),
+        )
+      : [];
     return cells.some((cell) => {
       const corners = [
         [cell.left, cell.top],

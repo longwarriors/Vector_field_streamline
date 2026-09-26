@@ -540,8 +540,12 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       if (layer === "lines") chip.hidden = !layers.lines;
       if (layer === "arrows") chip.hidden = !layers.lines || !layers.arrows;
     });
-    elements.canvas.dataset.draggable = String(
-      sourcesDraggable() && state.scene.sources.length > 0,
+    const draggableSourceCount = sourcesDraggable() ? state.scene.sources.length : 0;
+    elements.canvas.dataset.draggable = String(draggableSourceCount > 0);
+    const title = state.scene.metadata.title || presetLabel(elements.preset.value);
+    elements.canvas.setAttribute(
+      "aria-label",
+      `${title}二维可视化，共 ${state.scene.metadata.rendered_line_count} 条场线、${draggableSourceCount} 个可移动场源。`,
     );
   }
 

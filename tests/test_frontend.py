@@ -800,6 +800,41 @@ def test_layer_toggles_redraw_without_requests_and_keep_readouts_honest(
 
 
 @pytest.mark.browser
+def test_hatch_legend_follows_the_markers_actually_drawn(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    # A fine grid puts the source's masked node entirely under its marker, so
+    # the hatch legend is off while the marker is drawn and on once the
+    # source layer hides the marker and exposes the hatching.
+    scene = _browser_scene()
+    scalar = scene["scalar"]
+    assert isinstance(scalar, dict)
+    nx = ny = 61
+    values: list[float | None] = [1.0 + (index % 7) for index in range(nx * ny)]
+    mask = [False] * (nx * ny)
+    column = round((1.0 - (-2.0)) / 6.0 * (nx - 1))
+    row = round((1.0 - (-1.0)) / 4.0 * (ny - 1))
+    mask[row * nx + column] = True
+    values[row * nx + column] = None
+    scalar.update({"nx": nx, "ny": ny, "values": values, "mask": mask})
+    _open_ready_scene(page := browser_page[0], frontend_url, scene)
+
+    expect(page.locator("#legend-uncolored")).to_be_hidden()
+    expect(page.locator("#field-canvas")).to_have_attribute(
+        "aria-label", "Browser fixture二维可视化，共 1 条场线、1 个可移动场源。"
+    )
+    page.locator('.layer-toggle[data-layer="sources"]').click()
+    expect(page.locator("#legend-uncolored")).to_be_visible()
+    expect(page.locator("#field-canvas")).to_have_attribute(
+        "aria-label", "Browser fixture二维可视化，共 1 条场线、0 个可移动场源。"
+    )
+    page.locator('.layer-toggle[data-layer="sources"]').click()
+    expect(page.locator("#legend-uncolored")).to_be_hidden()
+    assert browser_page[1] == []
+
+
+@pytest.mark.browser
 def test_region_circle_is_drawn_from_the_scene_payload(
     browser_page: tuple[Page, list[str]],
     frontend_url: str,
