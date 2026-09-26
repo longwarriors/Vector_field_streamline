@@ -53,6 +53,10 @@ SourcePayloadKind = Literal[
     "ring_charge",
 ]
 SourceStrengthUnit = Literal["nC", "A·m²", "A"]
+# The tracing domain is the fixed square [-3, 3] m (scene.DOMAIN); a manual
+# seed outside it could only terminate as seed_outside_domain.
+SEED_COORDINATE_LIMIT = 3.0
+MAX_MANUAL_SEEDS = 16
 
 
 class SeedMode(StrEnum):
@@ -124,6 +128,15 @@ class SourceInput(BaseModel):
         return self
 
 
+class SeedInput(BaseModel):
+    """A manual seed in Cartesian metres inside the tracing domain."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=-SEED_COORDINATE_LIMIT, le=SEED_COORDINATE_LIMIT)
+    y: float = Field(ge=-SEED_COORDINATE_LIMIT, le=SEED_COORDINATE_LIMIT)
+
+
 class SceneRequest(BaseModel):
     """Parameters that affect physical sampling and field-line tracing."""
 
@@ -133,6 +146,15 @@ class SceneRequest(BaseModel):
     density: int = Field(default=18, ge=6, le=40)
     resolution: int = Field(default=72, ge=32, le=144)
     sources: list[SourceInput] | None = Field(default=None, min_length=1, max_length=8)
+    seeds: list[SeedInput] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_MANUAL_SEEDS,
+        description=(
+            "Manual seeds traced in both directions in addition to the preset's budget; "
+            "each becomes at most one line flagged with its seed_index."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_source_override(self) -> "SceneRequest":
@@ -194,11 +216,35 @@ class ScalarPayload(_ResponsePayload):
         return self
 
 
+class VectorPayload(_ResponsePayload):
+    """In-plane field components on the scalar grid, named as quiver's U and V."""
+
+    nx: Annotated[StrictInt, Field(gt=0)]
+    ny: Annotated[StrictInt, Field(gt=0)]
+    u: list[FiniteFloat | None]
+    v: list[FiniteFloat | None]
+    label: str
+    unit: str
+
+    @model_validator(mode="after")
+    def validate_grid_contract(self) -> "VectorPayload":
+        expected_size = self.nx * self.ny
+        if len(self.u) != expected_size or len(self.v) != expected_size:
+            raise ValueError("vector component lengths must equal nx * ny")
+        if any((u is None) != (v is None) for u, v in zip(self.u, self.v, strict=True)):
+            raise ValueError("vector components must be null together")
+        return self
+
+
 class LinePayload(_ResponsePayload):
     points: list[tuple[FiniteFloat, FiniteFloat]] = Field(min_length=2)
     direction: Literal[-1, 1]
     termination: str = Field(min_length=1)
     start_termination: str | None = Field(default=None, min_length=1)
+    seed_index: Annotated[StrictInt, Field(ge=0)] | None = Field(
+        default=None,
+        description="Index into the request's seeds for a manually seeded line; absent otherwise.",
+    )
 
 
 class SourcePayload(_ResponsePayload):
@@ -277,11 +323,28 @@ class MetadataPayload(_ResponsePayload):
     start_termination_counts: dict[str, Annotated[StrictInt, Field(ge=0)]]
     suppressed_count: Annotated[StrictInt, Field(ge=0)]
     rendered_line_count: Annotated[StrictInt, Field(ge=0)]
+    # Manual seeds are accounted apart from the preset budget: every seed adds
+    # one end-side and one start-side reason here and none to the counts above.
+    manual_seed_count: Annotated[StrictInt, Field(ge=0)] = 0
+    manual_termination_counts: dict[str, Annotated[StrictInt, Field(ge=0)]] = Field(
+        default_factory=dict
+    )
+    manual_start_termination_counts: dict[str, Annotated[StrictInt, Field(ge=0)]] = Field(
+        default_factory=dict
+    )
+
+    @model_validator(mode="after")
+    def validate_manual_accounting(self) -> "MetadataPayload":
+        for name in ("manual_termination_counts", "manual_start_termination_counts"):
+            if sum(getattr(self, name).values()) != self.manual_seed_count:
+                raise ValueError(f"metadata {name} must sum to manual_seed_count")
+        return self
 
 
 class SceneResponse(_ResponsePayload):
     domain: DomainPayload
     scalar: ScalarPayload
+    vector: VectorPayload | None = None
     lines: list[LinePayload]
     sources: list[SourcePayload]
     regions: list[RegionPayload] = Field(default_factory=list)
@@ -291,6 +354,27 @@ class SceneResponse(_ResponsePayload):
     def validate_rendered_line_count(self) -> "SceneResponse":
         if self.metadata.rendered_line_count != len(self.lines):
             raise ValueError("metadata rendered_line_count must equal len(lines)")
+        return self
+
+    @model_validator(mode="after")
+    def validate_vector_matches_scalar_grid(self) -> "SceneResponse":
+        if self.vector is None:
+            return self
+        if (self.vector.nx, self.vector.ny) != (self.scalar.nx, self.scalar.ny):
+            raise ValueError("vector grid shape must equal the scalar grid shape")
+        if any(
+            (u is None) != masked for u, masked in zip(self.vector.u, self.scalar.mask, strict=True)
+        ):
+            raise ValueError("vector components must be null exactly where the scalar mask is true")
+        return self
+
+    @model_validator(mode="after")
+    def validate_manual_lines(self) -> "SceneResponse":
+        indices = [line.seed_index for line in self.lines if line.seed_index is not None]
+        if len(set(indices)) != len(indices):
+            raise ValueError("each manual seed may produce at most one line")
+        if any(index >= self.metadata.manual_seed_count for index in indices):
+            raise ValueError("line seed_index must be below metadata manual_seed_count")
         return self
 
 

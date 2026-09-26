@@ -38,9 +38,11 @@ from .schemas import (
     ScalarPayload,
     SceneRequest,
     SceneResponse,
+    SeedInput,
     SeedMode,
     SourceInput,
     SourcePayload,
+    VectorPayload,
 )
 from .seeding import (
     TraceJob,
@@ -220,6 +222,15 @@ class _SceneModel:
         """Return a compatibility snapshot of the planned seed coordinates."""
 
         return np.asarray([job.seed for job in self.trace_jobs], dtype=float).reshape(-1, 2)
+
+    @property
+    def vector_label(self) -> str:
+        """The field the scalar grid is the magnitude of: |E| -> E."""
+
+        label = self.scalar_label
+        if len(label) > 2 and label.startswith("|") and label.endswith("|"):
+            return label[1:-1]
+        return label
 
 
 def _charge(x: float, y: float, sign: int) -> SourceInput:
@@ -627,13 +638,16 @@ def _build_model(request: SceneRequest) -> _SceneModel:
     )
 
 
-def _sample_scalar(model: _SceneModel, resolution: int) -> ScalarPayload:
+def _sample_grid(model: _SceneModel, resolution: int) -> tuple[ScalarPayload, VectorPayload]:
+    """Sample the field once; the scalar grid is the magnitude of the vector grid."""
+
     x = np.linspace(DOMAIN.lower[0], DOMAIN.upper[0], resolution)
     # Canvas rows run from top to bottom, so y is sampled in descending order.
     y = np.linspace(DOMAIN.upper[1], DOMAIN.lower[1], resolution)
     xx, yy = np.meshgrid(x, y, indexing="xy")
     points = np.stack((xx, yy), axis=-1)
-    values = np.linalg.norm(model.field.evaluate(points), axis=-1)
+    field = model.field.evaluate(points)
+    values = np.linalg.norm(field, axis=-1)
     mask = ~np.isfinite(values)
     for exclusion in model.exclusions:
         mask |= exclusion.margin(points) <= 0.0
@@ -645,21 +659,34 @@ def _sample_scalar(model: _SceneModel, resolution: int) -> ScalarPayload:
         scale: Literal["linear", "log"] = "log" if vmax / vmin > 8.0 else "linear"
     else:
         vmin, vmax, scale = 0.0, 1.0, "linear"
-    serial_values = [
-        None if masked else float(value)
-        for value, masked in zip(values.ravel(), mask.ravel(), strict=True)
-    ]
-    return ScalarPayload(
+    flat_mask = mask.ravel()
+
+    def serialize(component: NDArray[np.float64]) -> list[float | None]:
+        return [
+            None if masked else float(value)
+            for value, masked in zip(component.ravel(), flat_mask, strict=True)
+        ]
+
+    scalar = ScalarPayload(
         nx=resolution,
         ny=resolution,
-        values=serial_values,
-        mask=mask.ravel().tolist(),
+        values=serialize(values),
+        mask=flat_mask.tolist(),
         scale=scale,
         label=model.scalar_label,
         unit=model.scalar_unit,
         vmin=vmin,
         vmax=vmax,
     )
+    vector = VectorPayload(
+        nx=resolution,
+        ny=resolution,
+        u=serialize(field[..., 0]),
+        v=serialize(field[..., 1]),
+        label=model.vector_label,
+        unit=model.scalar_unit,
+    )
+    return scalar, vector
 
 
 @dataclass(frozen=True, slots=True)
@@ -742,12 +769,24 @@ class _TraceCache:
 
 
 _TRACE_CACHE = _TraceCache(TRACE_CACHE_MAX_ENTRIES, TRACE_CACHE_MAX_BYTES)
+_EMPTY_SUMMARY = _TraceSummary(
+    lines=[],
+    termination_counts=Counter(),
+    start_termination_counts=Counter(),
+    suppressed_count=0,
+)
 
 
 def _trace_cache_key(request: SceneRequest) -> str:
-    """Everything in the request except the sampling resolution."""
+    """Everything the preset's lines depend on: the request minus resolution and seeds."""
 
-    return request.model_dump_json(exclude={"resolution"})
+    return request.model_dump_json(exclude={"resolution", "seeds"})
+
+
+def _manual_cache_key(request: SceneRequest) -> str:
+    """The manual lines depend on the seeds too, but still not on the resolution."""
+
+    return "manual:" + request.model_dump_json(exclude={"resolution"})
 
 
 def _trace_branches(
@@ -794,14 +833,56 @@ def _is_source_kind(model: _SceneModel, index: int | None, kind: str) -> bool:
     return index is not None and 0 <= index < len(model.sources) and model.sources[index].kind == kind
 
 
-def _trace_lines(model: _SceneModel) -> _TraceSummary:
-    tracer = FieldLineTracer(
+def _make_tracer(model: _SceneModel) -> FieldLineTracer:
+    return FieldLineTracer(
         model.field,
         domain=DOMAIN,
         options=model.trace_options,
         exclusions=model.exclusions,
         interfaces=model.interfaces,
     )
+
+
+def _trace_manual_lines(model: _SceneModel, seeds: list[SeedInput]) -> _TraceSummary:
+    """Trace each manual seed in both directions with the preset's tracer settings.
+
+    Manual lines are neither budgeted nor suppressed: a seed inside an
+    exclusion disc or a zero-field region yields a one-point result and is
+    accounted only in the manual termination counts.
+    """
+
+    tracer = _make_tracer(model)
+    terminations: Counter[str] = Counter()
+    start_terminations: Counter[str] = Counter()
+    lines: list[LinePayload] = []
+    for index, seed in enumerate(seeds):
+        result = tracer.trace(np.array((seed.x, seed.y), dtype=float), direction=TraceDirection.BOTH)
+        branch, start_branch = _trace_branches(result, TraceDirection.BOTH)
+        assert start_branch is not None
+        terminations[branch.termination.value] += 1
+        start_terminations[start_branch.termination.value] += 1
+        points = result.points[np.all(np.isfinite(result.points), axis=1)]
+        if points.shape[0] < 2:
+            continue
+        lines.append(
+            LinePayload(
+                points=[(float(point[0]), float(point[1])) for point in points],
+                direction=1,
+                termination=branch.termination.value,
+                start_termination=start_branch.termination.value,
+                seed_index=index,
+            )
+        )
+    return _TraceSummary(
+        lines=lines,
+        termination_counts=terminations,
+        start_termination_counts=start_terminations,
+        suppressed_count=0,
+    )
+
+
+def _trace_lines(model: _SceneModel) -> _TraceSummary:
+    tracer = _make_tracer(model)
     terminations: Counter[str] = Counter()
     start_terminations: Counter[str] = Counter()
     candidates: list[_TraceCandidate] = []
@@ -895,6 +976,20 @@ def build_scene(request: SceneRequest) -> SceneResponse:
     if traces is None:
         traces = _trace_lines(model)
         _TRACE_CACHE.put(cache_key, traces)
+    manual = _EMPTY_SUMMARY
+    if request.seeds:
+        manual_key = _manual_cache_key(request)
+        cached_manual = _TRACE_CACHE.get(manual_key)
+        if cached_manual is None:
+            cached_manual = _trace_manual_lines(model, request.seeds)
+            _TRACE_CACHE.put(manual_key, cached_manual)
+        manual = cached_manual
+    scalar, vector = _sample_grid(model, request.resolution)
+    # Copy each cached line and its point list; the points are tuples.
+    lines = [
+        line.model_copy(update={"points": list(line.points)})
+        for line in (*traces.lines, *manual.lines)
+    ]
     return SceneResponse(
         domain=DomainPayload(
             x=(float(DOMAIN.lower[0]), float(DOMAIN.upper[0])),
@@ -902,9 +997,9 @@ def build_scene(request: SceneRequest) -> SceneResponse:
             coordinate_system="cartesian",
             unit="m",
         ),
-        scalar=_sample_scalar(model, request.resolution),
-        # Copy each cached line and its point list; the points are tuples.
-        lines=[line.model_copy(update={"points": list(line.points)}) for line in traces.lines],
+        scalar=scalar,
+        vector=vector,
+        lines=lines,
         sources=list(model.sources),
         regions=list(model.regions),
         metadata=MetadataPayload(
@@ -916,7 +1011,10 @@ def build_scene(request: SceneRequest) -> SceneResponse:
             termination_counts=dict(traces.termination_counts),
             start_termination_counts=dict(traces.start_termination_counts),
             suppressed_count=traces.suppressed_count,
-            rendered_line_count=len(traces.lines),
+            rendered_line_count=len(lines),
+            manual_seed_count=len(request.seeds or ()),
+            manual_termination_counts=dict(manual.termination_counts),
+            manual_start_termination_counts=dict(manual.start_termination_counts),
         ),
     )
 

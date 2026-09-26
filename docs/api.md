@@ -240,7 +240,8 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
   "sources": [
     {"x": -1.0, "y": 0.0, "kind": "positive", "strength": 1.0},
     {"x": 1.0, "y": 0.0, "kind": "negative", "strength": -5.0}
-  ]
+  ],
+  "seeds": [{"x": 0.0, "y": 1.2}]
 }
 ```
 
@@ -250,8 +251,9 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 |---|---:|---|
 | `preset` | 否 | `/api/presets` 返回的稳定标识符；默认 `electric_dipole` |
 | `density` | 否 | 种子总预算，整数范围 6–40，默认 18，不代表物理场强；每个参与播种的源至少分配 1 个种子 |
-| `resolution` | 否 | 两个方向共同使用的标量网格分辨率，整数范围 32–144 |
+| `resolution` | 否 | 两个方向共同使用的标量与向量网格分辨率，整数范围 32–144 |
 | `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；电四极子、六个正电荷和三对交替电荷预设接受 1–8 个任意符号的电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及固定的 `current_loop`/`charged_ring`/`dielectric_sphere`/`conducting_sphere`/`uniform` 预设 override 会被拒绝 |
+| `seeds` | 否 | 1–16 个手动种子 `{x, y}`，坐标单位 m、范围 $[-3,3]$（即计算域）；每个种子在预设预算之外双向追踪一次，所有预设都接受；显式空列表、未知字段和越界坐标会被拒绝 |
 
 `sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m，范围均为 $[-2.8,2.8]$。请求模型 `SourceInput.kind` 只接受 `positive`、`negative`、`dipole`、`uniform`；响应专用的 `wire_out`/`wire_into`/`ring_charge` 不能提交。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。单位由预设决定，请求不得提交 `strength_unit`。
 
@@ -285,11 +287,17 @@ $$
 
 每个 job 无论是否最终渲染，都恰好给 `metadata.termination_counts` 的一个原因加 1，所以 `sum(termination_counts.values()) == density`。对 `BOTH` job，`termination` 和 `termination_counts` 记录点序末端的正向分支，`start_termination` 与 `start_termination_counts` 另记点序起点的反向分支；非双向场景的起点端统计为空对象。双向曲线的点始终从反向端经过种子排到正向端，因此 `direction` 为 `1`。
 
-电荷场会先完成全部 job，再按实际终止源对去重。若某条可渲染正电荷 $P\to N$ 轨迹已出现，随后终止于同一 $P$ 的负电荷反向 $N\to P$ 轨迹会被抑制；没有正向代表的源对以及负源到计算域边界的轨迹都保留。这里不做浮点几何相似判定。`suppressed_count` 记录被抑制的可渲染轨迹数，`rendered_line_count` 精确等于 `len(lines)`；若还存在不足两个有限点的退化结果，则 `rendered_line_count + suppressed_count <= density`。
+电荷场会先完成全部 job，再按实际终止源对去重。若某条可渲染正电荷 $P\to N$ 轨迹已出现，随后终止于同一 $P$ 的负电荷反向 $N\to P$ 轨迹会被抑制；没有正向代表的源对以及负源到计算域边界的轨迹都保留。这里不做浮点几何相似判定。`suppressed_count` 记录被抑制的可渲染轨迹数，`rendered_line_count` 精确等于 `len(lines)`；若还存在不足两个有限点的退化结果，则 `rendered_line_count + suppressed_count <= density`（带手动种子时上界加上 `manual_seed_count`）。
 
 固定回归场景 $+1\ \mathrm{nC}$（$x=-0.85$ m）、$-5\ \mathrm{nC}$（$x=0.85$ m）、`density=18` 会分配 4 个正向和 14 个反向 job。实际终止为 8 次 `exclusion_hit`（3 条 $P\to N$ 加 5 条 $N\to P$）、1 次 `null_field` 与 9 次 `domain_exit`：从正电荷背向负电荷出发的那条轴线在 $x=-0.85\,(1+\sqrt5)/(\sqrt5-1)\approx-2.225$ m 的真实零场点停止。去重只抑制 5 条返线，故最终 `suppressed_count=5`、`rendered_line_count=13`。九条从边界进入负源的线全部保留。
 
-成功响应结构如下。为便于阅读，示意片段把网格缩成 $2\times2$，并只展示渲染轨迹中的 1 条；实际端点接受的 `resolution` 不低于 32，数组会相应更长。
+#### 手动种子 { #manual-seeds }
+
+`seeds` 列出的每个点都用该预设的追踪器设置（同样的容差、排除区、界面与零场阈值）**双向**追踪一次，结果按种子顺序追加在预设线之后，并带 `seed_index`（请求中的 0-based 下标）；预设线不带这个字段。手动线的点序从反向端经种子到正向端，`direction` 为 `1`，`termination` 与 `start_termination` 都存在，种子本身是点列中的一个点。手动种子**不占** `density` 预算，也不参加电荷场的返线抑制：`termination_counts` 之和仍等于 `density`，手动线的两端原因另记在 `metadata.manual_termination_counts` 与 `metadata.manual_start_termination_counts`，二者之和都等于 `manual_seed_count`（即请求的种子数）。落在排除区内、导体球内或零场点上的种子只得到一个点，不产生线，但仍计入手动终止统计（例如 `exclusion_hit` 或 `null_field`），所以 `rendered_line_count + suppressed_count <= density + manual_seed_count`。
+
+同一场景与预算下，预设线的追踪结果与不带 `seeds` 的请求相同并共用缓存；手动线按种子列表另行缓存，改分辨率时二者都不重算。
+
+成功响应结构如下。为便于阅读，示意片段把网格缩成 $2\times2$，并只展示渲染轨迹中的 1 条预设线与 1 条手动线；实际端点接受的 `resolution` 不低于 32，数组会相应更长。
 
 ```json
 {
@@ -310,11 +318,26 @@ $$
     "vmin": 0.01,
     "vmax": 10.0
   },
+  "vector": {
+    "nx": 2,
+    "ny": 2,
+    "u": [0.12, null, -12.4, 0.17],
+    "v": [-0.09, null, 1.6, 0.06],
+    "label": "E",
+    "unit": "V/m"
+  },
   "lines": [
     {
       "points": [[-1.8, 0.2], [-1.7, 0.21]],
       "direction": 1,
       "termination": "domain_exit"
+    },
+    {
+      "points": [[-0.4, 3.0], [0.0, 1.2], [0.5, 0.36]],
+      "direction": 1,
+      "termination": "exclusion_hit",
+      "start_termination": "domain_exit",
+      "seed_index": 0
     }
   ],
   "regions": [],
@@ -343,7 +366,10 @@ $$
     "termination_counts": {"exclusion_hit": 8, "null_field": 1, "domain_exit": 9},
     "start_termination_counts": {},
     "suppressed_count": 5,
-    "rendered_line_count": 13
+    "rendered_line_count": 14,
+    "manual_seed_count": 1,
+    "manual_termination_counts": {"exclusion_hit": 1},
+    "manual_start_termination_counts": {"domain_exit": 1}
   }
 }
 ```
@@ -363,9 +389,19 @@ $$
 
 `vmin`/`vmax` 只控制颜色归一化；探针和数据消费者仍读取 `values` 的原值，即使它低于 `vmin` 或高于 `vmax`。对数尺度不能显示的非正值由显示层标为未着色（浏览器画成灰底斜线），不得改写成任意小正数；它们若本身有限，也仍是未遮罩原值。
 
+#### `vector` { #vector }
+
+与标量网格同一次求值得到的面内场分量，可选字段，当前服务端总是返回：
+
+- `nx`、`ny` 与 `scalar` 相同，排列方式也相同（第 0 行对应 `ymax`，每行从 `xmin` 到 `xmax`）；
+- `u`、`v` 分别是 $x$、$y$ 分量（沿用 matplotlib `quiver(X, Y, U, V)` 的命名），是未裁剪的 float64 原值，`null` 的位置与 `scalar.mask` 逐项一致，二者必须同时为 `null`；
+- `label` 是场的名字（`E` 或 `B`），`unit` 是分量单位，与 `scalar.unit` 相同；当前 `scalar` 就是这个场的模长，`scalar.label` 为 `|E|`/`|B|`，$\sqrt{u^2+v^2}$ 与 `scalar.values` 只差浮点舍入。
+
+导体球内部是真实的零场：`u`、`v` 为 `0.0`，不是 `null`。浏览器用这份网格画无向的斜率短线、在探针里显示方向角，并在光标周围用双线性插值加 RK4 画预览束；预览只是网格插值，不是服务端积分，点击后才把种子交给服务端得到精确线（见[手动种子](#manual-seeds)）。缺少这一字段的旧响应仍然有效，只是没有这些显示。
+
 #### `lines`
 
-每条线是按轨迹顺序排列的坐标点。`direction` 为 `1` 或 `-1`，表示点序相对场方向；`termination` 记录点序末端采用的主分支终止原因。`start_termination` 是可选的加法字段，只在双向轨迹中记录点序起点端的反向分支原因。方向元数据不是要求前端把点序颠倒。后续可以增加场强和弧长，但客户端应忽略未知字段以保持向前兼容。
+每条线是按轨迹顺序排列的坐标点。`direction` 为 `1` 或 `-1`，表示点序相对场方向；`termination` 记录点序末端采用的主分支终止原因。`start_termination` 是可选的加法字段，只在双向轨迹中记录点序起点端的反向分支原因。方向元数据不是要求前端把点序颠倒。`seed_index` 只出现在[手动种子](#manual-seeds)的线上，是请求 `seeds` 中的 0-based 下标；预设线没有这个字段。后续可以增加场强和弧长，但客户端应忽略未知字段以保持向前兼容。
 
 #### `sources`
 
@@ -398,7 +434,7 @@ $$
 
 `field_model`、`seed_mode`、`seed_description` 与各项计数都是前端直接展示的科学解释。`seed_mode` 是 `coverage`、`equal_flux`、`feature` 三值枚举；`seed_description` 是不可为空的具体说明。当前没有预设使用 `feature`，它为将来从临界点、分离线等特征位置出发的策略保留。兼容客户端对未来未知 mode 应原样显示，而不是拒绝场景；v0.3.0 前缓存的自由文本 `seed_mode` 在缺少说明时也可原样展示。终止原因使用 `TerminationReason` 的字符串值；客户端可翻译已知值，但遇到未知键必须原样显示。
 
-`termination_counts` 表示所有 job 的末端/主分支原因，和恒等于 `density`；`start_termination_counts` 只汇总 `BOTH` job 的起点端原因，和等于双向 job 数。`suppressed_count` 是已计算但因电荷源对已有正向代表而未画出的可渲染线数，`rendered_line_count` 是实际响应线数。抑制不从尝试预算或终止统计中扣除。
+`termination_counts` 表示预设 job 的末端/主分支原因，和恒等于 `density`；`start_termination_counts` 只汇总预设 `BOTH` job 的起点端原因，和等于双向 job 数。`suppressed_count` 是已计算但因电荷源对已有正向代表而未画出的可渲染线数，`rendered_line_count` 是实际响应线数（含手动线）。抑制不从尝试预算或终止统计中扣除。`manual_seed_count`、`manual_termination_counts` 与 `manual_start_termination_counts` 只统计[手动种子](#manual-seeds)：没有 `seeds` 的请求返回 `0` 与两个空对象。
 
 源拖动期间，屏幕上的源位置已经变化而服务端场仍属于上一次请求。浏览器此时只保留坐标网格和新源位置，隐藏旧热图、色标与场线并标记“场待重算”；松开指针后只提交一次最终位置。数值编辑发生源间距冲突时回滚且不发场景请求。这个 UI 状态约束不改变 `POST /api/scene`：服务端仍会独立验证每个请求。
 

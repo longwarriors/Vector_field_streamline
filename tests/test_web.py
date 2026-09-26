@@ -33,7 +33,7 @@ from vectorviz.web.scene import (
     _PlanarMeridionalField,
     build_scene,
 )
-from vectorviz.web.schemas import SceneRequest, SeedMode, SourceInput, SourcePayload
+from vectorviz.web.schemas import SceneRequest, SeedInput, SeedMode, SourceInput, SourcePayload
 from vectorviz.web.seeding import TraceJob, allocate_seed_counts
 
 
@@ -120,7 +120,7 @@ def test_scene_scalar_preserves_unclipped_finite_values() -> None:
     resolution = 80
     model = _build_model(SceneRequest(preset="electric_dipole", density=6, resolution=resolution))
 
-    scalar = web_scene._sample_scalar(model, resolution)
+    scalar, _vector = web_scene._sample_grid(model, resolution)
     x = np.linspace(web_scene.DOMAIN.lower[0], web_scene.DOMAIN.upper[0], resolution)
     y = np.linspace(web_scene.DOMAIN.upper[1], web_scene.DOMAIN.lower[1], resolution)
     xx, yy = np.meshgrid(x, y, indexing="xy")
@@ -2354,3 +2354,260 @@ def test_source_input_after_validator_guards_attribute_based_inputs() -> None:
             SimpleNamespace(x=0.0, y=0.0, kind="positive", strength=1.0, angle_deg=5.0),
             from_attributes=True,
         )
+
+
+def _grid_points(resolution: int) -> np.ndarray:
+    x = np.linspace(web_scene.DOMAIN.lower[0], web_scene.DOMAIN.upper[0], resolution)
+    y = np.linspace(web_scene.DOMAIN.upper[1], web_scene.DOMAIN.lower[1], resolution)
+    xx, yy = np.meshgrid(x, y, indexing="xy")
+    return np.stack((xx, yy), axis=-1)
+
+
+def _dense(values: list[float | None], resolution: int) -> np.ndarray:
+    return np.array([np.nan if value is None else value for value in values], dtype=float).reshape(
+        resolution, resolution
+    )
+
+
+@pytest.mark.parametrize(
+    "preset",
+    ["electric_dipole", "halbach_array", "current_loop", "dielectric_sphere", "conducting_sphere"],
+)
+def test_vector_grid_carries_the_in_plane_components_behind_the_scalar(preset: str) -> None:
+    resolution = 40
+    request = SceneRequest(preset=preset, density=6, resolution=resolution)  # type: ignore[arg-type]
+    model = _build_model(request)
+    scene = build_scene(request)
+    vector = scene.vector
+
+    assert vector is not None
+    assert (vector.nx, vector.ny) == (scene.scalar.nx, scene.scalar.ny) == (resolution, resolution)
+    assert vector.unit == scene.scalar.unit
+    assert scene.scalar.label == f"|{vector.label}|"
+    assert [component is None for component in vector.u] == scene.scalar.mask
+    assert [component is None for component in vector.v] == scene.scalar.mask
+
+    # The components are the same evaluation the scalar was taken from, so
+    # they match the field exactly and their length matches |F| to rounding.
+    expected = model.field.evaluate(_grid_points(resolution))
+    mask = np.asarray(scene.scalar.mask).reshape(resolution, resolution)
+    u = _dense(vector.u, resolution)
+    v = _dense(vector.v, resolution)
+    np.testing.assert_array_equal(u[~mask], expected[..., 0][~mask])
+    np.testing.assert_array_equal(v[~mask], expected[..., 1][~mask])
+    magnitudes = _dense(scene.scalar.values, resolution)
+    np.testing.assert_allclose(np.hypot(u[~mask], v[~mask]), magnitudes[~mask], rtol=1e-14, atol=0.0)
+    if preset == "conducting_sphere":
+        # The conductor's interior is a real zero field, not a masked hole.
+        inside = np.hypot(*np.moveaxis(_grid_points(resolution), -1, 0)) < 0.9
+        assert not np.any(mask[inside])
+        assert np.all(u[inside] == 0.0) and np.all(v[inside] == 0.0)
+
+
+def test_vector_grid_is_encoded_with_nulls_aligned_to_the_mask(client: TestClient) -> None:
+    response = client.post(
+        "/api/scene",
+        json={"preset": "electric_dipole", "density": 6, "resolution": 32},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    vector = payload["vector"]
+    mask = payload["scalar"]["mask"]
+
+    assert (vector["nx"], vector["ny"], vector["label"], vector["unit"]) == (32, 32, "E", "V/m")
+    assert any(mask)
+    for component in ("u", "v"):
+        assert len(vector[component]) == 32 * 32
+        assert all(
+            masked is (value is None) for value, masked in zip(vector[component], mask, strict=True)
+        )
+    assert payload["metadata"]["manual_seed_count"] == 0
+    assert payload["metadata"]["manual_termination_counts"] == {}
+    assert payload["metadata"]["manual_start_termination_counts"] == {}
+    assert all("seed_index" not in line for line in payload["lines"])
+
+
+def test_vector_payload_rejects_misaligned_components() -> None:
+    accepted = web_schemas.VectorPayload(
+        nx=2, ny=1, u=[1.0, None], v=[0.5, None], label="F", unit="u"
+    )
+    assert accepted.u == [1.0, None]
+    for invalid in (
+        {"u": [1.0], "v": [0.5, None]},
+        {"u": [1.0, None], "v": [0.5]},
+        {"u": [1.0, None], "v": [None, 0.5]},
+        {"u": [1.0, float("nan")], "v": [0.5, 0.5]},
+    ):
+        with pytest.raises(ValueError):
+            web_schemas.VectorPayload(nx=2, ny=1, label="F", unit="u", **invalid)
+
+    scene = build_scene(SceneRequest(preset="uniform", density=6, resolution=32)).model_dump(
+        mode="json"
+    )
+    assert scene["vector"] is not None
+    misaligned = json.loads(json.dumps(scene))
+    misaligned["vector"]["u"][0] = None
+    misaligned["vector"]["v"][0] = None
+    with pytest.raises(ValueError, match="null exactly where the scalar mask"):
+        web_schemas.SceneResponse.model_validate(misaligned)
+    wrong_shape = json.loads(json.dumps(scene))
+    wrong_shape["vector"].update({"nx": 16, "ny": 64})
+    with pytest.raises(ValueError, match="vector grid shape"):
+        web_schemas.SceneResponse.model_validate(wrong_shape)
+    # An older server omits the field entirely; that stays a valid scene.
+    without_vector = json.loads(json.dumps(scene))
+    del without_vector["vector"]
+    assert web_schemas.SceneResponse.model_validate(without_vector).vector is None
+
+
+def test_manual_seeds_add_bidirectional_lines_after_the_preset_lines(client: TestClient) -> None:
+    base = {"preset": "electric_dipole", "density": 8, "resolution": 32}
+    plain = build_scene(SceneRequest(**base))
+    # The second seed sits inside the positive charge's exclusion disc.
+    seeds = [SeedInput(x=0.0, y=1.2), SeedInput(x=-0.85, y=0.05), SeedInput(x=2.5, y=-2.0)]
+    seeded = build_scene(SceneRequest(**base, seeds=seeds))
+
+    assert seeded.lines[: len(plain.lines)] == plain.lines
+    assert seeded.metadata.termination_counts == plain.metadata.termination_counts
+    assert seeded.metadata.start_termination_counts == plain.metadata.start_termination_counts
+    assert seeded.metadata.suppressed_count == plain.metadata.suppressed_count
+    assert sum(seeded.metadata.termination_counts.values()) == 8
+
+    manual = seeded.lines[len(plain.lines) :]
+    assert [line.seed_index for line in manual] == [0, 2]
+    assert all(line.direction == 1 and line.start_termination for line in manual)
+    for line, seed in zip(manual, (seeds[0], seeds[2]), strict=True):
+        assert min(math.hypot(x - seed.x, y - seed.y) for x, y in line.points) <= 1e-12
+    assert seeded.metadata.manual_seed_count == 3
+    assert sum(seeded.metadata.manual_termination_counts.values()) == 3
+    assert sum(seeded.metadata.manual_start_termination_counts.values()) == 3
+    assert seeded.metadata.manual_termination_counts["exclusion_hit"] >= 1
+    assert seeded.metadata.rendered_line_count == len(seeded.lines) == len(plain.lines) + 2
+
+    response = client.post("/api/scene", json={**base, "seeds": [{"x": 0.0, "y": 1.2}]})
+    assert response.status_code == 200
+    lines = response.json()["lines"]
+    assert all("seed_index" not in line for line in lines[:-1])
+    assert lines[-1]["seed_index"] == 0
+    assert lines[-1]["start_termination"]
+    assert response.json()["metadata"]["manual_seed_count"] == 1
+
+
+def test_manual_seeds_are_accepted_for_fixed_presets_without_changing_their_markers() -> None:
+    plain = build_scene(SceneRequest(preset="current_loop", density=6, resolution=32))
+    seeded = build_scene(
+        SceneRequest(
+            preset="current_loop",
+            density=6,
+            resolution=32,
+            seeds=[SeedInput(x=1.6, y=0.0), SeedInput(x=-1.0, y=0.0)],
+        )
+    )
+    assert seeded.sources == plain.sources
+    assert seeded.lines[: len(plain.lines)] == plain.lines
+    assert [line.seed_index for line in seeded.lines[len(plain.lines) :]] == [0]
+    assert seeded.metadata.manual_termination_counts == {"closed_loop": 1, "exclusion_hit": 1}
+    assert seeded.metadata.manual_start_termination_counts == {"closed_loop": 1, "exclusion_hit": 1}
+
+
+@pytest.mark.parametrize(
+    "seeds",
+    [
+        [],
+        [{"x": 3.1, "y": 0.0}],
+        [{"x": 0.0, "y": -3.0001}],
+        [{"x": 0.0}],
+        [{"x": 0.0, "y": 0.0, "kind": "positive"}],
+        [{"x": 0.0, "y": 0.0}] * 17,
+    ],
+)
+def test_manual_seeds_outside_the_contract_are_rejected(
+    client: TestClient, seeds: list[dict[str, object]]
+) -> None:
+    response = client.post(
+        "/api/scene",
+        json={"preset": "uniform", "density": 6, "resolution": 32, "seeds": seeds},
+    )
+    assert response.status_code == 422
+    assert web_schemas.SEED_COORDINATE_LIMIT == web_scene.DOMAIN.upper[0] == -web_scene.DOMAIN.lower[1]
+    assert web_schemas.MAX_MANUAL_SEEDS == 16
+
+
+def test_manual_seeds_reuse_cached_preset_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    preset_traces: list[object] = []
+    manual_traces: list[object] = []
+    original_lines = web_scene._trace_lines
+    original_manual = web_scene._trace_manual_lines
+
+    def counting_lines(model: object) -> object:
+        preset_traces.append(model)
+        return original_lines(model)
+
+    def counting_manual(model: object, seeds: object) -> object:
+        manual_traces.append(seeds)
+        return original_manual(model, seeds)
+
+    monkeypatch.setattr(web_scene, "_trace_lines", counting_lines)
+    monkeypatch.setattr(web_scene, "_trace_manual_lines", counting_manual)
+    web_scene._TRACE_CACHE.clear()
+    base = {"preset": "magnetic_dipole", "density": 7, "resolution": 32}
+    seeds = [SeedInput(x=1.0, y=1.0)]
+    build_scene(SceneRequest(**base))
+    build_scene(SceneRequest(**base, seeds=seeds))
+    build_scene(SceneRequest(**{**base, "resolution": 48}, seeds=seeds))
+    build_scene(SceneRequest(**base, seeds=[SeedInput(x=1.0, y=1.0), SeedInput(x=-1.0, y=1.0)]))
+    assert (len(preset_traces), len(manual_traces)) == (1, 2)
+
+
+def test_metadata_manual_counts_must_sum_to_the_manual_seed_count() -> None:
+    fields = {
+        "title": "t",
+        "projection_note": "p",
+        "field_model": "f",
+        "seed_mode": "coverage",
+        "seed_description": "d",
+        "termination_counts": {},
+        "start_termination_counts": {},
+        "suppressed_count": 0,
+        "rendered_line_count": 0,
+    }
+    with pytest.raises(ValueError, match="manual_termination_counts"):
+        web_schemas.MetadataPayload(
+            **fields,
+            manual_seed_count=2,
+            manual_termination_counts={"domain_exit": 1},
+            manual_start_termination_counts={"domain_exit": 2},
+        )
+    scene = build_scene(
+        SceneRequest(preset="uniform", density=6, resolution=32, seeds=[SeedInput(x=0.0, y=0.0)])
+    ).model_dump(mode="json")
+    scene["lines"][-1]["seed_index"] = 1
+    with pytest.raises(ValueError, match="seed_index must be below"):
+        web_schemas.SceneResponse.model_validate(scene)
+    scene["lines"][-1]["seed_index"] = 0
+    scene["lines"][0]["seed_index"] = 0
+    with pytest.raises(ValueError, match="at most one line"):
+        web_schemas.SceneResponse.model_validate(scene)
+
+
+def test_openapi_publishes_the_vector_grid_and_manual_seed_contract(client: TestClient) -> None:
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    request = schemas["SceneRequest"]["properties"]["seeds"]
+    seed_array = next(option for option in request["anyOf"] if option.get("type") == "array")
+    assert (seed_array["minItems"], seed_array["maxItems"]) == (1, 16)
+    seed = schemas["SeedInput"]
+    assert seed["additionalProperties"] is False
+    assert (seed["properties"]["x"]["minimum"], seed["properties"]["x"]["maximum"]) == (-3.0, 3.0)
+
+    response = schemas["SceneResponse"]
+    assert "vector" not in response["required"]
+    vector = schemas["VectorPayload"]
+    assert set(vector["required"]) == {"nx", "ny", "u", "v", "label", "unit"}
+    assert "seed_index" not in schemas["LinePayload"]["required"]
+    metadata = schemas["MetadataPayload"]
+    for field in ("manual_termination_counts", "manual_start_termination_counts"):
+        assert metadata["properties"][field]["additionalProperties"] == {
+            "minimum": 0,
+            "type": "integer",
+        }
+    assert metadata["properties"]["manual_seed_count"]["minimum"] == 0
