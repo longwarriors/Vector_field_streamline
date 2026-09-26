@@ -252,9 +252,13 @@ export function validateScene(scene, preset, expected = {}) {
   // none; a current one must report exactly the seeds the request carried,
   // one end-side and one start-side reason each, and flag at most one line
   // per seed.
-  metadata.manual_seed_count ??= 0;
-  metadata.manual_termination_counts ??= {};
-  metadata.manual_start_termination_counts ??= {};
+  // Only a field that is absent altogether means an older server; an explicit
+  // null is a malformed response, as the server schema also says.
+  if (metadata.manual_seed_count === undefined) metadata.manual_seed_count = 0;
+  if (metadata.manual_termination_counts === undefined) metadata.manual_termination_counts = {};
+  if (metadata.manual_start_termination_counts === undefined) {
+    metadata.manual_start_termination_counts = {};
+  }
   const sum = (counts) => Object.values(counts).reduce((total, count) => total + count, 0);
   const seedIndices = scene.lines
     .map((line) => line.seed_index)

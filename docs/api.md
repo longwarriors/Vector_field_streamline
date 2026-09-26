@@ -149,6 +149,8 @@ TraceOptions(
 
 `interfaces` 是场不连续的曲面（例如材料边界），用带符号 `margin()` 的区域给出，可与 `exclusions` 共用 `SphericalExclusion`。线到达界面时求解器在界面上以事件停下，再沿到达界面的运动方向前进几个 ulp 重新启动，所以折射点由事件定位，不被自适应步长抹平；跨越界面那一步本身的局部误差仍在容差量级（介质球场景实测 $\Psi$ 沿线相对漂移约 $10^{-5}$，无界面事件时约 $10^{-4}$）。积分按“到最近界面的距离”分段：单位速度的线走不到界面就不可能越过它，所以一段之内不会一进一出而漏检；分段长度有 $10^{-4}\,\mathrm{max\_step}$ 的下限，弦长短于这个下限的擦入仍可能漏掉（默认参数下对应深度约 $10^{-11}$ m）。恰在界面上的种子先沿其场方向移动几个 ulp。越过界面后场为零或非有限时，分支在界面上以相应原因终止；连续三次重启都没有前进（外侧场指回界面的滑动接触）时以 `solver_failure` 终止并在 `message` 中说明。稠密输出会把定位到的交点并入点序。没有 `interfaces` 时代码路径与此前逐位相同。
 
+追踪器另有一个**停滞保护**：右端函数是单位流向，光滑线上一步之内它只转很小的角度；分支沿对称线正对零场点（例如相邻同号电荷之间的鞍点）时，求解器的各级点落在方向反转两侧，步端却进不了零场阈值，于是以 $10^{-5}$ 量级的小步来回跳动、每一步流向都反转，直到耗尽弧长预算。最近八步里有三步流向反转超过 $120^\circ$ 时求解器停下（正对鞍点时每一步都反转，阈值远小于跳动步长的汇点则每隔一步反转），追踪器沿流向把反转二分到零场阈值之内，以 `null_field` 终止并在 `message` 中说明；找不到零点（反转来自未登记的不连续面）则以 `solver_failure` 终止。正常到达零场阈值的线只跨越反转一次就由零场事件结束，因此这条保护不改变任何原有结果。
+
 ```python
 tracer = FieldLineTracer(
     field=field,
@@ -293,7 +295,7 @@ $$
 
 #### 手动种子 { #manual-seeds }
 
-`seeds` 列出的每个点都用该预设的追踪器设置（同样的容差、排除区、界面与零场阈值）**双向**追踪一次，结果按种子顺序追加在预设线之后，并带 `seed_index`（请求中的 0-based 下标）；预设线不带这个字段。手动线的点序从反向端经种子到正向端，`direction` 为 `1`，`termination` 与 `start_termination` 都存在，种子本身是点列中的一个点。手动种子**不占** `density` 预算，也不参加电荷场的返线抑制：`termination_counts` 之和仍等于 `density`，手动线的两端原因另记在 `metadata.manual_termination_counts` 与 `metadata.manual_start_termination_counts`，二者之和都等于 `manual_seed_count`（即请求的种子数）。落在排除区内、导体球内或零场点上的种子只得到一个点，不产生线，但仍计入手动终止统计（例如 `exclusion_hit` 或 `null_field`），所以 `rendered_line_count + suppressed_count <= density + manual_seed_count`。
+`seeds` 列出的每个点都用该预设的追踪器设置（同样的容差、排除区、界面与零场阈值）**双向**追踪一次，结果按种子顺序追加在预设线之后，并带 `seed_index`（请求中的 0-based 下标）；预设线不带这个字段。手动线的点序从反向端经种子到正向端，`direction` 为 `1`，`termination` 与 `start_termination` 都存在，种子本身是点列中的一个点。种子恰在球面这类界面上时，追踪器先把起点沿场方向推离界面几个 ulp 再积分（见 [`FieldLineTracer`](#fieldlinetracer)），返回的点列仍包含请求的种子：离它最近、且在 $10^{-6}$ m 内的推离起点被换成种子本身。沿对称轴正对零场点（例如六个正电荷的电荷对之间的鞍点）的种子在该零点以 `null_field` 停下，见追踪器的停滞保护。手动种子**不占** `density` 预算，也不参加电荷场的返线抑制：`termination_counts` 之和仍等于 `density`，手动线的两端原因另记在 `metadata.manual_termination_counts` 与 `metadata.manual_start_termination_counts`，二者之和都等于 `manual_seed_count`（即请求的种子数）。落在排除区内、导体球内或零场点上的种子只得到一个点，不产生线，但仍计入手动终止统计（例如 `exclusion_hit` 或 `null_field`），所以 `rendered_line_count + suppressed_count <= density + manual_seed_count`。
 
 同一场景与预算下，预设线的追踪结果与不带 `seeds` 的请求相同并共用缓存；手动线按种子列表另行缓存，改分辨率时二者都不重算。
 

@@ -90,11 +90,9 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     clearSeeds: document.querySelector("#clear-seeds"),
     seedStatus: document.querySelector("#seed-status"),
     manualSeedSummary: document.querySelector("#manual-seed-summary"),
-    legendUncolored: document.querySelector("#legend-uncolored"),
     legendChips: Array.from(document.querySelectorAll(".legend-chip[data-layer]")),
     layerToggles: Array.from(document.querySelectorAll(".layer-toggle")),
     figure: document.querySelector(".field-figure"),
-    legendSources: document.querySelector('.legend-chip[data-layer="sources"]'),
     captionSeed: document.querySelector("#caption-seed"),
     lineCount: document.querySelector("#line-count"),
     gridSize: document.querySelector("#grid-size"),
@@ -613,22 +611,26 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   // hidden markers cannot be dragged, and the slope and preview chips need
   // the vector grid. The probe keeps reading the raw grid.
   function syncLayerChrome(outcome) {
-    const { layers } = state;
-    const hasVector = Boolean(state.scene.vector);
+    const { layers, scene } = state;
+    const hasVector = Boolean(scene.vector);
     elements.colorbar.hidden = !layers.heatmap;
-    elements.legendUncolored.hidden = !outcome.hatchVisible;
-    elements.legendSources.hidden = !layers.sources || state.scene.sources.length === 0;
+    // A chip the scene cannot need is removed (`hidden`); a chip whose layer
+    // is merely switched off keeps its box (`data-layer-off`), so toggling a
+    // layer never re-wraps the legend and never moves the plot.
+    const hasManualLines = scene.lines.some((line) => Number.isInteger(line.seed_index));
+    const chips = {
+      heatmap: [outcome.hatchCells > 0, outcome.hatchVisible],
+      lines: [true, layers.lines],
+      arrows: [true, layers.lines && layers.arrows],
+      sources: [scene.sources.length > 0, layers.sources],
+      slopes: [hasVector, layers.slopes],
+      preview: [hasVector, layers.preview],
+      seeds: [hasManualLines, layers.lines],
+    };
     elements.legendChips.forEach((chip) => {
-      const layer = chip.dataset.layer;
-      if (layer === "lines") chip.hidden = !layers.lines;
-      if (layer === "arrows") chip.hidden = !layers.lines || !layers.arrows;
-      if (layer === "slopes") chip.hidden = !layers.slopes || !hasVector;
-      if (layer === "preview") chip.hidden = !layers.preview || !hasVector;
-      if (layer === "seeds") {
-        chip.hidden =
-          !layers.lines ||
-          !state.scene.lines.some((line) => Number.isInteger(line.seed_index));
-      }
+      const [applicable, shown] = chips[chip.dataset.layer] || [true, true];
+      chip.hidden = !applicable;
+      chip.toggleAttribute("data-layer-off", applicable && !shown);
     });
     elements.captionPreview.toggleAttribute("data-layer-off", !layers.preview);
     const draggableSourceCount = sourcesDraggable() ? state.scene.sources.length : 0;

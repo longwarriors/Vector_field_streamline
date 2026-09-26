@@ -2612,3 +2612,54 @@ def test_openapi_publishes_the_vector_grid_and_manual_seed_contract(client: Test
             "type": "integer",
         }
     assert metadata["properties"]["manual_seed_count"]["minimum"] == 0
+
+
+def test_a_manual_seed_aimed_at_a_saddle_completes_with_null_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # From the bottom edge on the hexagon's symmetry axis the backward branch
+    # runs head-on into the saddle between the two lowest charges. Before the
+    # tracer's stall guard this request never returned; the evaluation budget
+    # turns that into a fast failure.
+    evaluations = {"count": 0}
+    original = web_scene.PointChargeField.evaluate
+
+    def budgeted(self: object, points: object) -> object:
+        evaluations["count"] += 1
+        if evaluations["count"] > 60_000:
+            raise RuntimeError("the hexagon seed trace is not bounded")
+        return original(self, points)
+
+    monkeypatch.setattr(web_scene.PointChargeField, "evaluate", budgeted)
+    web_scene._TRACE_CACHE.clear()
+    request = SceneRequest(
+        preset="electric_hexagon", density=6, resolution=32, seeds=[SeedInput(x=0.0, y=-3.0)]
+    )
+    scene = build_scene(request)
+    assert scene.metadata.manual_termination_counts == {"domain_exit": 1}
+    assert scene.metadata.manual_start_termination_counts == {"null_field": 1}
+    manual = scene.lines[-1]
+    assert manual.seed_index == 0
+    # The line runs from the saddle (a true null of the summed field) down
+    # to the seed on the domain edge.
+    model = _build_model(request)
+    saddle = np.asarray(manual.points[0], dtype=float)
+    assert abs(saddle[0]) < 1.0e-12
+    assert float(np.linalg.norm(model.field.evaluate(saddle))) <= web_scene.ELECTRIC_NULL_THRESHOLD
+    assert manual.points[-1] == (0.0, -3.0)
+
+
+def test_a_manual_seed_on_an_interface_is_reported_as_a_point_of_its_line() -> None:
+    # The tracer nudges a seed off the sphere surface by a few ulps before
+    # integrating; the line still passes through the requested seed itself.
+    for preset, seed in (
+        ("dielectric_sphere", SeedInput(x=0.0, y=1.0)),
+        ("dielectric_sphere", SeedInput(x=1.0, y=0.0)),
+        ("conducting_sphere", SeedInput(x=1.0, y=0.0)),
+    ):
+        scene = build_scene(
+            SceneRequest(preset=preset, density=6, resolution=32, seeds=[seed])  # type: ignore[arg-type]
+        )
+        manual = [line for line in scene.lines if line.seed_index == 0]
+        assert len(manual) == 1, (preset, seed)
+        assert (seed.x, seed.y) in manual[0].points, (preset, seed)

@@ -79,12 +79,12 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     context.clearRect(0, 0, size.width, size.height);
     context.fillStyle = theme.paper;
     context.fillRect(0, 0, size.width, size.height);
-    if (!view.scene) return { hatchVisible: false };
+    if (!view.scene) return { hatchVisible: false, hatchCells: 0 };
     if (view.status === "stale") {
       drawGridAndAxes({ onField: false, grid: layers.grid });
       if (layers.sources) drawSources();
       if (layers.lines) drawSeeds();
-      return { hatchVisible: false };
+      return { hatchVisible: false, hatchCells: 0 };
     }
     const uncoloredCells = layers.heatmap ? drawHeatmap() : [];
     drawGridAndAxes({ onField: layers.heatmap, grid: layers.grid });
@@ -94,8 +94,12 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     drawRegions();
     if (layers.sources) drawSources();
     if (layers.lines) drawSeeds();
+    // hatchCells counts the scene's uncoloured nodes whatever the layers say,
+    // so the page can keep the legend chip's box while the heatmap is off.
+    const { scalar } = view.scene;
     return {
       hatchVisible: layers.heatmap && hatchShowsBesideMarkers(uncoloredCells, layers.sources),
+      hatchCells: heatmapRaster(scalar, view.scale, samplesPerCell(scalar)).uncolored.length,
     };
   }
 

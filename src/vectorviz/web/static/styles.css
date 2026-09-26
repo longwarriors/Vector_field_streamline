@@ -513,7 +513,7 @@ select {
 }
 
 .frame-title h2 {
-  min-width: 0;
+  min-width: 8em;
   margin: 0;
   overflow: hidden;
   font-size: var(--vv-fs-18);
@@ -541,11 +541,18 @@ select {
 }
 
 /* A static legend drawn as pill tabs; never interactive. */
+/*
+ * The chips may wrap onto a second row when the frame is narrow, but the
+ * title always keeps room for eight characters; which chips exist is decided
+ * per scene, so the row count only changes with the scene, not with layers.
+ */
 .legend-chips {
   display: flex;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
+  min-width: 0;
   gap: 6px;
   cursor: default;
 }
@@ -567,6 +574,12 @@ select {
 
 .legend-chip[hidden] {
   display: none;
+}
+
+/* A chip whose layer is switched off keeps its box at the end of the row. */
+.legend-chip[data-layer-off] {
+  visibility: hidden;
+  order: 1;
 }
 
 /* Keep each chip's box while its layer is not drawn, so nothing reflows. */
@@ -684,10 +697,15 @@ select {
 
   .legend-chips {
     flex: 1 0 100%;
+    justify-content: flex-start;
   }
 
   #legend-uncolored {
     order: 0;
+  }
+
+  .frame-title h2 {
+    min-width: 0;
   }
 
   .frame-title {

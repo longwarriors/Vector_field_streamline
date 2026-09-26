@@ -72,6 +72,9 @@ DIELECTRIC_SPHERE_PERMITTIVITY = 4.0
 HALBACH_SOURCE_COUNT = 8
 HALBACH_X_EXTENT = 2.1
 ELECTRIC_ARRANGEMENT_RADIUS = 0.9
+# A manual seed nudged off an interface by the tracer stays within this
+# distance of the requested point; the reported line is snapped back onto it.
+MANUAL_SEED_SNAP = 1.0e-6
 # Point-charge scenes are built from 1 nC charges about 1 m apart, so |E|
 # is of order 10 V/m; a line is considered to have reached a null point
 # once |E| falls seven orders of magnitude below that, about 1e-7 m from
@@ -856,7 +859,8 @@ def _trace_manual_lines(model: _SceneModel, seeds: list[SeedInput]) -> _TraceSum
     start_terminations: Counter[str] = Counter()
     lines: list[LinePayload] = []
     for index, seed in enumerate(seeds):
-        result = tracer.trace(np.array((seed.x, seed.y), dtype=float), direction=TraceDirection.BOTH)
+        origin = np.array((seed.x, seed.y), dtype=float)
+        result = tracer.trace(origin, direction=TraceDirection.BOTH)
         branch, start_branch = _trace_branches(result, TraceDirection.BOTH)
         assert start_branch is not None
         terminations[branch.termination.value] += 1
@@ -864,6 +868,15 @@ def _trace_manual_lines(model: _SceneModel, seeds: list[SeedInput]) -> _TraceSum
         points = result.points[np.all(np.isfinite(result.points), axis=1)]
         if points.shape[0] < 2:
             continue
+        # A seed exactly on an interface is nudged a few ulps off it before
+        # integrating, so the branches start next to the seed rather than at
+        # it. The line still reports the requested seed as its junction: the
+        # nearest point, when it is within the nudge distance, is replaced.
+        distances = np.hypot(points[:, 0] - origin[0], points[:, 1] - origin[1])
+        nearest = int(np.argmin(distances))
+        if 0.0 < distances[nearest] <= MANUAL_SEED_SNAP:
+            points = points.copy()
+            points[nearest] = origin
         lines.append(
             LinePayload(
                 points=[(float(point[0]), float(point[1])) for point in points],

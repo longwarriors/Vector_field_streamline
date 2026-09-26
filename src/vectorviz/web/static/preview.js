@@ -8,9 +8,11 @@
  */
 
 // The grid a preview reads: the vector components, the scalar mask that says
-// where they are missing, and the domain the grid spans.
+// where they are missing, the domain the grid spans, and the conductors,
+// whose interior is a true zero field that interpolation across the surface
+// must not blur.
 export function createPreviewGrid(scene) {
-  const { vector, scalar, domain } = scene;
+  const { vector, scalar, domain, regions = [] } = scene;
   return {
     nx: vector.nx,
     ny: vector.ny,
@@ -18,17 +20,33 @@ export function createPreviewGrid(scene) {
     v: vector.v,
     mask: scalar.mask,
     domain: { x: [...domain.x], y: [...domain.y] },
+    conductors: regions
+      .filter((region) => region.kind === "conducting_sphere")
+      .map(({ x, y, radius }) => ({ x, y, radius })),
   };
 }
 
+function insideConductor(grid, x, y) {
+  return (grid.conductors || []).some(
+    (conductor) => Math.hypot(x - conductor.x, y - conductor.y) <= conductor.radius,
+  );
+}
+
+// Below this fraction of the largest corner magnitude an interpolated vector
+// is rounding residue of cancelling corners (about 1e-16 relative at a null
+// point), not a direction.
+const ZERO_RELATIVE = 1e-9;
+
 // Bilinear interpolation of (u, v) at a world position, or null outside the
 // domain or when any corner of the cell is masked, so the preview never
-// invents a field inside an exclusion disc or a non-finite hole.
+// invents a field inside an exclusion disc or a non-finite hole. Inside a
+// conductor, and where the corners cancel to rounding, the vector is zero.
 export function interpolateVector(grid, x, y) {
   const { nx, ny, u, v, mask, domain } = grid;
   const [xmin, xmax] = domain.x;
   const [ymin, ymax] = domain.y;
   if (!(x >= xmin && x <= xmax && y >= ymin && y <= ymax)) return null;
+  if (insideConductor(grid, x, y)) return [0, 0];
   const s = ((x - xmin) / (xmax - xmin)) * (nx - 1);
   const t = ((ymax - y) / (ymax - ymin)) * (ny - 1);
   const i = Math.min(Math.floor(s), nx - 2);
@@ -40,10 +58,13 @@ export function interpolateVector(grid, x, y) {
   const weights = [(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy];
   let ux = 0;
   let uy = 0;
+  let scale = 0;
   corners.forEach((index, corner) => {
     ux += weights[corner] * u[index];
     uy += weights[corner] * v[index];
+    scale = Math.max(scale, Math.hypot(u[index], v[index]));
   });
+  if (!(Math.hypot(ux, uy) > ZERO_RELATIVE * scale)) return [0, 0];
   return [ux, uy];
 }
 
@@ -139,11 +160,16 @@ export function previewOptions(grid, overrides = {}) {
 }
 
 // Both directions from one seed, ordered from the backward end through the
-// seed to the forward end like the server's bidirectional lines.
+// seed to the forward end like the server's bidirectional lines. A forward
+// march that closes on the seed already is the whole curve, so the backward
+// march is skipped rather than drawn over it.
 export function integratePreview(grid, seed, overrides = {}) {
   const { step, maxSteps } = previewOptions(grid, overrides);
   const forward = march(grid, seed, 1, step, maxSteps);
-  const backward = march(grid, seed, -1, step, maxSteps);
+  const backward =
+    forward.termination === "closed_loop"
+      ? { points: [], termination: "closed_loop" }
+      : march(grid, seed, -1, step, maxSteps);
   return {
     points: [...backward.points.reverse(), [seed[0], seed[1]], ...forward.points],
     termination: forward.termination,

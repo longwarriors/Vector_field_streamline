@@ -3485,6 +3485,11 @@ def test_scene_validation_rejects_vector_and_manual_seed_mismatches(
                 scene.metadata.manual_start_termination_counts = {domain_exit: 2};
               }),
               seedIndexOutOfRange: attempt((scene) => { scene.lines[0].seed_index = 0; }),
+              nullManual: attempt((scene) => {
+                scene.metadata.manual_seed_count = null;
+                scene.metadata.manual_termination_counts = null;
+                scene.metadata.manual_start_termination_counts = null;
+              }),
               requestMismatch: attempt(() => {}, {seedCount: 1}),
             };
         }""",
@@ -3496,8 +3501,191 @@ def test_scene_validation_rejects_vector_and_manual_seed_mismatches(
     for key in ("shortU", "wrongShape", "misalignedNull", "halfNull"):
         assert not outcomes[key]["ok"] and "向量网格" in outcomes[key]["message"], key
     assert outcomes["manualOk"] == {"ok": True, "manual": 1, "vector": "absent"}
-    for key in ("manualCountMismatch", "seedIndexOutOfRange"):
+    for key in ("manualCountMismatch", "seedIndexOutOfRange", "nullManual"):
         assert not outcomes[key]["ok"] and "手动种子" in outcomes[key]["message"], key
     assert not outcomes["requestMismatch"]["ok"]
     assert "请求发送的是 1 个" in outcomes["requestMismatch"]["message"]
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_preview_respects_conductors_null_points_and_draws_a_closed_loop_once(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    _open_ready_scene(page, frontend_url, _browser_uniform_vector_scene())
+    result = page.evaluate(
+        """async () => {
+            const {createPreviewGrid, integratePreview, interpolateVector, previewBundle} =
+              await import('/preview.js');
+            const n = 9;
+            const axis = (k) => -2 + (4 * k) / (n - 1);
+            // A unit +x field outside the unit disc and the true zero field of
+            // a conductor inside it, with the conductor declared as a region.
+            const u = [], v = [], mask = new Array(n * n).fill(false);
+            for (let row = 0; row < n; row += 1) {
+              for (let column = 0; column < n; column += 1) {
+                const inside = Math.hypot(axis(column), 2 - (4 * row) / (n - 1)) <= 1;
+                u.push(inside ? 0 : 1);
+                v.push(0);
+              }
+            }
+            const conductor = createPreviewGrid({
+              domain: {x: [-2, 2], y: [-2, 2]},
+              scalar: {mask},
+              vector: {nx: n, ny: n, u, v},
+              regions: [{kind: 'conducting_sphere', x: 0, y: 0, radius: 1, unit: 'm'}],
+            });
+            const towards = integratePreview(conductor, [-1.8, 0]);
+
+            // Opposite corners that cancel exactly at the cell centre: a hair
+            // away the residue is rounding, not a direction.
+            const cancel = createPreviewGrid({
+              domain: {x: [0, 1], y: [0, 1]},
+              scalar: {mask: [false, false, false, false]},
+              vector: {nx: 2, ny: 2, u: [1, -1, 1, -1], v: [0, 0, 0, 0]},
+            });
+
+            const rot = 41, ru = [], rv = [];
+            for (let row = 0; row < rot; row += 1) {
+              const y = 2 - (4 * row) / (rot - 1);
+              for (let column = 0; column < rot; column += 1) {
+                ru.push(-y);
+                rv.push(-2 + (4 * column) / (rot - 1));
+              }
+            }
+            const rotation = createPreviewGrid({
+              domain: {x: [-2, 2], y: [-2, 2]},
+              scalar: {mask: new Array(rot * rot).fill(false)},
+              vector: {nx: rot, ny: rot, u: ru, v: rv},
+            });
+            const circle = integratePreview(rotation, [1, 0]);
+            let length = 0;
+            for (let i = 1; i < circle.points.length; i += 1) {
+              length += Math.hypot(circle.points[i][0] - circle.points[i - 1][0],
+                                   circle.points[i][1] - circle.points[i - 1][1]);
+            }
+            return {
+              insideVector: interpolateVector(conductor, 0, 0.95),
+              insideBundle: previewBundle(conductor, [0, 0.95]).length,
+              towardsTermination: towards.termination,
+              towardsEnd: towards.points.at(-1),
+              towardsStart: towards.points[0],
+              centre: interpolateVector(cancel, 0.5, 0.5),
+              nearCentre: interpolateVector(cancel, 0.5 + 1e-12, 0.5),
+              offCentre: interpolateVector(cancel, 0.5 + 1e-6, 0.5),
+              centreBundle: previewBundle(cancel, [0.5, 0.5]).length,
+              circleTermination: circle.termination,
+              circleStart: circle.startTermination,
+              circleLength: length,
+            };
+        }"""
+    )
+    assert result["insideVector"] == [0, 0]
+    assert result["insideBundle"] == 0
+    # Marching into the conductor stops on its surface with the server's reason.
+    assert result["towardsTermination"] == "null_field"
+    assert math.hypot(*result["towardsEnd"]) >= 1.0 - 1e-9
+    assert math.hypot(*result["towardsEnd"]) < 1.3
+    assert result["towardsStart"][0] <= -1.8
+    assert result["centre"] == [0, 0]
+    assert result["nearCentre"] == [0, 0]
+    assert abs(result["offCentre"][0] + 2e-6) < 1e-12 and result["offCentre"][1] == 0
+    assert result["centreBundle"] == 0
+    assert result["circleTermination"] == result["circleStart"] == "closed_loop"
+    assert 2 * math.pi * 0.98 < result["circleLength"] < 2 * math.pi * 1.03
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_toggling_layers_never_moves_the_plot_on_a_narrow_frame(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    # Every legend chip exists here: a hatched node, sources, a manual line and
+    # the vector grid. On a phone-width frame the chips wrap; switching layers
+    # blanks chips but keeps their boxes, so the stage never moves.
+    page, page_errors = browser_page
+    page.set_viewport_size({"width": 390, "height": 844})
+    scene = _browser_vector_scene()
+    scalar = scene["scalar"]
+    lines = scene["lines"]
+    metadata = scene["metadata"]
+    assert isinstance(scalar, dict) and isinstance(lines, list) and isinstance(metadata, dict)
+    scalar["mask"][4] = True
+    scalar["values"][4] = None
+    scene["vector"]["u"][4] = None
+    scene["vector"]["v"][4] = None
+    lines.append(
+        {
+            "points": [[-1.0, 0.0], [0.0, 0.5], [1.0, 0.9]],
+            "direction": 1,
+            "termination": "domain_exit",
+            "start_termination": "domain_exit",
+            "seed_index": 0,
+        }
+    )
+    metadata.update(
+        {
+            "rendered_line_count": 2,
+            "manual_seed_count": 1,
+            "manual_termination_counts": {"domain_exit": 1},
+            "manual_start_termination_counts": {"domain_exit": 1},
+        }
+    )
+    plain = json.loads(json.dumps(scene))
+    plain["lines"] = plain["lines"][:1]
+    plain["metadata"].update(
+        {
+            "rendered_line_count": 1,
+            "manual_seed_count": 0,
+            "manual_termination_counts": {},
+            "manual_start_termination_counts": {},
+        }
+    )
+
+    def route_scene(route: Route) -> None:
+        body = route.request.post_data_json
+        payload = scene if body.get("seeds") else plain
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    expect(page.locator("#canvas-stage")).to_have_attribute("data-plot-layout", "narrow")
+    geometry = _plot_geometry(page, {"x": [-2, 4], "y": [-3, 1]})
+    with page.expect_request("**/api/scene"):
+        # Away from the fixture's source at (1, -1), which sits at the plot centre.
+        page.mouse.click(
+            geometry["left"] + 0.25 * geometry["plotLeft"] + 0.75 * geometry["plotRight"],
+            geometry["top"] + 0.75 * geometry["plotTop"] + 0.25 * geometry["plotBottom"],
+        )
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    expect(page.locator('.legend-chip[data-layer="seeds"]')).to_be_visible()
+    expect(page.locator("#legend-uncolored")).to_be_visible()
+    page.mouse.move(geometry["left"] + 2, geometry["top"] + 2)
+
+    def stage_rect() -> dict[str, float]:
+        return page.evaluate(
+            """() => {
+                const r = document.querySelector('#canvas-stage').getBoundingClientRect();
+                return {x: r.x, y: r.y, width: r.width, height: r.height};
+            }"""
+        )
+
+    before = stage_rect()
+    chip_rows = page.evaluate(
+        """() => new Set(Array.from(document.querySelectorAll('.legend-chip'))
+              .filter((chip) => !chip.hidden)
+              .map((chip) => Math.round(chip.getBoundingClientRect().top))).size"""
+    )
+    assert chip_rows >= 2, "the chips must wrap for this check to mean anything"
+    for name in ("preview", "slopes", "lines", "arrows", "sources", "heatmap", "grid"):
+        toggle = page.locator(f'.layer-toggle[data-layer="{name}"]')
+        toggle.click()
+        assert stage_rect() == before, name
+        toggle.click()
+        assert stage_rect() == before, name
+    expect(page.locator('.legend-chip[data-layer="seeds"]')).to_be_visible()
     assert page_errors == []
