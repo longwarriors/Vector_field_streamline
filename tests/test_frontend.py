@@ -741,7 +741,10 @@ def test_layer_toggles_redraw_without_requests_and_keep_readouts_honest(
     )
     page.mouse.move(target["x"], target["y"])
     expect(page.locator("#probe")).to_be_visible()
+    # The probe snaps to the node at (4, 1) although the pointer is 2 px off it.
+    expect(page.locator("#probe-position")).to_have_text("x 4 m · y 1 m")
     expect(page.locator("#probe-value")).to_have_text("|F| 3 u")
+    expect(page.locator("#probe-node")).to_be_visible()
     toggles["heatmap"].click()
     expect(page.locator("#colorbar")).to_be_visible()
     expect(page.locator("#legend-uncolored")).to_be_visible()
@@ -782,6 +785,8 @@ def test_layer_toggles_redraw_without_requests_and_keep_readouts_honest(
     page.mouse.down()
     page.mouse.move(target["sx"] + 30, target["sy"] + 20, steps=3)
     expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "stale")
+    # The coordinate inputs follow the pointer while the drag is still open.
+    expect(page.locator('#source-editor-list input[data-source-field="x"]')).not_to_have_value("1")
     # Script clicks keep the pointer held down, as a second input device would.
     for _repeat in range(2):
         page.evaluate("() => document.querySelector('.layer-toggle[data-layer=\"heatmap\"]').click()")
@@ -1029,6 +1034,9 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
     assert pixel(4)[3] == 0
     assert pixel(3) == [100, 79, 172, 255]
     expect(page.locator("#colorbar-max")).to_have_text("10")
+    # A log colorbar from 1 to 10 marks the decades 10^0 and 10^1.
+    expect(page.locator(".colorbar-tick")).to_have_count(2)
+    expect(page.locator(".colorbar-tick b")).to_have_text(["100", "101"])
 
     result = page.evaluate(
         """async () => {

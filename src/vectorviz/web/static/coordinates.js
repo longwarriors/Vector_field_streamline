@@ -75,7 +75,9 @@ export function createCoordinateTransform(domain, plotRect) {
   };
 }
 
-export function sampleNearest(scalar, domain, x, y) {
+// The grid node nearest to a world position: its indices, coordinates and
+// raw value. The probe reports this node, not the pointer position.
+export function nearestNode(scalar, domain, x, y) {
   const column = clamp(
     Math.round(((x - domain.x[0]) / (domain.x[1] - domain.x[0])) * (scalar.nx - 1)),
     0,
@@ -88,5 +90,17 @@ export function sampleNearest(scalar, domain, x, y) {
     scalar.ny - 1,
   );
   const index = row * scalar.nx + column;
+  return {
+    index,
+    column,
+    row,
+    x: domain.x[0] + (column / (scalar.nx - 1)) * (domain.x[1] - domain.x[0]),
+    y: domain.y[1] - (row / (scalar.ny - 1)) * (domain.y[1] - domain.y[0]),
+    value: scalar.mask?.[index] ? null : Number(scalar.values[index]),
+  };
+}
+
+export function sampleNearest(scalar, domain, x, y) {
+  const { index } = nearestNode(scalar, domain, x, y);
   return scalar.mask?.[index] ? Number.NaN : Number(scalar.values[index]);
 }

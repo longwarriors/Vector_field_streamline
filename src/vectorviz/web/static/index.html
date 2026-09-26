@@ -131,6 +131,7 @@
                 当前浏览器不支持 Canvas，请升级浏览器后重试。
               </canvas>
 
+              <span class="probe-node" id="probe-node" hidden aria-hidden="true"></span>
               <div class="probe" id="probe" hidden aria-hidden="true">
                 <span id="probe-position">x 0.00 · y 0.00</span>
                 <strong id="probe-value">—</strong>
@@ -139,6 +140,7 @@
               <div class="colorbar" id="colorbar" hidden aria-label="场强颜色标尺">
                 <span id="colorbar-max">—</span>
                 <div class="colorbar-gradient" aria-hidden="true">
+                  <div class="colorbar-ticks" id="colorbar-ticks"></div>
                   <svg class="colorbar-extend colorbar-extend-over" viewBox="0 0 12 9" preserveAspectRatio="none">
                     <path d="M6 0.5 11.5 8.5H0.5Z" />
                   </svg>
@@ -276,7 +278,8 @@
                 <li>色标上下限只是显示范围：尖角表示有格点超出范围、按端色显示，精确值请用探针。</li>
                 <li>场线上的箭头只标方向：足够长的线按屏幕弧长放 1–3 个，很短的线不放；箭头大小固定，不表示强弱。</li>
                 <li>场线疏密取决于播种方式和预算，不能直接读成场的强弱；圆环为等通量播种，见“播种说明”。</li>
-                <li>探针显示指针坐标，以及离它最近的网格点上的原值（未按色标截断、不插值）。</li>
+                <li>探针吸附到离指针最近的网格点：显示该点的坐标和原值（未按色标截断、不插值），图上的小圆点标出这个点。</li>
+                <li>对数色标上的短刻度是十的整数次幂，读数时按数量级看。</li>
                 <li>斜线区未着色：场源排除区（半径为数值设定）或非有限值；对数色标下为 0 的格点也不着色。</li>
               </ul>
             </aside>

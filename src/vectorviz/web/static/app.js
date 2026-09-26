@@ -11,7 +11,7 @@ import {
   calculatePlotRect,
   clamp,
   createCoordinateTransform,
-  sampleNearest as sampleScalarNearest,
+  nearestNode,
 } from "./coordinates.js";
 import {
   SOURCE_COORDINATE_LIMIT,
@@ -76,6 +76,8 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     colorbarMin: document.querySelector("#colorbar-min"),
     colorbarLabel: document.querySelector("#colorbar-label"),
     colorbarExtent: document.querySelector("#colorbar-extent"),
+    colorbarTicks: document.querySelector("#colorbar-ticks"),
+    probeNode: document.querySelector("#probe-node"),
     legendUncolored: document.querySelector("#legend-uncolored"),
     legendChips: Array.from(document.querySelectorAll(".legend-chip[data-layer]")),
     layerToggles: Array.from(document.querySelectorAll(".layer-toggle")),
@@ -284,6 +286,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     elements.suppressedCount.textContent = "—";
     elements.colorbar.hidden = true;
     elements.probe.hidden = true;
+    elements.probeNode.hidden = true;
     renderSourceEditors();
     render();
   }
@@ -294,6 +297,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     state.scale = null;
     elements.colorbar.hidden = true;
     elements.probe.hidden = true;
+    elements.probeNode.hidden = true;
     elements.scaleBadge.textContent = "场待重算";
     elements.lineCount.textContent = "—";
     elements.terminationCounts.textContent = "待重算";
@@ -420,6 +424,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     elements.colorbar.hidden = false;
     elements.colorbarMax.textContent = formatValue(scale.maximum);
     elements.colorbarMin.textContent = formatValue(scale.minimum);
+    renderColorbarTicks(scale);
     // The limits are display choices: flag coloured cells drawn in an end colour.
     let over = 0;
     let under = 0;
@@ -444,6 +449,28 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       "aria-label",
       `${title}二维可视化，共 ${scene.metadata.rendered_line_count} 条场线、${draggableSourceCount} 个可移动场源。`,
     );
+  }
+
+  // A log colorbar marks every power of ten inside its limits; a linear one
+  // has no natural decades and shows none.
+  function renderColorbarTicks(scale) {
+    elements.colorbarTicks.replaceChildren();
+    if (scale.type !== "log") return;
+    const low = Math.log10(scale.minimum);
+    const high = Math.log10(scale.maximum);
+    for (let exponent = Math.ceil(low); exponent <= Math.floor(high); exponent += 1) {
+      const tick = document.createElement("span");
+      tick.className = "colorbar-tick";
+      tick.style.setProperty("--tick-position", `${((exponent - low) / (high - low)) * 100}%`);
+      const mark = document.createElement("i");
+      const label = document.createElement("b");
+      label.append("10");
+      const power = document.createElement("sup");
+      power.textContent = String(exponent).replace(/^-/, "\u2212");
+      label.append(power);
+      tick.append(mark, label);
+      elements.colorbarTicks.append(tick);
+    }
   }
 
   // "quantity / unit", bracketing compound units: |E| / (V/m), |B| / T.
@@ -774,6 +801,18 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     return button;
   }
 
+  // The moving source's coordinate inputs follow the pointer; the row is
+  // rebuilt only when the drag ends.
+  function syncSourceEditorInputs(index) {
+    const row = elements.sourceEditorList.querySelectorAll(".source-editor")[index];
+    if (!row) return;
+    const source = state.scene.sources[index];
+    row.querySelectorAll("input[data-source-field]").forEach((input) => {
+      const field = input.dataset.sourceField;
+      if (field === "x" || field === "y") input.value = formatEditorValue(source[field]);
+    });
+  }
+
   function syncSourceOverrides() {
     state.sourceOverrides = state.scene.sources.map(serializeSource);
   }
@@ -842,6 +881,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     elements.canvas.setPointerCapture(event.pointerId);
     elements.canvas.dataset.dragging = "true";
     elements.probe.hidden = true;
+    elements.probeNode.hidden = true;
     render();
     event.preventDefault();
   }
@@ -867,6 +907,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       source.x = position.x;
       source.y = position.y;
       syncSourceOverrides();
+      syncSourceEditorInputs(state.drag.sourceIndex);
       if (position.snapped) {
         elements.sourceStatus.textContent = `已按大于 ${formatEditorValue(selectedSourceSeparation())} m 的场源间距吸附。`;
       }
@@ -903,19 +944,25 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   function updateProbe(canvasX, canvasY) {
     if (state.presentationStatus !== "ready") {
       elements.probe.hidden = true;
+    elements.probeNode.hidden = true;
       return;
     }
     const { left, right, top, bottom } = state.plotRect;
     if (canvasX < left || canvasX > right || canvasY < top || canvasY > bottom) {
       elements.probe.hidden = true;
+    elements.probeNode.hidden = true;
       return;
     }
     const [worldX, worldY] = canvasToWorld(canvasX, canvasY);
-    const value = sampleNearest(worldX, worldY);
+    const node = nearestNode(state.scene.scalar, state.scene.domain, worldX, worldY);
     const coordinateUnit = String(state.scene.domain.unit || "").trim();
     const unitSuffix = coordinateUnit ? ` ${coordinateUnit}` : "";
-    elements.probePosition.textContent = `x ${formatEditorValue(worldX)}${unitSuffix} · y ${formatEditorValue(worldY)}${unitSuffix}`;
-    elements.probeValue.textContent = `${state.scene.scalar.label || "场强"} ${formatValue(value)} ${state.scene.scalar.unit || ""}`.trim();
+    elements.probePosition.textContent = `x ${formatEditorValue(node.x)}${unitSuffix} · y ${formatEditorValue(node.y)}${unitSuffix}`;
+    elements.probeValue.textContent = `${state.scene.scalar.label || "场强"} ${formatValue(node.value)} ${state.scene.scalar.unit || ""}`.trim();
+    const [nodeX, nodeY] = worldToCanvas(node.x, node.y);
+    elements.probeNode.style.left = `${nodeX}px`;
+    elements.probeNode.style.top = `${nodeY}px`;
+    elements.probeNode.hidden = false;
     elements.probe.hidden = false;
     placeProbe(canvasX, canvasY);
   }
@@ -941,11 +988,6 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     y = clamp(y, inset, Math.max(inset, stageHeight - height - inset));
     elements.probe.style.left = `${x}px`;
     elements.probe.style.top = `${y}px`;
-  }
-
-  function sampleNearest(x, y) {
-    const { scalar, domain } = state.scene;
-    return sampleScalarNearest(scalar, domain, x, y);
   }
 
   function handleCanvasKeydown(event) {
@@ -1029,6 +1071,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   elements.canvas.addEventListener("pointercancel", finishPointerDrag);
   elements.canvas.addEventListener("pointerleave", () => {
     if (!state.drag) elements.probe.hidden = true;
+    elements.probeNode.hidden = true;
   });
   elements.canvas.addEventListener("keydown", handleCanvasKeydown);
   elements.layerToggles.forEach((button) => {
@@ -1038,6 +1081,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   const resizeObserver = new ResizeObserver(() => {
     // The probe was placed for the old geometry; the next pointer move shows it again.
     elements.probe.hidden = true;
+    elements.probeNode.hidden = true;
     window.cancelAnimationFrame(state.resizeFrame);
     state.resizeFrame = window.requestAnimationFrame(render);
   });
