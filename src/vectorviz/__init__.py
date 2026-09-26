@@ -4,6 +4,7 @@ __version__ = "0.3.4"
 
 from .core import Domain, ExclusionRegion, SphericalExclusion, ToroidalExclusion, VectorField
 from .fields import (
+    ChargedRingField,
     CircularLoopField,
     CompositeField,
     MagneticDipoleField,
@@ -21,6 +22,7 @@ from .tracing import (
 )
 
 __all__ = [
+    "ChargedRingField",
     "CircularLoopField",
     "CompositeField",
     "Domain",
