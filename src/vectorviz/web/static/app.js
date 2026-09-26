@@ -47,6 +47,8 @@ import {
     current_loop: ["wire_into", "wire_out"],
     charged_ring: ["ring_charge", "ring_charge"],
   });
+  const REGION_KINDS = new Set(["dielectric_sphere", "conducting_sphere"]);
+  const REGION_PRESETS = new Set(REGION_KINDS);
   const EDITABLE_SOURCE_PRESETS = new Set([
     "electric_dipole",
     "electric_quadrupole",
@@ -384,6 +386,36 @@ import {
     if (!validSources || !validFixedMarkers) {
       throw new Error("场源缺少有效坐标、强度或 strength_unit");
     }
+    // Regions are additive: an older server omits them; a present list must
+    // describe every material sphere completely.
+    if (scene.regions === undefined || scene.regions === null) {
+      scene.regions = [];
+    }
+    const validRegions =
+      Array.isArray(scene.regions) &&
+      scene.regions.every((region) => {
+        if (!region || typeof region !== "object" || !REGION_KINDS.has(region.kind)) {
+          return false;
+        }
+        if (
+          !Number.isFinite(region.x) ||
+          !Number.isFinite(region.y) ||
+          !Number.isFinite(region.radius) ||
+          region.radius <= 0 ||
+          region.unit !== "m"
+        ) {
+          return false;
+        }
+        const permittivity = region.relative_permittivity;
+        if (region.kind === "dielectric_sphere") {
+          return Number.isFinite(permittivity) && permittivity >= 1;
+        }
+        return permittivity === undefined || permittivity === null;
+      });
+    const expectsRegion = REGION_PRESETS.has(elements.preset.value);
+    if (!validRegions || (expectsRegion ? scene.regions.length !== 1 : scene.regions.length !== 0)) {
+      throw new Error("区域几何缺少有效的种类、圆心、半径、单位或介电常数");
+    }
     const metadata = scene.metadata;
     const terminationCounts = metadata?.termination_counts;
     const startTerminationCounts = metadata?.start_termination_counts;
@@ -638,6 +670,8 @@ import {
       halbach_array: "Halbach 阵列磁场",
       current_loop: "圆形电流线圈磁场",
       charged_ring: "带电圆环电场",
+      dielectric_sphere: "介质球电场",
+      conducting_sphere: "导体球电场",
       uniform: "匀强场",
     }[value] || "物理场";
   }
@@ -684,6 +718,7 @@ import {
     const uncoloredCells = drawHeatmap();
     drawGridAndAxes({ onField: true });
     drawStreamlines();
+    drawRegions();
     drawSources();
     elements.legendUncolored.hidden = !hatchShowsBesideMarkers(uncoloredCells);
     elements.legendSources.hidden = state.scene.sources.length === 0;
@@ -949,6 +984,42 @@ import {
     context.restore();
   }
 
+  // A material sphere is drawn as its dashed outline in the plane, with the
+  // material named above it; the field inside is real and stays coloured.
+  function drawRegions() {
+    const { region: theme } = CANVAS_THEME;
+    for (const region of state.scene.regions) {
+      const [x, y] = worldToCanvas(region.x, region.y);
+      const [edgeX] = worldToCanvas(region.x + region.radius, region.y);
+      const radius = Math.abs(edgeX - x);
+      context.save();
+      context.beginPath();
+      context.arc(x, y, radius, 0, Math.PI * 2);
+      context.strokeStyle = theme.halo;
+      context.lineWidth = theme.haloWidth;
+      context.stroke();
+      context.setLineDash(theme.dash);
+      context.strokeStyle = theme.outline;
+      context.lineWidth = theme.outlineWidth;
+      context.stroke();
+      context.setLineDash([]);
+      const label =
+        region.kind === "conducting_sphere"
+          ? "导体"
+          : `εr = ${formatValue(region.relative_permittivity)}`;
+      context.font = theme.labelFont;
+      context.textAlign = "center";
+      context.textBaseline = "bottom";
+      context.lineJoin = "round";
+      context.strokeStyle = theme.labelHalo;
+      context.lineWidth = 4;
+      context.strokeText(label, x, y - radius - 6);
+      context.fillStyle = theme.label;
+      context.fillText(label, x, y - radius - 6);
+      context.restore();
+    }
+  }
+
   function validPoints(line) {
     if (!Array.isArray(line?.points)) return [];
     return line.points
@@ -1180,6 +1251,8 @@ import {
       fixed.textContent =
         elements.preset.value === "uniform"
           ? "匀强场的方向与强度由预设固定。"
+          : REGION_PRESETS.has(elements.preset.value)
+            ? "球的半径、材料与外场由预设固定；虚线圆是球面在该平面上的截线。"
           : state.presentationStatus === "error"
             ? "场景加载失败，固定标记暂不可显示。"
             : "固定几何标记将在场景加载后显示。";

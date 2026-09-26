@@ -107,6 +107,8 @@ def _browser_presets() -> list[dict[str, object]]:
         },
         {"id": "current_loop", "label": "圆形电流线圈", "description": "fixture"},
         {"id": "charged_ring", "label": "带电圆环", "description": "fixture"},
+        {"id": "dielectric_sphere", "label": "介质球", "description": "fixture"},
+        {"id": "conducting_sphere", "label": "导体球", "description": "fixture"},
         {"id": "uniform", "label": "匀强场", "description": "fixture"},
     ]
 
@@ -173,6 +175,33 @@ def _browser_ring_scene() -> dict[str, object]:
             "field_model": "test ring",
             "seed_mode": "equal_flux",
             "seed_description": "Fixture equal-flux ring seeds.",
+        }
+    )
+    return scene
+
+
+def _browser_sphere_scene() -> dict[str, object]:
+    scene = json.loads(json.dumps(_browser_scene()))
+    metadata = scene["metadata"]
+    assert isinstance(metadata, dict)
+    scene["sources"] = []
+    scene["regions"] = [
+        {
+            "kind": "dielectric_sphere",
+            "x": 0.5,
+            "y": -0.5,
+            "radius": 1.0,
+            "relative_permittivity": 4.0,
+            "unit": "m",
+        }
+    ]
+    metadata.update(
+        {
+            "title": "Dielectric sphere fixture",
+            "projection_note": "Invariant plane through the axis",
+            "field_model": "test sphere",
+            "seed_mode": "equal_flux",
+            "seed_description": "Fixture equal-flux sphere seeds.",
         }
     )
     return scene
@@ -660,6 +689,76 @@ def test_scalar_lines_arrows_sources_and_probe_share_one_transform(
 
 
 @pytest.mark.browser
+@pytest.mark.browser
+def test_region_circle_is_drawn_from_the_scene_payload(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    ordinary_scene = _browser_scene()
+    sphere_scene = _browser_sphere_scene()
+    broken_scene = json.loads(json.dumps(sphere_scene))
+    broken_scene["regions"][0]["radius"] = 0.0
+    responses = {
+        "dielectric_sphere": sphere_scene,
+        "conducting_sphere": broken_scene,
+    }
+
+    def route_scene(route: Route) -> None:
+        body = route.request.post_data_json
+        response_scene = responses.get(body["preset"], ordinary_scene)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(response_scene),
+        )
+
+    _instrument_canvas(page)
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+
+    page.locator("#preset").select_option("dielectric_sphere")
+    expect(page.locator("#scene-title")).to_have_text("Dielectric sphere fixture")
+    expect(page.locator("#source-editor-list .empty-sources")).to_contain_text("虚线圆")
+    drawn = page.evaluate(
+        """async () => {
+            const canvas = document.querySelector('#field-canvas');
+            const rect = canvas.getBoundingClientRect();
+            const {calculatePlotRect, createCoordinateTransform} =
+              await import('/coordinates.js');
+            const domain = {x: [-2, 4], y: [-3, 1]};
+            const transform = createCoordinateTransform(
+              domain,
+              calculatePlotRect(rect.width, rect.height, domain),
+            );
+            const [cx, cy] = transform.worldToCanvas(0.5, -0.5);
+            const [ex] = transform.worldToCanvas(1.5, -0.5);
+            const arcs = window.__vectorVizCanvasCalls.paints
+              .filter(({kind, path}) => kind === 'stroke' && path.length === 1 && path[0][0] === 'A')
+              .map(({path}) => path[0].slice(1, 4));
+            const texts = window.__vectorVizCanvasCalls.texts.map(({text}) => text);
+            return {cx, cy, radius: ex - cx, arcs, texts};
+        }"""
+    )
+    matching = [
+        arc
+        for arc in drawn["arcs"]
+        if abs(arc[0] - drawn["cx"]) < 0.5
+        and abs(arc[1] - drawn["cy"]) < 0.5
+        and abs(arc[2] - drawn["radius"]) < 0.5
+    ]
+    assert len(matching) >= 2
+    assert "εr = 4" in drawn["texts"]
+
+    # A region without a usable radius invalidates the whole scene.
+    page.locator("#preset").select_option("conducting_sphere")
+    expect(page.locator("#error-banner")).to_be_visible()
+    expect(page.locator("#error-message")).to_contain_text("区域几何")
+    expect(page.locator("#scene-title")).not_to_have_text("Dielectric sphere fixture")
+    assert page_errors == []
+
+
 @pytest.mark.parametrize(
     ("preset", "fixed_scene", "title", "labels", "strengths", "symbols", "note"),
     [

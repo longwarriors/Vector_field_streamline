@@ -61,6 +61,17 @@ export const CANVAS_THEME = deepFreeze({
     selection: "#4262ff",
     selectionUnder: "#ffffff",
   },
+  // Material regions: a dashed ink outline on a white halo, labelled.
+  region: {
+    halo: "rgba(255, 255, 255, 0.85)",
+    haloWidth: 5,
+    outline: "#1c1c1e",
+    outlineWidth: 1.6,
+    dash: [7, 5],
+    labelFont: `600 13px ${FONT_STACK}`,
+    label: "#1c1c1e",
+    labelHalo: "#ffffff",
+  },
   // Cells that cannot be coloured: a mid neutral grey, at least 18 CIEDE2000
   // from every colormap colour (the ramp has chroma 30-46 at this lightness)
   // and 3.2 times as luminous as its maximum, so a hole reads as neither a
