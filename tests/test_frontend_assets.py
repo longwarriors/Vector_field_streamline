@@ -128,3 +128,35 @@ def test_stylesheet_tokens_meet_contrast_floors() -> None:
     # Brand yellow would read as a dipole marker next to the plot: wordmark only.
     brand_rules = re.findall(r"([^{}]+)\{[^{}]*var\(\s*--vv-brand\b", outside_root)
     assert [selector.strip() for selector in brand_rules] == [".brand strong::before"]
+
+
+def _canvas_theme_value(group: str, key: str) -> str:
+    theme = (STATIC_ROOT / "canvas-theme.js").read_text(encoding="utf-8")
+    block = re.search(
+        rf"^  {group}: \{{\n(?P<body>.*?)^  \}},", theme, re.DOTALL | re.MULTILINE
+    )
+    assert block is not None, group
+    value = re.search(rf'^    {key}: "(?P<value>[^"]+)",', block.group("body"), re.MULTILINE)
+    assert value is not None, (group, key)
+    return value.group("value")
+
+
+def test_legend_tokens_mirror_the_canvas_theme() -> None:
+    # The legend chips are how a reader learns what lines and hatching mean,
+    # so their tokens must equal the colours the canvas actually draws.
+    css = CSS_COMMENT.sub("", (STATIC_ROOT / "styles.css").read_text(encoding="utf-8"))
+    root = ROOT_BLOCK.search(css)
+    assert root is not None
+    tokens = {
+        match.group("name"): match.group("value").strip()
+        for match in CUSTOM_PROPERTY.finditer(root.group("body"))
+    }
+    mirrored = {
+        "vv-legend-core": ("line", "core"),
+        "vv-legend-halo": ("line", "halo"),
+        "vv-hatch-base": ("hatch", "base"),
+        "vv-hatch-line": ("hatch", "line"),
+    }
+    assert {name: tokens[name] for name in mirrored} == {
+        name: _canvas_theme_value(*source) for name, source in mirrored.items()
+    }

@@ -54,10 +54,20 @@ export function resolveScale(scalar) {
   return { type, minimum, maximum };
 }
 
+// A range this narrow relative to its values (the server widens a constant
+// field's range by 1e-12) holds a single value up to rounding: show it in the
+// middle colour instead of spreading noise over the ramp or painting the pale
+// floor, which would look like an empty plot.
+const FLAT_RELATIVE_SPAN = 1e-6;
+
 export function normalizeScalar(value, scale) {
   if (!Number.isFinite(value)) return null;
+  if (scale.type === "log" && value <= 0) return null;
+  const span = scale.maximum - scale.minimum;
+  if (span <= FLAT_RELATIVE_SPAN * Math.max(Math.abs(scale.minimum), Math.abs(scale.maximum))) {
+    return 0.5;
+  }
   if (scale.type === "log") {
-    if (value <= 0) return null;
     const minimum = Math.log10(scale.minimum);
     const maximum = Math.log10(scale.maximum);
     return Math.max(0, Math.min(1, (Math.log10(value) - minimum) / (maximum - minimum)));

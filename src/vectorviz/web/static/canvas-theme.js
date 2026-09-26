@@ -25,11 +25,11 @@ export const CANVAS_THEME = deepFreeze({
     title: "#1c1c1e",
     titleFont: `600 14px ${FONT_STACK}`,
   },
-  // Ink lines on a white halo: the ink reads on the pale end of the colormap
-  // and the halo keeps 6.4:1 against its darkest colour.
+  // Ink lines on a white halo: the ink reads on the pale end of the colormap,
+  // and the halo, composited over the darkest colour, is 4.4:1 against it.
   line: {
     halo: "rgba(255, 255, 255, 0.75)",
-    haloWidth: 3.2,
+    haloWidth: 4,
     core: "#1c1c1e",
     coreWidth: 1.35,
   },
@@ -60,12 +60,13 @@ export const CANVAS_THEME = deepFreeze({
     selection: "#4262ff",
     selectionUnder: "#ffffff",
   },
-  // Cells that cannot be coloured: a neutral grey, unlike any lavender, much
-  // lighter than the colormap maximum so a hole is never read as the
-  // strongest field, crossed by ink hatching.
+  // Cells that cannot be coloured: a mid neutral grey, at least 18 CIEDE2000
+  // from every colormap colour (the ramp has chroma 30-46 at this lightness)
+  // and 3.2 times as luminous as its maximum, so a hole reads as neither a
+  // weak nor the strongest field, crossed by ink hatching at 3:1.
   hatch: {
-    base: "#d9dade",
-    line: "rgba(28, 28, 30, 0.5)",
+    base: "#a3a3a3",
+    line: "rgba(28, 28, 30, 0.6)",
     spacing: 4,
   },
 });

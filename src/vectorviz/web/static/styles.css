@@ -29,11 +29,12 @@
   /* Brand yellow: only the highlighter under the wordmark, never near the plot. */
   --vv-brand: #ffd02f;
 
-  /* Pale versions of the canvas marker colours, so a note matches its source. */
+  /* Source notes are pale versions of their canvas marker colours. */
   --vv-note-positive: #fcd7e6;
   --vv-note-negative: #d6e9ff;
   --vv-note-dipole: #fff4c4;
   --vv-note-wire: #e4efd6;
+  /* The reading guide is pale lavender, the colormap's hue. */
   --vv-note-guide: #ede7fb;
 
   --vv-ok-bg: #e4efd6;
@@ -50,8 +51,8 @@
   --vv-legend-core: #1c1c1e;
   --vv-legend-halo: rgba(255, 255, 255, 0.75);
   /* The canvas hatching for uncoloured cells, mirrored by the legend chip. */
-  --vv-hatch-base: #d9dade;
-  --vv-hatch-line: rgba(28, 28, 30, 0.5);
+  --vv-hatch-base: #a3a3a3;
+  --vv-hatch-line: rgba(28, 28, 30, 0.6);
   --vv-scroll-shadow: rgba(5, 0, 56, 0.18);
 
   --vv-elev-1: 0 1px 2px 0 rgba(5, 0, 56, 0.04);

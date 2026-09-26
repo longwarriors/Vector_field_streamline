@@ -8,6 +8,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from itertools import pairwise
 
 import pytest
 import uvicorn
@@ -738,6 +739,11 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
               mask: [false, false, false, false, true],
             };
             const scale = resolveScale(scalar);
+            const unit = {type: 'linear', minimum: 0, maximum: 1};
+            // A uniform field: the server widens vmax by 1e-12.
+            const constant = resolveScale({
+              scale: 'linear', vmin: 1.038, vmax: 1.038 * (1 + 1e-12), values: [1.038],
+            });
             return {
               scale,
               zero: normalizeScalar(0, scale),
@@ -745,6 +751,9 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
               masked: colorForScalar(null, true, scale),
               invalid: colorForScalar(0, false, scale),
               validMaximum: colorForScalar(10, false, scale),
+              ramp: Array.from({length: 257}, (_, i) => colorForScalar(i / 256, false, unit)),
+              constant: colorForScalar(1.038, false, constant),
+              middle: colorForScalar(0.5, false, unit),
             };
         }"""
     )
@@ -757,6 +766,11 @@ def test_log_scale_and_mask_do_not_create_false_hotspots(
     assert result["masked"] != result["validMaximum"]
     assert result["invalid"] != result["validMaximum"]
     assert result["validMaximum"] == [100, 79, 172, 255]
+    # A stronger field is never a lighter colour, anywhere along the ramp.
+    lightness = [_cie_lightness(rgba[:3]) for rgba in result["ramp"]]
+    assert all(later <= earlier for earlier, later in pairwise(lightness)), lightness
+    assert lightness[0] - lightness[-1] > 50
+    assert result["constant"] == result["middle"]
     assert page_errors == []
 
 
@@ -1242,6 +1256,87 @@ def _srgb_luminance(rgb: list[int]) -> float:
     return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
 
 
+def _cie_lightness(rgb: list[int]) -> float:
+    luminance = _srgb_luminance(rgb)
+    if luminance > 216 / 24389:
+        return 116 * luminance ** (1 / 3) - 16
+    return 24389 / 27 * luminance
+
+
+def _colormap_ramp(page: Page) -> list[list[int]]:
+    """RGB of the colormap at 257 evenly spaced positions, weakest first."""
+
+    return page.evaluate(
+        """async () => {
+            const { colorForScalar } = await import('/color-scale.js');
+            const unit = {type: 'linear', minimum: 0, maximum: 1};
+            return Array.from(
+              {length: 257}, (_, i) => colorForScalar(i / 256, false, unit).slice(0, 3),
+            );
+        }"""
+    )
+
+
+@pytest.mark.browser
+def test_colored_cells_keep_their_color_up_to_the_mask_edge(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    # Every coloured node is above vmax. Smoothing must not fade the cells
+    # beside the masked column toward the hatch grey: on this colormap the
+    # fade reads as a weaker field right next to a source.
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    scalar = scene["scalar"]
+    metadata = scene["metadata"]
+    assert isinstance(scalar, dict)
+    assert isinstance(metadata, dict)
+    row = [20.0, 20.0, None, 20.0, 20.0]
+    scalar.update(
+        {
+            "nx": 5,
+            "ny": 3,
+            "values": row * 3,
+            "mask": [value is None for value in row] * 3,
+            "vmin": 1.0,
+            "vmax": 10.0,
+        }
+    )
+    scene["lines"] = []
+    scene["sources"] = []
+    metadata.update(
+        {"termination_counts": {}, "suppressed_count": 0, "rendered_line_count": 0}
+    )
+    _open_ready_scene(page, frontend_url, scene)
+    maximum = _colormap_ramp(page)[-1]
+
+    # Nodes sit at x = -2, -0.5, 1, 2.5, 4; the masked cell spans 0.25-1.75.
+    # These points lie in the coloured cells, off the integer grid lines.
+    pixels = page.evaluate(
+        """async (xs) => {
+          const canvas = document.querySelector('#field-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const domain = {x: [-2, 4], y: [-3, 1]};
+          const {calculatePlotRect, createCoordinateTransform} =
+            await import('/coordinates.js');
+          const transform = createCoordinateTransform(
+            domain, calculatePlotRect(rect.width, rect.height, domain),
+          );
+          const ratio = canvas.width / rect.width;
+          return xs.map((x) => {
+            const [px, py] = transform.worldToCanvas(x, -1.5);
+            return Array.from(canvas.getContext('2d').getImageData(
+              Math.floor(px * ratio), Math.floor(py * ratio), 1, 1,
+            ).data.slice(0, 3));
+          });
+        }""",
+        [-0.8, -0.3, 0.1, 1.9, 2.3, 2.8],
+    )
+    for pixel in pixels:
+        assert max(abs(a - b) for a, b in zip(pixel, maximum, strict=True)) <= 3, pixels
+    assert page_errors == []
+
+
 @pytest.mark.browser
 def test_uncolored_cells_and_colorbar_extend_follow_scene_state(
     browser_page: tuple[Page, list[str]],
@@ -1285,12 +1380,6 @@ def test_uncolored_cells_and_colorbar_extend_follow_scene_state(
             [x, y],
         )
 
-    # (-0.5, -1.5) is the middle of a masked cell and lies off every grid line.
-    hatched = pixel_at(-0.5, -1.5)
-    assert max(hatched) - min(hatched) <= 20, hatched
-    assert min(hatched) < 235, hatched
-    # Much lighter than the darkest colormap colour, so never read as the strongest field.
-    assert _srgb_luminance(hatched) > 1.5 * _srgb_luminance([100, 79, 172]), hatched
 
     # RGB of a 16 CSS px horizontal run centred on a world point.
     def pixel_run(x: float, y: float) -> list[list[int]]:
@@ -1315,18 +1404,24 @@ def test_uncolored_cells_and_colorbar_extend_follow_scene_state(
             [x, y],
         )
 
-    # Hatch lines (ink at half opacity) are much darker than the grey base.
-    assert min(min(rgb) for rgb in pixel_run(-0.5, -1.5)) < 170
-    # The cell at x = 2.5 holds 20 > vmax and must show no stray hatching. The
-    # smoothed heatmap changes monotonically across the run, so a pixel darker
-    # than both pixels two steps away can only be a hatch line.
-    clipped = [_srgb_luminance(rgb) for rgb in pixel_run(2.5, -1.5)]
-    dips = [
-        index
-        for index in range(2, len(clipped) - 2)
-        if clipped[index] < min(clipped[index - 2], clipped[index + 2]) - 0.05
-    ]
-    assert dips == [], clipped
+    # (-0.5, -1.5) is the middle of a masked cell, off every grid line; its
+    # lightest pixel is the hatch base and its darkest lies on a hatch line.
+    ramp = _colormap_ramp(page)
+    hatched = pixel_run(-0.5, -1.5)
+    base = max(hatched, key=_srgb_luminance)
+    line = min(hatched, key=_srgb_luminance)
+    assert max(base) - min(base) <= 8 and max(base) < 240, base  # neutral, not paper
+    # Neither a weak nor the strongest field: far from every colormap colour
+    # and much lighter than its maximum.
+    distance = min(max(abs(a - b) for a, b in zip(base, colour, strict=True)) for colour in ramp)
+    assert distance >= 24, (base, distance)
+    assert _srgb_luminance(base) > 2 * _srgb_luminance(ramp[-1]), base
+    assert (_srgb_luminance(base) + 0.05) / (_srgb_luminance(line) + 0.05) >= 1.8, (base, line)
+    # The cell at x = 2.5 holds 20 > vmax: it shows the colormap maximum,
+    # smoothed only toward the lighter x = 1 and x = 4 cells, and a stray
+    # hatch line would pull a channel below the maximum's.
+    for rgb in pixel_run(2.5, -1.5):
+        assert all(a >= b - 3 for a, b in zip(rgb, ramp[-1], strict=True)), rgb
     expect(page.locator(".colorbar-extend-over")).to_be_visible()
     expect(page.locator(".colorbar-extend-under")).to_be_visible()
     raster = page.evaluate(

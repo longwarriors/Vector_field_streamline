@@ -706,13 +706,15 @@ import {
       image.data[offset + 3] = color[3];
     }
     offscreenContext.putImageData(image, 0, 0);
+    extendIntoUncoloredTexels(offscreenContext, image.data, uncolored, scalar.nx, scalar.ny);
 
     // Scalar nodes include both domain endpoints, so texel centres (i + 0.5)
     // must land on the plot edges: sample the source from the first to the
     // last texel centre instead of stretching whole texels across the plot.
     const { left, top, right, bottom } = state.plotRect;
     context.save();
-    // Transparent cells blend toward this grey, never toward white paper.
+    // Texels with no coloured neighbour stay transparent; they lie inside
+    // hatched cells, and sit on the hatch grey rather than on white paper.
     if (uncolored.length) {
       context.fillStyle = CANVAS_THEME.hatch.base;
       context.fillRect(left, top, right - left, bottom - top);
@@ -733,6 +735,36 @@ import {
     const cells = uncolored.map(cellRect);
     if (cells.length) drawHatch(cells);
     return cells;
+  }
+
+  // Smoothing blends each coloured cell toward its uncoloured neighbours, and
+  // on this colormap any colour there reads as a weaker or a stronger field.
+  // Give each uncoloured texel the mean colour of its coloured 8-neighbours,
+  // so a coloured cell keeps its own colour up to the mask edge; hatching then
+  // covers the uncoloured cells. The raster in `data` itself is unchanged.
+  function extendIntoUncoloredTexels(target, data, uncolored, nx, ny) {
+    for (const index of uncolored) {
+      const i = index % nx;
+      const j = Math.floor(index / nx);
+      const sum = [0, 0, 0];
+      let count = 0;
+      for (let dj = -1; dj <= 1; dj += 1) {
+        for (let di = -1; di <= 1; di += 1) {
+          const ii = i + di;
+          const jj = j + dj;
+          if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
+          const offset = (jj * nx + ii) * 4;
+          if (data[offset + 3] === 0) continue;
+          sum[0] += data[offset];
+          sum[1] += data[offset + 1];
+          sum[2] += data[offset + 2];
+          count += 1;
+        }
+      }
+      if (count === 0) continue;
+      target.fillStyle = `rgb(${sum.map((channel) => Math.round(channel / count)).join(", ")})`;
+      target.fillRect(i, j, 1, 1);
+    }
   }
 
   // The nearest-node cell of a scalar sample, clipped to the plot.
@@ -759,6 +791,9 @@ import {
     cells.forEach((cell) => {
       context.rect(cell.left, cell.top, cell.right - cell.left, cell.bottom - cell.top);
     });
+    // One path, so neighbouring cells join without antialiased seams.
+    context.fillStyle = CANVAS_THEME.hatch.base;
+    context.fill();
     context.clip();
     context.beginPath();
     for (let offset = -height; offset < right - left; offset += CANVAS_THEME.hatch.spacing) {
