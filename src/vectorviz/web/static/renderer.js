@@ -29,20 +29,27 @@ export function sourceStyle(source, theme = CANVAS_THEME) {
 
 /**
  * Create a renderer bound to one canvas. `render(view)` paints the paper,
- * then, when the view has a scene, the heatmap, grid and axes, field lines,
- * material regions and source markers in that order; a stale view keeps
- * only the paper grid and the markers. `view.layers` switches the heatmap,
- * lines, arrows, sources and grid lines off individually; the axes, frame
- * and material outlines always draw. It returns whether hatching shows
+ * then, when the view has a scene, the heatmap, grid and axes, slope glyphs,
+ * field lines, the cursor preview bundle, material regions, source markers
+ * and pinned seeds in that order; a stale view keeps only the paper grid,
+ * the markers and the seeds. `view.layers` switches the heatmap, slopes,
+ * lines, arrows, preview, sources and grid lines off individually; the axes,
+ * frame and material outlines always draw. It returns whether hatching shows
  * beside the markers so the page can decide about the legend.
  */
 export const ALL_LAYERS = Object.freeze({
   heatmap: true,
+  slopes: true,
   lines: true,
   arrows: true,
+  preview: true,
   sources: true,
   grid: true,
 });
+
+// What a fresh page shows: the slope glyphs start hidden so the field lines
+// stay the primary object.
+export const DEFAULT_LAYERS = Object.freeze({ ...ALL_LAYERS, slopes: false });
 
 export function createRenderer(canvas, theme = CANVAS_THEME) {
   const context = canvas.getContext("2d", { alpha: false });
@@ -76,13 +83,17 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     if (view.status === "stale") {
       drawGridAndAxes({ onField: false, grid: layers.grid });
       if (layers.sources) drawSources();
+      if (layers.lines) drawSeeds();
       return { hatchVisible: false };
     }
     const uncoloredCells = layers.heatmap ? drawHeatmap() : [];
     drawGridAndAxes({ onField: layers.heatmap, grid: layers.grid });
+    if (layers.slopes && view.scene.vector) drawSlopes();
     if (layers.lines) drawStreamlines({ arrows: layers.arrows });
+    if (layers.preview && view.preview?.length) drawPreview(view.preview);
     drawRegions();
     if (layers.sources) drawSources();
+    if (layers.lines) drawSeeds();
     return {
       hatchVisible: layers.heatmap && hatchShowsBesideMarkers(uncoloredCells, layers.sources),
     };
@@ -418,7 +429,8 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
       const points = view.transform.projectPoints(validPoints(line));
       if (points.length < 2) continue;
       tracePath(points);
-      context.strokeStyle = theme.line.halo;
+      const manual = Number.isInteger(line.seed_index);
+      context.strokeStyle = manual ? theme.line.manualHalo : theme.line.halo;
       context.lineWidth = theme.line.haloWidth;
       context.stroke();
       tracePath(points);
@@ -426,6 +438,89 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
       context.lineWidth = theme.line.coreWidth;
       context.stroke();
       if (arrows) drawDirectionArrows(points, line.direction);
+    }
+    context.restore();
+  }
+
+  // One unoriented segment per sampled node, along the local field direction
+  // and all the same length: a slope field of the direction alone. Nodes are
+  // taken every `stride` so glyphs sit about `theme.slope.spacing` px apart,
+  // and masked or zero vectors draw nothing.
+  function drawSlopes() {
+    const { vector, scalar } = view.scene;
+    const { left, top, right, bottom } = view.plotRect;
+    const cellX = (right - left) / (vector.nx - 1);
+    const cellY = (bottom - top) / (vector.ny - 1);
+    const cell = Math.max(cellX, cellY);
+    const stride = Math.max(1, Math.round(theme.slope.spacing / cell));
+    const half = 0.5 * theme.slope.lengthFraction * stride * cell;
+    const firstColumn = Math.floor(((vector.nx - 1) % stride) / 2);
+    const firstRow = Math.floor(((vector.ny - 1) % stride) / 2);
+    context.save();
+    context.strokeStyle = theme.slope.stroke;
+    context.lineWidth = theme.slope.width;
+    context.lineCap = "round";
+    context.beginPath();
+    for (let row = firstRow; row < vector.ny; row += stride) {
+      for (let column = firstColumn; column < vector.nx; column += stride) {
+        const index = row * vector.nx + column;
+        if (scalar.mask[index]) continue;
+        const u = Number(vector.u[index]);
+        const v = Number(vector.v[index]);
+        const length = Math.hypot(u, v);
+        if (!(length > 0)) continue;
+        const x = left + column * cellX;
+        const y = top + row * cellY;
+        // Canvas y grows downward, so the y component flips.
+        const dx = (u / length) * half;
+        const dy = (-v / length) * half;
+        context.moveTo(x - dx, y - dy);
+        context.lineTo(x + dx, y + dy);
+      }
+    }
+    context.stroke();
+    context.restore();
+  }
+
+  // The cursor bundle: interpolated preview curves in the seed blue, the
+  // central one heavier, each on a white halo so it reads on the colormap.
+  function drawPreview(curves) {
+    const { preview } = theme;
+    context.save();
+    context.lineJoin = "round";
+    context.lineCap = "round";
+    for (const curve of curves) {
+      const points = view.transform.projectPoints(curve.points);
+      if (points.length < 2) continue;
+      tracePath(points);
+      context.globalAlpha = 1;
+      context.strokeStyle = preview.halo;
+      context.lineWidth = preview.haloWidth;
+      context.stroke();
+      tracePath(points);
+      context.globalAlpha = curve.central ? 1 : preview.sideAlpha;
+      context.strokeStyle = preview.stroke;
+      context.lineWidth = curve.central ? preview.centralWidth : preview.width;
+      context.stroke();
+    }
+    context.restore();
+  }
+
+  // Pinned manual seeds: a small blue dot with a white ring at each seed.
+  function drawSeeds() {
+    const seeds = view.seeds || [];
+    if (!seeds.length) return;
+    const { seed } = theme;
+    context.save();
+    for (const { x, y } of seeds) {
+      const [cx, cy] = worldToCanvas(finiteNumber(x), finiteNumber(y));
+      context.beginPath();
+      context.arc(cx, cy, seed.radius, 0, Math.PI * 2);
+      context.fillStyle = seed.fill;
+      context.fill();
+      context.strokeStyle = seed.ring;
+      context.lineWidth = seed.ringWidth;
+      context.stroke();
     }
     context.restore();
   }

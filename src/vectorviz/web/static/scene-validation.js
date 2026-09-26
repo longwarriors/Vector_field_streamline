@@ -29,7 +29,9 @@ export const SEED_MODE_LABELS = Object.freeze({
 
 // Validates the response for the preset that requested it: fixed presets
 // must return exactly their read-only markers or their own material region.
-export function validateScene(scene, preset) {
+// `expected.seedCount` is how many manual seeds the request carried; the
+// response must account for exactly that many.
+export function validateScene(scene, preset, expected = {}) {
   if (!scene || typeof scene !== "object") throw new Error("响应不是有效的场景对象");
   const xDomain = scene.domain?.x;
   const yDomain = scene.domain?.y;
@@ -82,6 +84,37 @@ export function validateScene(scene, preset) {
     (scene.scalar.scale === "log" && scene.scalar.vmin <= 0)
   ) {
     throw new Error("标量色标元数据无效");
+  }
+
+  // The vector grid is additive and nullable in the schema: absent or null
+  // means an older server; once present it is the same grid as the scalar,
+  // with both components null exactly where the scalar mask is true.
+  if (scene.vector === null) delete scene.vector;
+  if (scene.vector !== undefined) {
+    const vector = scene.vector;
+    const validVector =
+      vector &&
+      typeof vector === "object" &&
+      !Array.isArray(vector) &&
+      vector.nx === nx &&
+      vector.ny === ny &&
+      Array.isArray(vector.u) &&
+      Array.isArray(vector.v) &&
+      vector.u.length === nx * ny &&
+      vector.v.length === nx * ny &&
+      typeof vector.label === "string" &&
+      typeof vector.unit === "string" &&
+      vector.u.every((u, index) =>
+        mask[index]
+          ? u === null && vector.v[index] === null
+          : typeof u === "number" &&
+            Number.isFinite(u) &&
+            typeof vector.v[index] === "number" &&
+            Number.isFinite(vector.v[index]),
+      );
+    if (!validVector) {
+      throw new Error("向量网格与标量网格的尺寸或遮罩不一致");
+    }
   }
 
   if (!Array.isArray(scene.lines) || !Array.isArray(scene.sources)) {
@@ -214,6 +247,36 @@ export function validateScene(scene, preset) {
     metadata.rendered_line_count !== scene.lines.length
   ) {
     throw new Error("场景 metadata 缺少有效的模型、播种或终止统计");
+  }
+  // Manual seeds are accounted apart from the budget. An older server has
+  // none; a current one must report exactly the seeds the request carried,
+  // one end-side and one start-side reason each, and flag at most one line
+  // per seed.
+  metadata.manual_seed_count ??= 0;
+  metadata.manual_termination_counts ??= {};
+  metadata.manual_start_termination_counts ??= {};
+  const sum = (counts) => Object.values(counts).reduce((total, count) => total + count, 0);
+  const seedIndices = scene.lines
+    .map((line) => line.seed_index)
+    .filter((index) => index !== undefined && index !== null);
+  if (
+    !Number.isInteger(metadata.manual_seed_count) ||
+    metadata.manual_seed_count < 0 ||
+    !validCountMap(metadata.manual_termination_counts) ||
+    !validCountMap(metadata.manual_start_termination_counts) ||
+    sum(metadata.manual_termination_counts) !== metadata.manual_seed_count ||
+    sum(metadata.manual_start_termination_counts) !== metadata.manual_seed_count ||
+    !seedIndices.every(
+      (index) => Number.isInteger(index) && index >= 0 && index < metadata.manual_seed_count,
+    ) ||
+    new Set(seedIndices).size !== seedIndices.length
+  ) {
+    throw new Error("手动种子的统计或 seed_index 无效");
+  }
+  if (expected.seedCount !== undefined && metadata.manual_seed_count !== expected.seedCount) {
+    throw new Error(
+      `服务端记录了 ${metadata.manual_seed_count} 个手动种子，请求发送的是 ${expected.seedCount} 个`,
+    );
   }
   return scene;
 }

@@ -28,6 +28,7 @@ def main() -> None:
                 "canvas-theme.js",
                 "renderer.js",
                 "scene-loader.js",
+                "preview.js",
                 "scene-validation.js",
                 "formatting.js",
                 "source-controls.js",

@@ -3018,3 +3018,486 @@ def test_drag_and_keyboard_requests_never_exceed_source_coordinate_contract(
         for axis in ("x", "y")
     )
     assert page_errors == []
+
+
+def _browser_vector_scene() -> dict[str, object]:
+    # The fixture field points 36.87 deg from +x everywhere, with |F| equal
+    # to the scalar values, so every direction readout is known in advance.
+    scene = json.loads(json.dumps(_browser_scene()))
+    scalar = scene["scalar"]
+    assert isinstance(scalar, dict)
+    values = scalar["values"]
+    scene["vector"] = {
+        "nx": 3,
+        "ny": 3,
+        "u": [value * 0.8 for value in values],
+        "v": [value * 0.6 for value in values],
+        "label": "F",
+        "unit": "u",
+    }
+    return scene
+
+
+def _browser_uniform_vector_scene(nx: int = 9) -> dict[str, object]:
+    # A constant field (1, 0.5) on an nx x nx grid: the preview's RK4 is
+    # exact for it, so every preview curve is the straight line through its
+    # seed with slope 1/2.
+    scene = json.loads(json.dumps(_browser_scene()))
+    scalar = scene["scalar"]
+    assert isinstance(scalar, dict)
+    size = nx * nx
+    magnitude = math.hypot(1.0, 0.5)
+    scalar.update(
+        {
+            "nx": nx,
+            "ny": nx,
+            "values": [magnitude] * size,
+            "mask": [False] * size,
+            "vmin": 1.0,
+            "vmax": 2.0,
+        }
+    )
+    scene["vector"] = {
+        "nx": nx,
+        "ny": nx,
+        "u": [1.0] * size,
+        "v": [0.5] * size,
+        "label": "F",
+        "unit": "u",
+    }
+    scene["sources"] = []
+    metadata = scene["metadata"]
+    assert isinstance(metadata, dict)
+    metadata["title"] = "Uniform vector fixture"
+    return scene
+
+
+def _plot_geometry(page: Page, domain: dict[str, list[float]]) -> dict[str, float]:
+    return page.evaluate(
+        """async (domain) => {
+            const canvas = document.querySelector('#field-canvas');
+            const rect = canvas.getBoundingClientRect();
+            const {calculatePlotRect} = await import('/coordinates.js');
+            const plot = calculatePlotRect(rect.width, rect.height, domain);
+            return {
+              left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+              plotLeft: plot.left, plotTop: plot.top, plotRight: plot.right, plotBottom: plot.bottom,
+            };
+        }""",
+        domain,
+    )
+
+
+@pytest.mark.browser
+def test_slope_layer_and_probe_direction_read_the_vector_grid(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    requests: list[dict[str, object]] = []
+    scene = _browser_vector_scene()
+
+    def route_scene(route: Route) -> None:
+        requests.append(route.request.post_data_json)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(scene))
+
+    _instrument_canvas(page)
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    baseline_requests = len(requests)
+    slopes = page.locator('.layer-toggle[data-layer="slopes"]')
+    preview = page.locator('.layer-toggle[data-layer="preview"]')
+    expect(slopes).to_be_enabled()
+    expect(preview).to_be_enabled()
+    # Slopes start hidden so the field lines stay the primary object; the
+    # preview layer starts on and says what it is.
+    expect(slopes).to_have_attribute("aria-pressed", "false")
+    expect(preview).to_have_attribute("aria-pressed", "true")
+    expect(page.locator('.legend-chip[data-layer="slopes"]')).to_be_hidden()
+    expect(page.locator('.legend-chip[data-layer="preview"]')).to_be_visible()
+    expect(page.locator("#caption-preview")).to_contain_text("不是服务端积分")
+
+    def snapshot() -> str:
+        return page.evaluate("() => document.querySelector('#field-canvas').toDataURL()")
+
+    plain = snapshot()
+    slopes.click()
+    expect(slopes).to_have_attribute("aria-pressed", "true")
+    expect(page.locator('.legend-chip[data-layer="slopes"]')).to_be_visible()
+    assert snapshot() != plain
+    # Nine unmasked nodes, one unoriented segment each, all in one stroke.
+    segments = page.evaluate(
+        """() => {
+            const calls = window.__vectorVizCanvasCalls;
+            const strokes = calls.paints.filter((paint) => paint.kind === 'stroke');
+            const slopeStroke = strokes.findLast((paint) =>
+              paint.path.length === 18 && paint.path.every((op, i) => op[0] === (i % 2 ? 'L' : 'M')));
+            if (!slopeStroke) return null;
+            const out = [];
+            for (let i = 0; i < slopeStroke.path.length; i += 2) {
+              const [, x0, y0] = slopeStroke.path[i];
+              const [, x1, y1] = slopeStroke.path[i + 1];
+              out.push({length: Math.hypot(x1 - x0, y1 - y0), angle: Math.atan2(-(y1 - y0), x1 - x0)});
+            }
+            return out;
+        }"""
+    )
+    assert segments is not None and len(segments) == 9
+    lengths = {round(segment["length"], 6) for segment in segments}
+    assert len(lengths) == 1, "slope glyphs share one length"
+    expected_angle = math.atan2(0.6, 0.8)
+    for segment in segments:
+        angle = segment["angle"] % math.pi
+        assert math.isclose(angle, expected_angle, abs_tol=1e-9)
+    slopes.click()
+    assert snapshot() == plain
+
+    # The probe adds the direction and components of the nearest node.
+    geometry = _plot_geometry(page, {"x": [-2, 4], "y": [-3, 1]})
+    page.mouse.move(geometry["left"] + geometry["plotRight"] - 2, geometry["top"] + geometry["plotTop"] + 2)
+    expect(page.locator("#probe-value")).to_have_text("|F| 3 u")
+    expect(page.locator("#probe-direction")).to_have_text("方向 36.9° · Fx 2.4 · Fy 1.8")
+    assert len(requests) == baseline_requests
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_preview_integrator_is_exact_on_a_uniform_field_and_closes_a_rotation(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    _open_ready_scene(page, frontend_url, _browser_uniform_vector_scene())
+    result = page.evaluate(
+        """async () => {
+            const {createPreviewGrid, integratePreview, interpolateVector, previewBundle} =
+              await import('/preview.js');
+            const scene = {
+              domain: {x: [-2, 4], y: [-3, 1]},
+              scalar: {mask: new Array(81).fill(false)},
+              vector: {nx: 9, ny: 9, u: new Array(81).fill(1), v: new Array(81).fill(0.5)},
+            };
+            const grid = createPreviewGrid(scene);
+            const curve = integratePreview(grid, [1, -1]);
+            const offLine = Math.max(...curve.points.map(([x, y]) => Math.abs((y + 1) - 0.5 * (x - 1))));
+            const bundle = previewBundle(grid, [1, -1], {spacing: 0.1});
+            const bundleOffsets = bundle.map(({seed}) => (seed[1] + 1) - 0.5 * (seed[0] - 1));
+            // Mask one node: the cells around it are unusable, the rest interpolate.
+            scene.scalar.mask[40] = true;
+            const masked = createPreviewGrid(scene);
+
+            // A rotation field on a 41 x 41 grid: bilinear interpolation of a
+            // linear field is exact, so the drift measures RK4 alone.
+            const n = 41;
+            const u = [], v = [];
+            for (let row = 0; row < n; row += 1) {
+              const y = 2 - (4 * row) / (n - 1);
+              for (let column = 0; column < n; column += 1) {
+                const x = -2 + (4 * column) / (n - 1);
+                u.push(-y);
+                v.push(x);
+              }
+            }
+            const rotation = createPreviewGrid({
+              domain: {x: [-2, 2], y: [-2, 2]},
+              scalar: {mask: new Array(n * n).fill(false)},
+              vector: {nx: n, ny: n, u, v},
+            });
+            const circle = integratePreview(rotation, [1, 0]);
+            const radiusDrift = Math.max(...circle.points.map(([x, y]) => Math.abs(Math.hypot(x, y) - 1)));
+            return {
+              offLine,
+              first: curve.points[0],
+              last: curve.points.at(-1),
+              termination: curve.termination,
+              startTermination: curve.startTermination,
+              bundleSize: bundle.length,
+              bundleOffsets,
+              maskedCentre: interpolateVector(masked, 1, -1),
+              maskedAway: interpolateVector(masked, -1.5, 0.5),
+              circleTermination: circle.termination,
+              radiusDrift,
+              circlePoints: circle.points.length,
+            };
+        }"""
+    )
+    assert result["offLine"] < 1e-9
+    assert result["termination"] == "domain_exit" and result["startTermination"] == "domain_exit"
+    # The line leaves through the right edge going forward and through the
+    # left edge going backward, both ends clipped onto the domain.
+    assert math.isclose(result["last"][0], 4.0, abs_tol=1e-9)
+    assert math.isclose(result["first"][0], -2.0, abs_tol=1e-9)
+    assert math.isclose(result["first"][1], -2.5, abs_tol=1e-9)
+    assert result["bundleSize"] == 5
+    # Bundle seeds sit on the normal through the centre, 0.1 apart in the normal direction.
+    expected = sorted(k * 0.1 * math.hypot(1.0, 0.5) for k in range(-2, 3))
+    assert all(
+        math.isclose(a, b, abs_tol=1e-9) for a, b in zip(sorted(result["bundleOffsets"]), expected, strict=True)
+    )
+    assert result["maskedCentre"] is None
+    assert all(
+        math.isclose(a, b, abs_tol=1e-12) for a, b in zip(result["maskedAway"], (1.0, 0.5), strict=True)
+    )
+    assert result["circleTermination"] == "closed_loop"
+    assert result["radiusDrift"] < 1e-4
+    assert result["circlePoints"] > 40
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_cursor_preview_draws_locally_and_a_click_pins_a_server_seed(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    requests: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        body = route.request.post_data_json
+        requests.append(body)
+        scene = _browser_uniform_vector_scene()
+        seeds = body.get("seeds") or []
+        if seeds:
+            seed = seeds[0]
+            lines = scene["lines"]
+            metadata = scene["metadata"]
+            assert isinstance(lines, list) and isinstance(metadata, dict)
+            lines.append(
+                {
+                    "points": [
+                        [seed["x"] - 1.0, seed["y"] - 0.5],
+                        [seed["x"], seed["y"]],
+                        [seed["x"] + 1.0, seed["y"] + 0.5],
+                    ],
+                    "direction": 1,
+                    "termination": "domain_exit",
+                    "start_termination": "domain_exit",
+                    "seed_index": 0,
+                }
+            )
+            metadata.update(
+                {
+                    "rendered_line_count": len(lines),
+                    "manual_seed_count": len(seeds),
+                    "manual_termination_counts": {"domain_exit": len(seeds)},
+                    "manual_start_termination_counts": {"domain_exit": len(seeds)},
+                }
+            )
+            if len(seeds) > 1:
+                # The second seed is reported as tracing to a one-point result.
+                metadata["manual_termination_counts"] = {"domain_exit": 1, "exclusion_hit": 1}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(scene))
+
+    _instrument_canvas(page)
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    geometry = _plot_geometry(page, {"x": [-2, 4], "y": [-3, 1]})
+    centre_x = geometry["left"] + (geometry["plotLeft"] + geometry["plotRight"]) / 2
+    centre_y = geometry["top"] + (geometry["plotTop"] + geometry["plotBottom"]) / 2
+
+    def snapshot() -> str:
+        return page.evaluate("() => document.querySelector('#field-canvas').toDataURL()")
+
+    plain = snapshot()
+    baseline_requests = len(requests)
+    page.mouse.move(centre_x, centre_y)
+    expect(page.locator("#probe")).to_be_visible()
+    page.wait_for_function(
+        "url => document.querySelector('#field-canvas').toDataURL() !== url", arg=plain
+    )
+    hovered = snapshot()
+    # The bundle is blue preview strokes only: no request was sent for it.
+    assert len(requests) == baseline_requests
+    # Five curves, each a halo stroke and a core stroke of a dozen or more
+    # points; the fixture's own field line has three.
+    preview_strokes = page.evaluate(
+        """() => window.__vectorVizCanvasCalls.paints.filter((paint) => paint.kind === 'stroke'
+             && paint.path.length > 10).length"""
+    )
+    assert preview_strokes >= 10
+    # Leaving the plot removes the bundle; the preview toggle removes it too.
+    page.mouse.move(geometry["left"] + 2, geometry["top"] + 2)
+    page.wait_for_function(
+        "url => document.querySelector('#field-canvas').toDataURL() === url", arg=plain
+    )
+    page.locator('.layer-toggle[data-layer="preview"]').click()
+    expect(page.locator("#caption-preview")).to_be_hidden()
+    expect(page.locator('.legend-chip[data-layer="preview"]')).to_be_hidden()
+    page.mouse.move(centre_x, centre_y)
+    expect(page.locator("#probe")).to_be_visible()
+    assert snapshot() == plain
+    page.locator('.layer-toggle[data-layer="preview"]').click()
+    expect(page.locator("#caption-preview")).to_be_visible()
+    assert len(requests) == baseline_requests
+
+    # A click pins the seed: the request carries it, the response's manual
+    # line is drawn with the seed dot, and the details account for it.
+    with page.expect_request("**/api/scene") as pinned:
+        page.mouse.click(centre_x, centre_y)
+    body = pinned.value.post_data_json
+    assert len(body["seeds"]) == 1
+    assert math.isclose(body["seeds"][0]["x"], 1.0, abs_tol=0.02)
+    assert math.isclose(body["seeds"][0]["y"], -1.0, abs_tol=0.02)
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    expect(page.locator("#seed-status")).to_contain_text("1 个手动种子")
+    expect(page.locator("#manual-seed-summary")).to_have_text(
+        "1 个种子 → 1 条线 · 末端：离开计算域 1 · 起点端：离开计算域 1"
+    )
+    expect(page.locator('.legend-chip[data-layer="seeds"]')).to_be_visible()
+    expect(page.locator("#line-count")).to_have_text("2")
+    expect(page.locator("#clear-seeds")).to_be_enabled()
+    page.mouse.move(geometry["left"] + 2, geometry["top"] + 2)
+    page.wait_for_function(
+        "url => document.querySelector('#field-canvas').toDataURL() !== url", arg=hovered
+    )
+    assert snapshot() != plain
+
+    # A drag across the field is not a click and pins nothing; a second click
+    # appends a seed and the server's accounting (one seed without a line) is
+    # shown rather than hidden.
+    page.mouse.move(centre_x - 60, centre_y + 40)
+    page.mouse.down()
+    page.mouse.move(centre_x - 20, centre_y + 40, steps=4)
+    page.mouse.up()
+    page.wait_for_timeout(200)
+    assert len(requests) == baseline_requests + 1
+    with page.expect_request("**/api/scene") as second:
+        page.mouse.click(centre_x - 60, centre_y + 40)
+    assert len(second.value.post_data_json["seeds"]) == 2
+    expect(page.locator("#manual-seed-summary")).to_have_text(
+        "2 个种子 → 1 条线 · 末端：离开计算域 1 · 命中排除区 1 · 起点端：离开计算域 2"
+    )
+    expect(page.locator("#seed-status")).to_contain_text("2 个手动种子")
+
+    # Clearing sends the scene without seeds; a preset change would too.
+    with page.expect_request("**/api/scene") as cleared:
+        page.locator("#clear-seeds").click()
+    assert "seeds" not in cleared.value.post_data_json
+    expect(page.locator("#seed-status")).to_have_text("尚无手动种子。")
+    expect(page.locator("#manual-seed-summary")).to_have_text("无")
+    expect(page.locator('.legend-chip[data-layer="seeds"]')).to_be_hidden()
+    expect(page.locator("#clear-seeds")).to_be_disabled()
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_range_sliders_commit_on_release(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    requests: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        requests.append(route.request.post_data_json)
+        route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(_browser_scene())
+        )
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    baseline = len(requests)
+
+    # Dragging the thumb fires input events: the readout follows, no request goes out.
+    for value in (19, 22, 25):
+        page.locator("#density").evaluate(
+            "(input, value) => { input.value = String(value);"
+            " input.dispatchEvent(new Event('input', {bubbles: true})); }",
+            value,
+        )
+    expect(page.locator("#density-output")).to_have_text("25")
+    page.wait_for_timeout(400)
+    assert len(requests) == baseline
+
+    # Release commits once, with the final value.
+    with page.expect_request("**/api/scene") as released:
+        page.locator("#density").dispatch_event("change")
+    assert released.value.post_data_json["density"] == 25
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    assert len(requests) == baseline + 1
+
+    # Rapid keyboard steps each fire change; the short debounce merges them.
+    page.locator("#resolution").evaluate(
+        """input => {
+            for (const value of ['96', '112']) {
+              input.value = value;
+              input.dispatchEvent(new Event('input', {bubbles: true}));
+              input.dispatchEvent(new Event('change', {bubbles: true}));
+            }
+        }"""
+    )
+    page.wait_for_timeout(500)
+    assert len(requests) == baseline + 2
+    assert requests[-1]["resolution"] == 112
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_scene_validation_rejects_vector_and_manual_seed_mismatches(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    _open_ready_scene(page, frontend_url, _browser_scene())
+    outcomes = page.evaluate(
+        """async (base) => {
+            const {validateScene} = await import('/scene-validation.js');
+            const clone = () => JSON.parse(JSON.stringify(base));
+            const attempt = (mutate, expected) => {
+              const scene = clone();
+              mutate(scene);
+              try {
+                validateScene(scene, 'electric_dipole', expected);
+                return {ok: true, manual: scene.metadata.manual_seed_count, vector: scene.vector === undefined ? 'absent' : 'present'};
+              } catch (error) {
+                return {ok: false, message: error.message};
+              }
+            };
+            const vector = {nx: 3, ny: 3, u: base.scalar.values.map((v) => v), v: base.scalar.values.map(() => 0), label: 'F', unit: 'u'};
+            return {
+              plain: attempt(() => {}, {seedCount: 0}),
+              nullVector: attempt((scene) => { scene.vector = null; }),
+              goodVector: attempt((scene) => { scene.vector = vector; }),
+              shortU: attempt((scene) => { scene.vector = {...vector, u: vector.u.slice(1)}; }),
+              wrongShape: attempt((scene) => { scene.vector = {...vector, nx: 9, ny: 1}; }),
+              misalignedNull: attempt((scene) => {
+                scene.vector = {...vector, u: [...vector.u], v: [...vector.v]};
+                scene.vector.u[0] = null; scene.vector.v[0] = null;
+              }),
+              halfNull: attempt((scene) => {
+                scene.scalar.mask[0] = true; scene.scalar.values[0] = null;
+                scene.vector = {...vector, u: [...vector.u], v: [...vector.v]};
+                scene.vector.u[0] = null;
+              }),
+              manualOk: attempt((scene) => {
+                scene.metadata.manual_seed_count = 1;
+                scene.metadata.manual_termination_counts = {domain_exit: 1};
+                scene.metadata.manual_start_termination_counts = {null_field: 1};
+                scene.lines[0].seed_index = 0;
+                scene.metadata.rendered_line_count = 1;
+              }, {seedCount: 1}),
+              manualCountMismatch: attempt((scene) => {
+                scene.metadata.manual_seed_count = 2;
+                scene.metadata.manual_termination_counts = {domain_exit: 1};
+                scene.metadata.manual_start_termination_counts = {domain_exit: 2};
+              }),
+              seedIndexOutOfRange: attempt((scene) => { scene.lines[0].seed_index = 0; }),
+              requestMismatch: attempt(() => {}, {seedCount: 1}),
+            };
+        }""",
+        _browser_scene(),
+    )
+    assert outcomes["plain"] == {"ok": True, "manual": 0, "vector": "absent"}
+    assert outcomes["nullVector"] == {"ok": True, "manual": 0, "vector": "absent"}
+    assert outcomes["goodVector"]["ok"] and outcomes["goodVector"]["vector"] == "present"
+    for key in ("shortU", "wrongShape", "misalignedNull", "halfNull"):
+        assert not outcomes[key]["ok"] and "向量网格" in outcomes[key]["message"], key
+    assert outcomes["manualOk"] == {"ok": True, "manual": 1, "vector": "absent"}
+    for key in ("manualCountMismatch", "seedIndexOutOfRange"):
+        assert not outcomes[key]["ok"] and "手动种子" in outcomes[key]["message"], key
+    assert not outcomes["requestMismatch"]["ok"]
+    assert "请求发送的是 1 个" in outcomes["requestMismatch"]["message"]
+    assert page_errors == []

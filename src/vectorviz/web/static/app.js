@@ -26,7 +26,8 @@ import {
   snapSourcePosition,
   sourceSeparationConflict,
 } from "./source-controls.js";
-import { ALL_LAYERS, createRenderer, sourceStyle } from "./renderer.js";
+import { createPreviewGrid, previewBundle } from "./preview.js";
+import { DEFAULT_LAYERS, createRenderer, sourceStyle } from "./renderer.js";
 import { createSceneLoader } from "./scene-loader.js";
 import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validation.js";
 
@@ -35,6 +36,12 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
 
   const API_URL = "/api/scene";
   const PRESETS_URL = "/api/presets";
+  // The request contract for manual seeds: at most this many, inside the domain.
+  const SEED_COUNT_LIMIT = 16;
+  // Seeds of the cursor preview bundle sit this many CSS px apart, across the field.
+  const PREVIEW_SPACING_PX = 9;
+  // A pointer that travels further than this between down and up is not a click.
+  const CLICK_TOLERANCE_PX = 4;
   const EDITABLE_SOURCE_PRESETS = new Set([
     "electric_dipole",
     "electric_quadrupole",
@@ -78,6 +85,11 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     colorbarExtent: document.querySelector("#colorbar-extent"),
     colorbarTicks: document.querySelector("#colorbar-ticks"),
     probeNode: document.querySelector("#probe-node"),
+    probeDirection: document.querySelector("#probe-direction"),
+    captionPreview: document.querySelector("#caption-preview"),
+    clearSeeds: document.querySelector("#clear-seeds"),
+    seedStatus: document.querySelector("#seed-status"),
+    manualSeedSummary: document.querySelector("#manual-seed-summary"),
     legendUncolored: document.querySelector("#legend-uncolored"),
     legendChips: Array.from(document.querySelectorAll(".legend-chip[data-layer]")),
     layerToggles: Array.from(document.querySelectorAll(".layer-toggle")),
@@ -104,7 +116,14 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   const state = {
     scene: null,
     sourceOverrides: null,
-    layers: { ...ALL_LAYERS },
+    layers: { ...DEFAULT_LAYERS },
+    // Manual seeds are request state, like source overrides: they persist
+    // across recomputes of the same preset and clear with a preset change.
+    seeds: [],
+    preview: null,
+    previewGrid: null,
+    previewFrame: null,
+    pendingSeed: null,
     resizeFrame: null,
     drag: null,
     selectedSource: null,
@@ -236,6 +255,9 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     if (serializedSources) {
       body.sources = serializedSources;
     }
+    if (state.seeds.length) {
+      body.seeds = state.seeds.map(({ x, y }) => ({ x, y }));
+    }
     return body;
   }
 
@@ -258,6 +280,9 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     state.scene = null;
     state.selectedSource = null;
     state.drag = null;
+    state.pendingSeed = null;
+    state.preview = null;
+    state.previewGrid = null;
     state.plotRect = null;
     state.transform = null;
     state.scale = null;
@@ -282,12 +307,14 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     elements.seedDescription.textContent = "—";
     elements.terminationCounts.textContent = "—";
     elements.startTerminationCounts.textContent = "—";
+    elements.manualSeedSummary.textContent = "—";
     elements.renderedLineCount.textContent = "—";
     elements.suppressedCount.textContent = "—";
     elements.colorbar.hidden = true;
     elements.probe.hidden = true;
     elements.probeNode.hidden = true;
     renderSourceEditors();
+    renderSeedStatus();
     render();
   }
 
@@ -295,6 +322,8 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     if (!state.scene) return;
     state.presentationStatus = "stale";
     state.scale = null;
+    state.preview = null;
+    state.pendingSeed = null;
     elements.colorbar.hidden = true;
     elements.probe.hidden = true;
     elements.probeNode.hidden = true;
@@ -302,6 +331,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     elements.lineCount.textContent = "—";
     elements.terminationCounts.textContent = "待重算";
     elements.startTerminationCounts.textContent = "待重算";
+    elements.manualSeedSummary.textContent = state.seeds.length ? "待重算" : "无";
     elements.renderedLineCount.textContent = "—";
     elements.suppressedCount.textContent = "—";
     elements.canvas.setAttribute(
@@ -324,7 +354,9 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       signal,
     });
     if (!response.ok) throw new Error(await extractError(response));
-    return validateScene(await response.json(), requestBody.preset);
+    return validateScene(await response.json(), requestBody.preset, {
+      seedCount: requestBody.seeds?.length ?? 0,
+    });
   }
 
   const loader = createSceneLoader({
@@ -341,11 +373,17 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
         ? scene.sources.map(serializeSource)
         : null;
       state.selectedSource = null;
+      state.previewGrid = scene.vector ? createPreviewGrid(scene) : null;
+      state.preview = null;
       renderSourceEditors();
       updateSceneDetails();
       render();
       setConnectionStatus("ready", "已同步");
-      elements.liveStatus.textContent = `${scene.metadata.title || "场景"}已加载，渲染 ${scene.metadata.rendered_line_count} 条场线，抑制 ${scene.metadata.suppressed_count} 次尝试。`;
+      const manualNote =
+        scene.metadata.manual_seed_count > 0
+          ? `，其中 ${scene.lines.filter((line) => Number.isInteger(line.seed_index)).length} 条来自 ${scene.metadata.manual_seed_count} 个手动种子`
+          : "";
+      elements.liveStatus.textContent = `${scene.metadata.title || "场景"}已加载，渲染 ${scene.metadata.rendered_line_count} 条场线${manualNote}，抑制 ${scene.metadata.suppressed_count} 次尝试。`;
     },
     onError(error) {
       invalidateSceneView("error");
@@ -358,10 +396,14 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     },
   });
 
-  async function loadScene({ preserveSources = true } = {}) {
+  async function loadScene({ preserveSources = true, preserveSeeds = true } = {}) {
     if (!preserveSources) {
       state.sourceOverrides = null;
       elements.sourceStatus.textContent = "";
+    }
+    if (!preserveSeeds) {
+      state.seeds = [];
+      renderSeedStatus();
     }
     await loader.load(currentRequestBody());
   }
@@ -415,6 +457,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     elements.startTerminationCounts.textContent = formatTerminationCounts(
       scene.metadata.start_termination_counts,
     );
+    elements.manualSeedSummary.textContent = formatManualSeedSummary(scene);
     elements.renderedLineCount.textContent =
       scene.metadata.rendered_line_count.toLocaleString("zh-CN");
     elements.suppressedCount.textContent =
@@ -449,6 +492,42 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       "aria-label",
       `${title}二维可视化，共 ${scene.metadata.rendered_line_count} 条场线、${draggableSourceCount} 个可移动场源。`,
     );
+    // Layers that read the vector grid are unavailable without it. The
+    // caption line about the preview exists only with a vector grid; the
+    // layer toggle then only changes its visibility, so the figure never
+    // reflows (and the plot never moves) when a layer is switched.
+    const hasVector = Boolean(scene.vector);
+    elements.captionPreview.hidden = !hasVector;
+    elements.layerToggles.forEach((button) => {
+      if (button.dataset.layer === "slopes" || button.dataset.layer === "preview") {
+        button.disabled = !hasVector;
+        button.title = hasVector ? button.dataset.title : "此响应没有向量分量，无法显示";
+      }
+    });
+    renderSeedStatus();
+  }
+
+  // The manual-seed line of the science details: how many seeds the server
+  // traced, how many lines they produced, and both ends' terminations.
+  function formatManualSeedSummary(scene) {
+    const count = scene.metadata.manual_seed_count;
+    if (!count) return "无";
+    const drawn = scene.lines.filter((line) => Number.isInteger(line.seed_index)).length;
+    return (
+      `${count} 个种子 → ${drawn} 条线 · 末端：${formatTerminationCounts(scene.metadata.manual_termination_counts)}` +
+      ` · 起点端：${formatTerminationCounts(scene.metadata.manual_start_termination_counts)}`
+    );
+  }
+
+  function renderSeedStatus() {
+    const count = state.seeds.length;
+    elements.clearSeeds.disabled = count === 0;
+    elements.seedStatus.textContent =
+      count === 0
+        ? "尚无手动种子。"
+        : `${count} 个手动种子（上限 ${SEED_COUNT_LIMIT}）：${state.seeds
+            .map(({ x, y }) => `(${formatEditorValue(x)}, ${formatEditorValue(y)})`)
+            .join("、")}。`;
   }
 
   // A log colorbar marks every power of ten inside its limits; a linear one
@@ -522,16 +601,20 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       selectedSource: state.selectedSource,
       pixelRatio: state.pixelRatio,
       layers: state.layers,
+      preview: state.preview,
+      seeds: state.seeds,
     });
     if (state.presentationStatus === "stale") return;
     syncLayerChrome(outcome);
   }
 
   // Readouts follow the layers: a hidden heatmap takes its colorbar and
-  // hatch legend with it, hidden lines take the line and arrow chips, and
-  // hidden markers cannot be dragged. The probe keeps reading the raw grid.
+  // hatch legend with it, hidden lines take the line, arrow and seed chips,
+  // hidden markers cannot be dragged, and the slope and preview chips need
+  // the vector grid. The probe keeps reading the raw grid.
   function syncLayerChrome(outcome) {
     const { layers } = state;
+    const hasVector = Boolean(state.scene.vector);
     elements.colorbar.hidden = !layers.heatmap;
     elements.legendUncolored.hidden = !outcome.hatchVisible;
     elements.legendSources.hidden = !layers.sources || state.scene.sources.length === 0;
@@ -539,7 +622,15 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       const layer = chip.dataset.layer;
       if (layer === "lines") chip.hidden = !layers.lines;
       if (layer === "arrows") chip.hidden = !layers.lines || !layers.arrows;
+      if (layer === "slopes") chip.hidden = !layers.slopes || !hasVector;
+      if (layer === "preview") chip.hidden = !layers.preview || !hasVector;
+      if (layer === "seeds") {
+        chip.hidden =
+          !layers.lines ||
+          !state.scene.lines.some((line) => Number.isInteger(line.seed_index));
+      }
     });
+    elements.captionPreview.toggleAttribute("data-layer-off", !layers.preview);
     const draggableSourceCount = sourcesDraggable() ? state.scene.sources.length : 0;
     elements.canvas.dataset.draggable = String(draggableSourceCount > 0);
     const title = state.scene.metadata.title || presetLabel(elements.preset.value);
@@ -551,8 +642,10 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
 
   const LAYER_LABELS = Object.freeze({
     heatmap: "热图",
+    slopes: "斜率短线",
     lines: "场线",
     arrows: "方向箭头",
+    preview: "光标预览束",
     sources: "场源",
     grid: "网格",
   });
@@ -562,6 +655,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   function toggleLayer(name) {
     if (!(name in state.layers)) return;
     state.layers[name] = !state.layers[name];
+    if (name === "preview" && !state.layers.preview) state.preview = null;
     elements.layerToggles.forEach((button) => {
       if (button.dataset.layer === name) {
         button.setAttribute("aria-pressed", String(state.layers[name]));
@@ -873,11 +967,24 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     return closest;
   }
 
+  function insidePlot(canvasX, canvasY) {
+    if (!state.plotRect) return false;
+    const { left, right, top, bottom } = state.plotRect;
+    return canvasX >= left && canvasX <= right && canvasY >= top && canvasY <= bottom;
+  }
+
   function handlePointerDown(event) {
-    if (!state.scene || !state.scene.sources.length || !sourcesDraggable()) return;
+    if (!state.scene) return;
     const [canvasX, canvasY] = pointerPosition(event);
     const sourceIndex = sourceAt(canvasX, canvasY);
-    if (sourceIndex === null) return;
+    if (sourceIndex === null) {
+      // A click on the field (down and up in the same place) pins a seed.
+      state.pendingSeed =
+        state.presentationStatus === "ready" && insidePlot(canvasX, canvasY)
+          ? { pointerId: event.pointerId, canvasX, canvasY }
+          : null;
+      return;
+    }
     const needsRequest = state.presentationStatus === "stale";
     loader.cancelScheduled();
     state.selectedSource = sourceIndex;
@@ -919,9 +1026,83 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       return;
     }
     updateProbe(canvasX, canvasY);
+    updatePreview(canvasX, canvasY);
+  }
+
+  // The cursor bundle is recomputed from the vector grid on every move and
+  // drawn on the next frame; it is display state and never sends a request.
+  function updatePreview(canvasX, canvasY) {
+    const available =
+      state.layers.preview &&
+      state.previewGrid &&
+      state.presentationStatus === "ready" &&
+      insidePlot(canvasX, canvasY);
+    if (!available) {
+      clearPreview();
+      return;
+    }
+    const [worldX, worldY] = canvasToWorld(canvasX, canvasY);
+    const { domain } = state.scene;
+    const spacing =
+      (PREVIEW_SPACING_PX * (domain.x[1] - domain.x[0])) / (state.plotRect.right - state.plotRect.left);
+    state.preview = previewBundle(state.previewGrid, [worldX, worldY], { spacing });
+    schedulePreviewFrame();
+  }
+
+  function clearPreview() {
+    if (!state.preview) return;
+    state.preview = null;
+    schedulePreviewFrame();
+  }
+
+  function schedulePreviewFrame() {
+    window.cancelAnimationFrame(state.previewFrame);
+    state.previewFrame = window.requestAnimationFrame(() => {
+      state.previewFrame = null;
+      render();
+    });
+  }
+
+  function pinSeed(canvasX, canvasY) {
+    if (state.presentationStatus !== "ready" || !insidePlot(canvasX, canvasY)) return;
+    if (state.seeds.length >= SEED_COUNT_LIMIT) {
+      elements.seedStatus.textContent = `最多 ${SEED_COUNT_LIMIT} 个手动种子；请先清除再添加。`;
+      elements.liveStatus.textContent = elements.seedStatus.textContent;
+      return;
+    }
+    const [worldX, worldY] = canvasToWorld(canvasX, canvasY);
+    const { domain } = state.scene;
+    // Pointer positions carry about a hundredth of a metre; keep four decimals.
+    const round = (value) => Math.round(value * 1e4) / 1e4;
+    const seed = {
+      x: round(clamp(worldX, domain.x[0], domain.x[1])),
+      y: round(clamp(worldY, domain.y[0], domain.y[1])),
+    };
+    state.seeds.push(seed);
+    renderSeedStatus();
+    elements.liveStatus.textContent = `已在 x ${formatEditorValue(seed.x)}，y ${formatEditorValue(seed.y)} 固定手动种子，正在请求服务端精确场线。`;
+    loadScene();
+  }
+
+  function clearSeeds() {
+    if (!state.seeds.length) return;
+    state.seeds = [];
+    renderSeedStatus();
+    elements.liveStatus.textContent = "已清除手动种子，正在重新计算。";
+    loadScene();
   }
 
   function finishPointerDrag(event) {
+    if (state.pendingSeed?.pointerId === event.pointerId) {
+      const pending = state.pendingSeed;
+      state.pendingSeed = null;
+      if (event.type === "pointerup") {
+        const [canvasX, canvasY] = pointerPosition(event);
+        const travelled = Math.hypot(canvasX - pending.canvasX, canvasY - pending.canvasY);
+        if (travelled <= CLICK_TOLERANCE_PX) pinSeed(canvasX, canvasY);
+      }
+      return;
+    }
     if (!state.drag || state.drag.pointerId !== event.pointerId) return;
     const index = state.drag.sourceIndex;
     const moved = state.drag.moved;
@@ -963,12 +1144,27 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     const unitSuffix = coordinateUnit ? ` ${coordinateUnit}` : "";
     elements.probePosition.textContent = `x ${formatEditorValue(node.x)}${unitSuffix} · y ${formatEditorValue(node.y)}${unitSuffix}`;
     elements.probeValue.textContent = `${state.scene.scalar.label || "场强"} ${formatValue(node.value)} ${state.scene.scalar.unit || ""}`.trim();
+    elements.probeDirection.textContent = formatProbeDirection(node);
+    elements.probeDirection.hidden = !elements.probeDirection.textContent;
     const [nodeX, nodeY] = worldToCanvas(node.x, node.y);
     elements.probeNode.style.left = `${nodeX}px`;
     elements.probeNode.style.top = `${nodeY}px`;
     elements.probeNode.hidden = false;
     elements.probe.hidden = false;
     placeProbe(canvasX, canvasY);
+  }
+
+  // The field direction at the probed node, as the angle from +x toward +y
+  // (the convention of dipole angle_deg) and the raw components; empty
+  // without a vector grid, and explicit about a true zero vector.
+  function formatProbeDirection(node) {
+    const { vector, scalar } = state.scene;
+    if (!vector || scalar.mask[node.index]) return "";
+    const u = Number(vector.u[node.index]);
+    const v = Number(vector.v[node.index]);
+    if (!(Math.hypot(u, v) > 0)) return `${vector.label} 为零向量，无方向`;
+    const degrees = ((Math.atan2(v, u) * 180) / Math.PI + 360) % 360;
+    return `方向 ${degrees.toFixed(1)}° · ${vector.label}x ${formatValue(u)} · ${vector.label}y ${formatValue(v)}`;
   }
 
   // Up and to the right of the pointer by default; to the left when that
@@ -1054,18 +1250,31 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   }
 
   elements.form.addEventListener("submit", (event) => event.preventDefault());
-  elements.preset.addEventListener("change", () => loadScene({ preserveSources: false }));
+  elements.preset.addEventListener("change", () =>
+    loadScene({ preserveSources: false, preserveSeeds: false }),
+  );
+  // The sliders commit on release: `input` only follows the thumb, `change`
+  // (once per release, or per keyboard step) requests the scene after a short
+  // debounce that merges key repeats; the loader aborts superseded requests.
+  const SLIDER_COMMIT_DELAY = 90;
   elements.density.addEventListener("input", () => {
     updateRange(elements.density, elements.densityOutput, (value) => String(value));
-    scheduleLoad();
+  });
+  elements.density.addEventListener("change", () => {
+    updateRange(elements.density, elements.densityOutput, (value) => String(value));
+    scheduleLoad(SLIDER_COMMIT_DELAY);
   });
   elements.resolution.addEventListener("input", () => {
     updateRange(elements.resolution, elements.resolutionOutput, (value) => `${value} × ${value}`);
-    scheduleLoad();
+  });
+  elements.resolution.addEventListener("change", () => {
+    updateRange(elements.resolution, elements.resolutionOutput, (value) => `${value} × ${value}`);
+    scheduleLoad(SLIDER_COMMIT_DELAY);
   });
   elements.runButton.addEventListener("click", () => loadScene());
   elements.retryButton.addEventListener("click", () => loadScene());
   elements.resetSources.addEventListener("click", () => loadScene({ preserveSources: false }));
+  elements.clearSeeds.addEventListener("click", clearSeeds);
   elements.addPositiveSource.addEventListener("click", () => addSource("positive"));
   elements.addNegativeSource.addEventListener("click", () => addSource("negative"));
   elements.addDipoleSource.addEventListener("click", () => addSource("dipole"));
@@ -1076,9 +1285,11 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   elements.canvas.addEventListener("pointerleave", () => {
     if (!state.drag) elements.probe.hidden = true;
     elements.probeNode.hidden = true;
+    clearPreview();
   });
   elements.canvas.addEventListener("keydown", handleCanvasKeydown);
   elements.layerToggles.forEach((button) => {
+    button.dataset.title = button.title;
     button.addEventListener("click", () => toggleLayer(button.dataset.layer));
   });
 

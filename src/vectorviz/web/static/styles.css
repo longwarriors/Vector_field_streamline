@@ -572,7 +572,11 @@ select {
 /* Keep each chip's box while its layer is not drawn, so nothing reflows. */
 .viewer-panel:has(#field-canvas:not([data-scene-state="ready"])) .legend-chip[data-layer="lines"],
 .viewer-panel:has(#field-canvas:not([data-scene-state="ready"])) .legend-chip[data-layer="heatmap"],
+.viewer-panel:has(#field-canvas:not([data-scene-state="ready"])) .legend-chip[data-layer="slopes"],
+.viewer-panel:has(#field-canvas:not([data-scene-state="ready"])) .legend-chip[data-layer="preview"],
+.viewer-panel:has(#field-canvas:not([data-scene-state="ready"])) .legend-chip[data-layer="seeds"],
 .viewer-panel:has(#field-canvas:not([data-scene-state="ready"])) .caption-seed,
+.viewer-panel:has(#field-canvas:not([data-scene-state="ready"])) .caption-preview,
 .viewer-panel:has(#field-canvas[data-scene-state="loading"]) .legend-chip[data-layer="sources"],
 .viewer-panel:has(#field-canvas[data-scene-state="error"]) .legend-chip[data-layer="sources"] {
   visibility: hidden;
@@ -615,6 +619,34 @@ select {
     repeating-linear-gradient(135deg, var(--vv-hatch-line) 0 1px, transparent 1px 4px),
     var(--vv-hatch-base);
   border: 1px solid var(--vv-control-border);
+}
+
+/* A slope glyph: one short unoriented ink segment. */
+.legend-slope {
+  width: 14px;
+  height: 2px;
+  background: var(--vv-legend-core);
+  border-radius: var(--vv-r-full);
+  transform: rotate(-35deg);
+}
+
+/* The preview bundle and pinned seeds use the focus blue. */
+.legend-preview {
+  width: 18px;
+  height: 2px;
+  background: var(--vv-focus);
+  border-radius: var(--vv-r-full);
+  box-shadow: 0 -4px 0 -0.5px var(--vv-focus), 0 4px 0 -0.5px var(--vv-focus);
+  opacity: 0.85;
+}
+
+.legend-seed {
+  width: 10px;
+  height: 10px;
+  background: var(--vv-focus);
+  border: 2px solid var(--vv-surface);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--vv-legend-core);
 }
 
 /*
@@ -1053,6 +1085,24 @@ figcaption {
   font-weight: var(--vv-fw-strong);
 }
 
+/*
+ * States what the cursor preview is. The line exists whenever the scene has
+ * a vector grid; switching the preview layer off only blanks it, keeping its
+ * box so the figure does not reflow and the plot does not move.
+ */
+.caption-preview {
+  color: var(--vv-text-2);
+  font-size: var(--vv-fs-13);
+}
+
+.caption-preview[data-layer-off] {
+  visibility: hidden;
+}
+
+.caption-preview[hidden] {
+  display: none;
+}
+
 /* ---------- Controls card ---------- */
 
 .control-panel:focus {
@@ -1225,6 +1275,10 @@ input[type="range"]::-moz-range-thumb {
 .source-status:empty {
   min-height: 0;
   margin: 0;
+}
+
+.seed-section {
+  margin-top: var(--vv-s-4);
 }
 
 .source-editor-list {
@@ -1879,6 +1933,13 @@ input[type="range"]::-moz-range-thumb {
 .layer-toggle:focus-visible {
   outline: 2px solid var(--vv-focus);
   outline-offset: 1px;
+}
+
+/* A layer the current response cannot draw (no vector grid) is disabled. */
+.layer-toggle:disabled {
+  color: var(--vv-text-disabled);
+  background: transparent;
+  cursor: default;
 }
 
 @container frame (max-width: 519.98px) {

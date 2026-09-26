@@ -32,11 +32,37 @@ export const CANVAS_THEME = deepFreeze({
     haloWidth: 4,
     core: "#1c1c1e",
     coreWidth: 1.35,
+    // A manually seeded line keeps the ink core; its halo takes the seed blue.
+    manualHalo: "rgba(66, 98, 255, 0.55)",
   },
   arrow: {
     fill: "#1c1c1e",
     stroke: "rgba(255, 255, 255, 0.9)",
     strokeWidth: 1.6,
+  },
+  // Slope-field glyphs: short unoriented ink segments of one length, about
+  // one every 22 CSS px, along the local field direction.
+  slope: {
+    stroke: "rgba(28, 28, 30, 0.72)",
+    width: 1.2,
+    spacing: 22,
+    lengthFraction: 0.64,
+  },
+  // The cursor preview bundle and pinned seeds share the focus blue, which
+  // no marker or colormap colour uses.
+  preview: {
+    halo: "rgba(255, 255, 255, 0.8)",
+    haloWidth: 3.6,
+    stroke: "#4262ff",
+    centralWidth: 1.9,
+    width: 1.2,
+    sideAlpha: 0.62,
+  },
+  seed: {
+    fill: "#4262ff",
+    ring: "#ffffff",
+    ringWidth: 1.5,
+    radius: 4,
   },
   marker: {
     // Category colours; none is lavender, so a source never blends into

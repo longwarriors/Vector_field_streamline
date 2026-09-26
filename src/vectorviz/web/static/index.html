@@ -86,6 +86,30 @@
               </span>
               <span
                 class="legend-chip"
+                data-layer="slopes"
+                title="斜率短线：每个采样格点上沿场方向的等长短线，只表示方向、不分正反，也不表示强弱。"
+                hidden
+              >
+                <i class="legend-slope" aria-hidden="true"></i>斜率
+              </span>
+              <span
+                class="legend-chip"
+                data-layer="preview"
+                title="光标预览束：浏览器对服务端向量网格做双线性插值并用 RK4 积分，不是服务端积分；点击可把该位置交给服务端算出精确场线。"
+                hidden
+              >
+                <i class="legend-preview" aria-hidden="true"></i>预览束
+              </span>
+              <span
+                class="legend-chip"
+                data-layer="seeds"
+                title="手动种子线：从点击位置由服务端双向积分得到的精确场线，蓝色光晕、蓝点标出种子。"
+                hidden
+              >
+                <i class="legend-seed" aria-hidden="true"></i>种子线
+              </span>
+              <span
+                class="legend-chip"
                 id="legend-uncolored"
                 data-layer="heatmap"
                 title="未着色：场源排除区（半径为数值设定）或非有限值；对数色标下为 0 的格点也不着色。"
@@ -105,6 +129,10 @@
                 </svg>
                 <span>热图</span>
               </button>
+              <button type="button" class="layer-toggle" data-layer="slopes" aria-pressed="false" title="斜率短线：无向的场方向短线" disabled>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7l4-3M9 7l4-3M15 7l2-1.5M3 13l4-3M9 13l4-3M15 13l2-1.5M3 18l4-3M9 18l4-3" /></svg>
+                <span>斜率</span>
+              </button>
               <button type="button" class="layer-toggle" data-layer="lines" aria-pressed="true" title="场线">
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 14c4-9 10-9 14 0" /></svg>
                 <span>场线</span>
@@ -121,12 +149,16 @@
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3v14M13 3v14M3 7h14M3 13h14" /></svg>
                 <span>网格</span>
               </button>
+              <button type="button" class="layer-toggle" data-layer="preview" aria-pressed="true" title="光标预览束：网格插值预览，不是服务端积分" disabled>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 12c4-7 8-7 12 0M2 16c4-7 8-7 12 0M8 3l6 8-3 .5 2 3.5-1.5 1-2-3.5-2 2z" /></svg>
+                <span>预览</span>
+              </button>
             </div>
             <div class="canvas-stage" id="canvas-stage">
               <canvas
                 id="field-canvas"
                 tabindex="0"
-                aria-label="二维物理场可视化。场景加载后可拖动场源，并使用方向键微调选中的场源。"
+                aria-label="二维物理场可视化。场景加载后可拖动场源、点击图中位置固定一条场线，并使用方向键微调选中的场源。"
               >
                 当前浏览器不支持 Canvas，请升级浏览器后重试。
               </canvas>
@@ -135,6 +167,7 @@
               <div class="probe" id="probe" hidden aria-hidden="true">
                 <span id="probe-position">x 0.00 · y 0.00</span>
                 <strong id="probe-value">—</strong>
+                <span id="probe-direction" hidden></span>
               </div>
 
               <div class="colorbar" id="colorbar" hidden aria-label="场强颜色标尺">
@@ -176,6 +209,9 @@
               <span class="caption-text">
                 <span id="projection-note">曲线沿局部场方向积分；颜色表示场强大小。</span>
                 <span class="caption-seed" id="caption-seed">播种：— · 渲染 — / 抑制 —</span>
+                <span class="caption-preview" id="caption-preview" hidden>
+                  光标周围的蓝色预览束是浏览器对服务端向量网格做双线性插值再用 RK4 积分的结果，不是服务端积分；点击图中位置可把该种子交给服务端得到精确场线。
+                </span>
               </span>
             </figcaption>
           </figure>
@@ -263,6 +299,19 @@
                   <p class="empty-sources">场景加载后可调整场源。</p>
                 </div>
               </section>
+
+              <section class="source-section seed-section" aria-labelledby="seed-heading">
+                <div class="source-heading-row">
+                  <div>
+                    <h3 id="seed-heading">手动种子</h3>
+                    <p id="seed-help">点击图中位置，由服务端从该点双向积分一条精确场线；最多 16 个。</p>
+                  </div>
+                  <button class="text-button" id="clear-seeds" type="button" disabled>
+                    清除
+                  </button>
+                </div>
+                <p class="source-status seed-status" id="seed-status" role="status" aria-live="polite">尚无手动种子。</p>
+              </section>
             </form>
           </aside>
 
@@ -278,7 +327,9 @@
                 <li>色标上下限只是显示范围：尖角表示有格点超出范围、按端色显示，精确值请用探针。</li>
                 <li>场线上的箭头只标方向：足够长的线按屏幕弧长放 1–3 个，很短的线不放；箭头大小固定，不表示强弱。</li>
                 <li>场线疏密取决于播种方式和预算，不能直接读成场的强弱；圆环为等通量播种，见“播种说明”。</li>
-                <li>探针吸附到离指针最近的网格点：显示该点的坐标和原值（未按色标截断、不插值），图上的小圆点标出这个点。</li>
+                <li>探针吸附到离指针最近的网格点：显示该点的坐标和原值（未按色标截断、不插值），图上的小圆点标出这个点；有向量分量时另显示该点的场方向角（从 +x 朝 +y 逆时针）与两个分量。</li>
+                <li>“斜率”图层在采样格点上画沿场方向的等长短线：只表示方向，不分正反，也不表示强弱。</li>
+                <li>光标周围的蓝色预览束是浏览器对向量网格做双线性插值再用 RK4 积分的结果，随采样分辨率变化，不是服务端积分；点击图中位置才把该种子交给服务端算出精确场线（蓝色光晕），手动种子不占播种预算。</li>
                 <li>对数色标上的短刻度是十的整数次幂，读数时按数量级看。</li>
                 <li>斜线区未着色：场源排除区（半径为数值设定）或非有限值；对数色标下为 0 的格点也不着色。</li>
               </ul>
@@ -321,6 +372,10 @@
                 <div>
                   <dt>起点端终止</dt>
                   <dd id="start-termination-counts">—</dd>
+                </div>
+                <div>
+                  <dt>手动种子</dt>
+                  <dd id="manual-seed-summary">—</dd>
                 </div>
                 <div>
                   <dt>尝试结果</dt>

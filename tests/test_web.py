@@ -2255,6 +2255,7 @@ def test_static_index_and_assets_are_served(client: TestClient) -> None:
         "/canvas-theme.js",
         "/renderer.js",
         "/scene-loader.js",
+        "/preview.js",
         "/scene-validation.js",
         "/formatting.js",
         "/source-controls.js",
