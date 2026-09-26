@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-09-26
+
 ### Added
 
 - `ChargedRingField`：均匀带电理想细圆环的三维电场，与 `CircularLoopField` 共用几何和椭圆积分代码，`flux_function()` 用 Paxton 的圆盘立体角闭式给出电通量函数。新预设 `charged_ring` 在 z=0 子午面显示真实电场线，两个只读 `ring_charge` 标记表示同一圆环的截面；种子按等间隔通量函数值围绕截面求根，`seed_mode` 为 `equal_flux`，奇数预算另含环外赤道射线。
@@ -14,7 +16,7 @@
 ### Changed
 
 - 点电荷场景的零场终止阈值从 $10^{-14}$ 提高到 $10^{-6}\ \mathrm{V/m}$，与默认源 10 V/m 的量级匹配；落入零场点的线现在以 `null_field` 停在零点，六个正电荷的中心汇点因此可见。凡是通向真实零场点的轴线都受影响（例如 $+1/-4$ nC），强度远小于 1 nC 的覆盖会整体低于阈值；其他预设与不经过零场点的电荷场景逐位不变。
-- 响应新增 `regions` 字段后，旧预设的 HTTP 响应只多出 `"regions": []`，其余字节不变。
+- 响应新增 `regions` 字段后，除阈值影响的电荷场景外，旧预设的 HTTP 响应只新增 `"regions": []`，其余字节不变。
 
 ### Fixed
 
@@ -130,7 +132,8 @@
 - `density` 定义为整个场景的种子总预算，并在服务端与浏览器提交前共同校验。
 - 场景元数据区分真实不变平面场线与投影流线，并公开播种说明和终止统计。
 
-[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.1...v0.3.2

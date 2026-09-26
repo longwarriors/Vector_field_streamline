@@ -1,6 +1,6 @@
 """VectorViz: reusable scientific vector-field models and field-line tracing."""
 
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 
 from .core import Domain, ExclusionRegion, SphericalExclusion, ToroidalExclusion, VectorField
 from .fields import (
