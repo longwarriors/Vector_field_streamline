@@ -31,9 +31,19 @@ export function sourceStyle(source, theme = CANVAS_THEME) {
  * Create a renderer bound to one canvas. `render(view)` paints the paper,
  * then, when the view has a scene, the heatmap, grid and axes, field lines,
  * material regions and source markers in that order; a stale view keeps
- * only the paper grid and the markers. It returns whether hatching shows
+ * only the paper grid and the markers. `view.layers` switches the heatmap,
+ * lines, arrows, sources and grid lines off individually; the axes, frame
+ * and material outlines always draw. It returns whether hatching shows
  * beside the markers so the page can decide about the legend.
  */
+export const ALL_LAYERS = Object.freeze({
+  heatmap: true,
+  lines: true,
+  arrows: true,
+  sources: true,
+  grid: true,
+});
+
 export function createRenderer(canvas, theme = CANVAS_THEME) {
   const context = canvas.getContext("2d", { alpha: false });
   let view = null;
@@ -58,25 +68,40 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
   function render(nextView) {
     view = nextView;
     const { size } = view;
+    const layers = { ...ALL_LAYERS, ...(view.layers || {}) };
     context.clearRect(0, 0, size.width, size.height);
     context.fillStyle = theme.paper;
     context.fillRect(0, 0, size.width, size.height);
     if (!view.scene) return { hatchVisible: false };
     if (view.status === "stale") {
-      drawGridAndAxes({ onField: false });
-      drawSources();
+      drawGridAndAxes({ onField: false, grid: layers.grid });
+      if (layers.sources) drawSources();
       return { hatchVisible: false };
     }
-    const uncoloredCells = drawHeatmap();
-    drawGridAndAxes({ onField: true });
-    drawStreamlines();
+    const uncoloredCells = layers.heatmap ? drawHeatmap() : [];
+    drawGridAndAxes({ onField: layers.heatmap, grid: layers.grid });
+    if (layers.lines) drawStreamlines({ arrows: layers.arrows });
     drawRegions();
-    drawSources();
-    return { hatchVisible: hatchShowsBesideMarkers(uncoloredCells) };
+    if (layers.sources) drawSources();
+    return { hatchVisible: layers.heatmap && hatchShowsBesideMarkers(uncoloredCells) };
   }
 
-  function drawHeatmap() {
-    const { scalar } = view.scene;
+  // The offscreen raster depends only on the scalar grid, the colour scale
+  // and the sampling factor; toggling layers or redrawing markers reuses it.
+  let raster = null;
+
+  function heatmapRaster(scalar, scale, factor) {
+    if (
+      raster &&
+      raster.scalar === scalar &&
+      raster.factor === factor &&
+      raster.scale.type === scale.type &&
+      raster.scale.minimum === scale.minimum &&
+      raster.scale.maximum === scale.maximum &&
+      raster.scale.constant === scale.constant
+    ) {
+      return raster;
+    }
     const offscreen = document.createElement("canvas");
     offscreen.width = scalar.nx;
     offscreen.height = scalar.ny;
@@ -86,7 +111,7 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     // The API uses row-major values, with y descending from ymax to ymin.
     const uncolored = [];
     for (let index = 0; index < scalar.values.length; index += 1) {
-      const color = colorForScalar(scalar.values[index], Boolean(scalar.mask?.[index]), view.scale);
+      const color = colorForScalar(scalar.values[index], Boolean(scalar.mask?.[index]), scale);
       if (color[3] === 0) uncolored.push(index);
       const offset = index * 4;
       image.data[offset] = color[0];
@@ -96,8 +121,15 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     }
     offscreenContext.putImageData(image, 0, 0);
     const source = uncolored.length
-      ? interpolateOverColoredNodes(image.data, scalar.nx, scalar.ny, samplesPerCell(scalar))
+      ? interpolateOverColoredNodes(image.data, scalar.nx, scalar.ny, factor)
       : offscreen;
+    raster = { scalar, scale: { ...scale }, factor, source, uncolored };
+    return raster;
+  }
+
+  function drawHeatmap() {
+    const { scalar } = view.scene;
+    const { source, uncolored } = heatmapRaster(scalar, view.scale, samplesPerCell(scalar));
 
     // Scalar nodes include both domain endpoints, so texel centres (i + 0.5)
     // must land on the plot edges: sample the source from the first to the
@@ -217,10 +249,17 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     context.fillStyle = theme.hatch.base;
     context.fill();
     context.clip();
+    // Each 45 deg line runs through device pixel centres, so its darkest
+    // pixels are covered the same whatever the plot geometry or pixel ratio.
+    const ratio = view.pixelRatio;
+    const centre = (value) => (Math.round(value * ratio - 0.5) + 0.5) / ratio;
+    const run = Math.round(height * ratio) / ratio;
+    const startY = centre(bottom);
     context.beginPath();
     for (let offset = -height; offset < right - left; offset += theme.hatch.spacing) {
-      context.moveTo(left + offset, bottom);
-      context.lineTo(left + offset + height, top);
+      const startX = centre(left + offset);
+      context.moveTo(startX, startY);
+      context.lineTo(startX + run, startY - run);
     }
     context.strokeStyle = theme.hatch.line;
     // One CSS px at every pixel ratio, so the hatching never thins out.
@@ -268,7 +307,7 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     return ticks;
   }
 
-  function drawGridAndAxes({ onField }) {
+  function drawGridAndAxes({ onField, grid = true }) {
     const { left, top, right, bottom } = view.plotRect;
     const [xmin, xmax] = view.scene.domain.x;
     const [ymin, ymax] = view.scene.domain.y;
@@ -283,7 +322,7 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
       context.beginPath();
       context.moveTo(x, top);
       context.lineTo(x, bottom);
-      context.stroke();
+      if (grid) context.stroke();
       context.textAlign = "center";
       context.textBaseline = "top";
       context.fillText(formatAxisValue(tick), x, bottom + 8);
@@ -294,7 +333,7 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
       context.beginPath();
       context.moveTo(left, y);
       context.lineTo(right, y);
-      context.stroke();
+      if (grid) context.stroke();
       context.textAlign = "right";
       context.textBaseline = "middle";
       context.fillText(formatAxisValue(tick), left - 7, y);
@@ -364,7 +403,7 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
       .filter((point) => point.every(Number.isFinite));
   }
 
-  function drawStreamlines() {
+  function drawStreamlines({ arrows = true } = {}) {
     const lines = view.scene.lines;
     context.save();
     context.lineJoin = "round";
@@ -381,7 +420,7 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
       context.strokeStyle = theme.line.core;
       context.lineWidth = theme.line.coreWidth;
       context.stroke();
-      drawDirectionArrows(points, line.direction);
+      if (arrows) drawDirectionArrows(points, line.direction);
     }
     context.restore();
   }

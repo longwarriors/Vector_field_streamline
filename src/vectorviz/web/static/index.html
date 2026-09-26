@@ -76,7 +76,7 @@
               <span class="legend-chip" data-layer="lines">
                 <i class="legend-line" aria-hidden="true"></i>场线
               </span>
-              <span class="legend-chip" data-layer="lines">
+              <span class="legend-chip" data-layer="arrows">
                 <i class="legend-arrow" aria-hidden="true">
                   <svg viewBox="0 0 14 10"><path d="M13 5 3 1.2v7.6z" /></svg>
                 </i>方向
@@ -97,6 +97,31 @@
           </div>
 
           <figure class="field-figure">
+            <div class="layer-toolbar" id="layer-toolbar" role="group" aria-label="图层开关">
+              <button type="button" class="layer-toggle" data-layer="heatmap" aria-pressed="true" title="热图：场强颜色">
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <rect x="3" y="3" width="14" height="14" rx="2" />
+                  <rect class="layer-icon-soft" x="3" y="3" width="7" height="7" rx="1" />
+                </svg>
+                <span>热图</span>
+              </button>
+              <button type="button" class="layer-toggle" data-layer="lines" aria-pressed="true" title="场线">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 14c4-9 10-9 14 0" /></svg>
+                <span>场线</span>
+              </button>
+              <button type="button" class="layer-toggle" data-layer="arrows" aria-pressed="true" title="方向箭头">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h11M11 6l4 4-4 4" /></svg>
+                <span>方向</span>
+              </button>
+              <button type="button" class="layer-toggle" data-layer="sources" aria-pressed="true" title="场源标记">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="5.5" /><path d="M10 7.5v5M7.5 10h5" /></svg>
+                <span>场源</span>
+              </button>
+              <button type="button" class="layer-toggle" data-layer="grid" aria-pressed="true" title="网格线">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3v14M13 3v14M3 7h14M3 13h14" /></svg>
+                <span>网格</span>
+              </button>
+            </div>
             <div class="canvas-stage" id="canvas-stage">
               <canvas
                 id="field-canvas"

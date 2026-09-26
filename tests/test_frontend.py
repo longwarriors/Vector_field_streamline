@@ -689,6 +689,112 @@ def test_scalar_lines_arrows_sources_and_probe_share_one_transform(
 
 
 @pytest.mark.browser
+def test_layer_toggles_redraw_without_requests_and_keep_readouts_honest(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    scene = _browser_scene()
+    scene["scalar"]["mask"][4] = True
+    scene["scalar"]["values"][4] = None
+    requests: list[dict[str, object]] = []
+
+    def route_scene(route: Route) -> None:
+        requests.append(route.request.post_data_json)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(scene))
+
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    baseline_requests = len(requests)
+    toggles = {
+        name: page.locator(f'.layer-toggle[data-layer="{name}"]')
+        for name in ("heatmap", "lines", "arrows", "sources", "grid")
+    }
+    for toggle in toggles.values():
+        expect(toggle).to_have_attribute("aria-pressed", "true")
+
+    def snapshot() -> str:
+        return page.evaluate("() => document.querySelector('#field-canvas').toDataURL()")
+
+    full = snapshot()
+
+    # Heatmap off: colorbar and hatch legend go, the probe still reads the grid.
+    toggles["heatmap"].click()
+    expect(toggles["heatmap"]).to_have_attribute("aria-pressed", "false")
+    expect(page.locator("#colorbar")).to_be_hidden()
+    expect(page.locator("#legend-uncolored")).to_be_hidden()
+    without_heatmap = snapshot()
+    assert without_heatmap != full
+    target = page.evaluate(
+        """async () => {
+            const canvas = document.querySelector('#field-canvas');
+            const rect = canvas.getBoundingClientRect();
+            const {calculatePlotRect, createCoordinateTransform} = await import('/coordinates.js');
+            const domain = {x: [-2, 4], y: [-3, 1]};
+            const transform = createCoordinateTransform(
+              domain, calculatePlotRect(rect.width, rect.height, domain));
+            const [x, y] = transform.worldToCanvas(4, 1);
+            const [sx, sy] = transform.worldToCanvas(1, -1);
+            return {x: rect.left + x - 2, y: rect.top + y + 2, sx: rect.left + sx, sy: rect.top + sy};
+        }"""
+    )
+    page.mouse.move(target["x"], target["y"])
+    expect(page.locator("#probe")).to_be_visible()
+    expect(page.locator("#probe-value")).to_have_text("|F| 3 u")
+    toggles["heatmap"].click()
+    expect(page.locator("#colorbar")).to_be_visible()
+    expect(page.locator("#legend-uncolored")).to_be_visible()
+    assert snapshot() == full
+
+    # Sources off: the marker disappears and cannot be dragged.
+    toggles["sources"].click()
+    expect(page.locator("#field-canvas")).to_have_attribute("data-draggable", "false")
+    expect(page.locator('.legend-chip[data-layer="sources"]')).to_be_hidden()
+    page.mouse.move(target["sx"], target["sy"])
+    page.mouse.down()
+    page.mouse.move(target["sx"] + 30, target["sy"] + 20, steps=3)
+    assert page.locator("#field-canvas").get_attribute("data-dragging") is None
+    page.mouse.up()
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    toggles["sources"].click()
+    expect(page.locator("#field-canvas")).to_have_attribute("data-draggable", "true")
+    expect(page.locator('.legend-chip[data-layer="sources"]')).to_be_visible()
+
+    # Arrows off keeps the line chip; lines off takes the arrow chip with it.
+    toggles["arrows"].click()
+    expect(page.locator('.legend-chip[data-layer="arrows"]')).to_be_hidden()
+    expect(page.locator('.legend-chip[data-layer="lines"]')).to_be_visible()
+    assert snapshot() != full
+    toggles["arrows"].click()
+    toggles["lines"].click()
+    expect(page.locator('.legend-chip[data-layer="lines"]')).to_be_hidden()
+    expect(page.locator('.legend-chip[data-layer="arrows"]')).to_be_hidden()
+    toggles["lines"].click()
+    toggles["grid"].click()
+    assert snapshot() != full
+    toggles["grid"].click()
+    assert snapshot() == full
+    assert len(requests) == baseline_requests
+
+    # A stale scene stays stale whatever the layers say.
+    page.mouse.move(target["sx"], target["sy"])
+    page.mouse.down()
+    page.mouse.move(target["sx"] + 30, target["sy"] + 20, steps=3)
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "stale")
+    # Script clicks keep the pointer held down, as a second input device would.
+    for _repeat in range(2):
+        page.evaluate("() => document.querySelector('.layer-toggle[data-layer=\"heatmap\"]').click()")
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "stale")
+    expect(page.locator("#colorbar")).to_be_hidden()
+    with page.expect_request("**/api/scene"):
+        page.mouse.up()
+    expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
+    expect(page.locator("#colorbar")).to_be_visible()
+    assert page_errors == []
+
+
+@pytest.mark.browser
 def test_region_circle_is_drawn_from_the_scene_payload(
     browser_page: tuple[Page, list[str]],
     frontend_url: str,

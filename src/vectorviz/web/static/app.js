@@ -26,7 +26,7 @@ import {
   snapSourcePosition,
   sourceSeparationConflict,
 } from "./source-controls.js";
-import { createRenderer, sourceStyle } from "./renderer.js";
+import { ALL_LAYERS, createRenderer, sourceStyle } from "./renderer.js";
 import { createSceneLoader } from "./scene-loader.js";
 import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validation.js";
 
@@ -77,6 +77,9 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     colorbarLabel: document.querySelector("#colorbar-label"),
     colorbarExtent: document.querySelector("#colorbar-extent"),
     legendUncolored: document.querySelector("#legend-uncolored"),
+    legendChips: Array.from(document.querySelectorAll(".legend-chip[data-layer]")),
+    layerToggles: Array.from(document.querySelectorAll(".layer-toggle")),
+    figure: document.querySelector(".field-figure"),
     legendSources: document.querySelector('.legend-chip[data-layer="sources"]'),
     captionSeed: document.querySelector("#caption-seed"),
     lineCount: document.querySelector("#line-count"),
@@ -99,6 +102,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   const state = {
     scene: null,
     sourceOverrides: null,
+    layers: { ...ALL_LAYERS },
     resizeFrame: null,
     drag: null,
     selectedSource: null,
@@ -144,6 +148,11 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
 
   function sourcesAreEditable() {
     return EDITABLE_SOURCE_PRESETS.has(elements.preset.value);
+  }
+
+  // Hidden markers cannot be dragged or nudged; the editors stay usable.
+  function sourcesDraggable() {
+    return sourcesAreEditable() && state.layers.sources;
   }
 
   function selectedSourceSeparation() {
@@ -429,7 +438,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       SEED_MODE_LABELS[scene.metadata.seed_mode] || scene.metadata.seed_mode
     } · 渲染 ${scene.metadata.rendered_line_count} / 抑制 ${scene.metadata.suppressed_count}`;
     elements.colorbarLabel.textContent = quantityWithUnit(scalar.label || "场强", scalar.unit);
-    const draggableSourceCount = sourcesAreEditable() ? scene.sources.length : 0;
+    const draggableSourceCount = sourcesDraggable() ? scene.sources.length : 0;
     elements.canvas.dataset.draggable = String(draggableSourceCount > 0);
     elements.canvas.setAttribute(
       "aria-label",
@@ -485,10 +494,50 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       scale: state.scale,
       selectedSource: state.selectedSource,
       pixelRatio: state.pixelRatio,
+      layers: state.layers,
     });
     if (state.presentationStatus === "stale") return;
+    syncLayerChrome(outcome);
+  }
+
+  // Readouts follow the layers: a hidden heatmap takes its colorbar and
+  // hatch legend with it, hidden lines take the line and arrow chips, and
+  // hidden markers cannot be dragged. The probe keeps reading the raw grid.
+  function syncLayerChrome(outcome) {
+    const { layers } = state;
+    elements.colorbar.hidden = !layers.heatmap;
     elements.legendUncolored.hidden = !outcome.hatchVisible;
-    elements.legendSources.hidden = state.scene.sources.length === 0;
+    elements.legendSources.hidden = !layers.sources || state.scene.sources.length === 0;
+    elements.legendChips.forEach((chip) => {
+      const layer = chip.dataset.layer;
+      if (layer === "lines") chip.hidden = !layers.lines;
+      if (layer === "arrows") chip.hidden = !layers.lines || !layers.arrows;
+    });
+    elements.canvas.dataset.draggable = String(
+      sourcesDraggable() && state.scene.sources.length > 0,
+    );
+  }
+
+  const LAYER_LABELS = Object.freeze({
+    heatmap: "热图",
+    lines: "场线",
+    arrows: "方向箭头",
+    sources: "场源",
+    grid: "网格",
+  });
+
+  // Layers are display state: switching one never sends a request, and a
+  // stale scene stays stale until the server answers.
+  function toggleLayer(name) {
+    if (!(name in state.layers)) return;
+    state.layers[name] = !state.layers[name];
+    elements.layerToggles.forEach((button) => {
+      if (button.dataset.layer === name) {
+        button.setAttribute("aria-pressed", String(state.layers[name]));
+      }
+    });
+    render();
+    elements.liveStatus.textContent = `${LAYER_LABELS[name]}图层已${state.layers[name] ? "显示" : "隐藏"}。`;
   }
 
   function canvasToWorld(canvasX, canvasY) {
@@ -501,6 +550,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     const style = elements.stage.style;
     style.setProperty("--plot-left", `${left}px`);
     style.setProperty("--plot-top", `${top}px`);
+    elements.figure.style.setProperty("--plot-top", `${top}px`);
     style.setProperty("--plot-right", `${right}px`);
     style.setProperty("--plot-bottom", `${bottom}px`);
     style.setProperty("--plot-width", `${right - left}px`);
@@ -766,7 +816,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   }
 
   function sourceAt(canvasX, canvasY) {
-    if (!state.scene || !sourcesAreEditable()) return null;
+    if (!state.scene || !sourcesDraggable()) return null;
     let closest = null;
     let closestDistance = 18;
     state.scene.sources.forEach((source, index) => {
@@ -781,7 +831,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   }
 
   function handlePointerDown(event) {
-    if (!state.scene || !state.scene.sources.length || !sourcesAreEditable()) return;
+    if (!state.scene || !state.scene.sources.length || !sourcesDraggable()) return;
     const [canvasX, canvasY] = pointerPosition(event);
     const sourceIndex = sourceAt(canvasX, canvasY);
     if (sourceIndex === null) return;
@@ -900,7 +950,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
 
   function handleCanvasKeydown(event) {
     if (
-      !sourcesAreEditable() ||
+      !sourcesDraggable() ||
       state.selectedSource === null ||
       !state.scene?.sources[state.selectedSource]
     ) {
@@ -981,6 +1031,9 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     if (!state.drag) elements.probe.hidden = true;
   });
   elements.canvas.addEventListener("keydown", handleCanvasKeydown);
+  elements.layerToggles.forEach((button) => {
+    button.addEventListener("click", () => toggleLayer(button.dataset.layer));
+  });
 
   const resizeObserver = new ResizeObserver(() => {
     // The probe was placed for the old geometry; the next pointer move shows it again.

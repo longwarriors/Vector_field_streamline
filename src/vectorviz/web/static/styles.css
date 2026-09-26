@@ -1811,3 +1811,84 @@ input[type="range"]::-moz-range-thumb {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------- Layer toolbar ---------- */
+
+/* Floats in the plot's left margin on wide frames; a row above the plot on narrow ones. */
+.field-figure {
+  position: relative;
+}
+
+.layer-toolbar {
+  position: absolute;
+  top: calc(var(--plot-top, 30px) + 1px);
+  left: 10px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: var(--vv-surface);
+  border: 1px solid var(--vv-line);
+  border-radius: var(--vv-r-md);
+  box-shadow: var(--vv-elev-2);
+}
+
+.layer-toggle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  width: 36px;
+  min-height: 36px;
+  padding: 3px 0;
+  color: var(--vv-text-2);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-size: 10px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.layer-toggle svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.layer-toggle .layer-icon-soft {
+  fill: currentColor;
+  stroke: none;
+  opacity: 0.35;
+}
+
+.layer-toggle:hover {
+  background: var(--vv-board);
+}
+
+.layer-toggle[aria-pressed="true"] {
+  color: var(--vv-on-ink);
+  background: var(--vv-ink);
+}
+
+.layer-toggle:focus-visible {
+  outline: 2px solid var(--vv-focus);
+  outline-offset: 1px;
+}
+
+@container frame (max-width: 519.98px) {
+  .layer-toolbar {
+    position: static;
+    flex-direction: row;
+    justify-content: center;
+    gap: 4px;
+    margin: 6px 8px 0;
+    border: 0;
+    box-shadow: none;
+  }
+}
