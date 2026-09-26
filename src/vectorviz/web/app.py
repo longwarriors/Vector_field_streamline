@@ -39,6 +39,24 @@ PRESETS = [
         source_separation=SOURCE_SEPARATION_CAPABILITY,
     ),
     PresetPayload(
+        id="electric_quadrupole",
+        label="电四极子",
+        description="正方形顶点上正负交替的四个点电荷；中心是零场鞍点。",
+        source_separation=SOURCE_SEPARATION_CAPABILITY,
+    ),
+    PresetPayload(
+        id="electric_hexagon",
+        label="六个正电荷",
+        description="正六边形顶点上六个等量正电荷；平面内场线汇聚到中心零场点。",
+        source_separation=SOURCE_SEPARATION_CAPABILITY,
+    ),
+    PresetPayload(
+        id="electric_hexagon_alternating",
+        label="三对交替电荷",
+        description="正六边形顶点上正负交替的六个点电荷。",
+        source_separation=SOURCE_SEPARATION_CAPABILITY,
+    ),
+    PresetPayload(
         id="magnetic_dipole",
         label="磁偶极子",
         description="理想点磁偶极子的对称平面磁力线。",

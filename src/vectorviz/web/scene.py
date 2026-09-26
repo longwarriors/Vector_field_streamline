@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 from collections import Counter, OrderedDict
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from vectorviz.tracing import (
 )
 
 from .schemas import (
+    ELECTRIC_PRESETS,
     DomainPayload,
     LinePayload,
     MetadataPayload,
@@ -56,6 +58,12 @@ CURRENT_LOOP_CURRENT = 1.0
 CURRENT_LOOP_EXCLUSION_RADIUS = 0.16
 HALBACH_SOURCE_COUNT = 8
 HALBACH_X_EXTENT = 2.1
+ELECTRIC_ARRANGEMENT_RADIUS = 0.9
+# Point-charge scenes are built from 1 nC charges about 1 m apart, so |E|
+# is of order 10 V/m; a line is considered to have reached a null point
+# once |E| falls seven orders of magnitude below that, about 1e-7 m from
+# a linear null. This is a numerical cut-off in V/m, not a physical zero.
+ELECTRIC_NULL_THRESHOLD = 1.0e-6
 
 DEFAULT_TRACE_OPTIONS = TraceOptions(
     max_arc_length=18.0,
@@ -63,6 +71,16 @@ DEFAULT_TRACE_OPTIONS = TraceOptions(
     rtol=2.0e-6,
     atol=1.0e-8,
     null_threshold=1.0e-14,
+    output_step=0.045,
+    method="DOP853",
+)
+
+ELECTRIC_TRACE_OPTIONS = TraceOptions(
+    max_arc_length=18.0,
+    max_step=0.09,
+    rtol=2.0e-6,
+    atol=1.0e-8,
+    null_threshold=ELECTRIC_NULL_THRESHOLD,
     output_step=0.045,
     method="DOP853",
 )
@@ -126,6 +144,26 @@ class _PlanarCircularLoopField(VectorField):
         return self._field.evaluate(embedded)[..., :2]
 
 
+# Scene title and field-model text for each point-charge preset; an edited
+# arrangement other than the dipole no longer claims its named geometry.
+ELECTRIC_TITLES: dict[str, tuple[str, str]] = {
+    "electric_dipole": ("电偶极子的电场线", "三维点电荷场在 z=0 对称平面上的限制"),
+    "electric_quadrupole": (
+        "电四极子的电场线",
+        "正方形顶点上正负交替的四个点电荷在 z=0 对称平面上的限制",
+    ),
+    "electric_hexagon": (
+        "六个等量正电荷的电场线",
+        "正六边形顶点上六个等量正点电荷在 z=0 对称平面上的限制",
+    ),
+    "electric_hexagon_alternating": (
+        "三对交替正负电荷的电场线",
+        "正六边形顶点上正负交替的六个点电荷在 z=0 对称平面上的限制",
+    ),
+    "edited": ("可编辑点电荷组的电场线", "可编辑的三维点电荷场在 z=0 对称平面上的限制"),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class _SceneModel:
     field: VectorField
@@ -150,12 +188,51 @@ class _SceneModel:
         return np.asarray([job.seed for job in self.trace_jobs], dtype=float).reshape(-1, 2)
 
 
+def _charge(x: float, y: float, sign: int) -> SourceInput:
+    kind = "positive" if sign > 0 else "negative"
+    return SourceInput(x=float(x), y=float(y), kind=kind, strength=float(sign))
+
+
+def _hexagon_charges(signs: tuple[int, ...]) -> list[SourceInput]:
+    """Six charges on a regular hexagon, mirror-exact about both axes.
+
+    The vertices are built from one rounded pair of coordinates so that the
+    field is exactly symmetric in floating point; a charge aimed at the
+    centre then stays on its symmetry line instead of drifting off it.
+    """
+
+    radius = ELECTRIC_ARRANGEMENT_RADIUS
+    half = radius / 2.0
+    height = radius * math.sqrt(3.0) / 2.0
+    vertices = (
+        (radius, 0.0),
+        (half, height),
+        (-half, height),
+        (-radius, 0.0),
+        (-half, -height),
+        (half, -height),
+    )
+    return [_charge(x, y, sign) for (x, y), sign in zip(vertices, signs, strict=True)]
+
+
 def _default_sources(preset: str) -> list[SourceInput]:
     if preset == "electric_dipole":
         return [
             SourceInput(x=-0.85, y=0.0, kind="positive", strength=1.0),
             SourceInput(x=0.85, y=0.0, kind="negative", strength=-1.0),
         ]
+    if preset == "electric_quadrupole":
+        side = ELECTRIC_ARRANGEMENT_RADIUS
+        return [
+            _charge(side, side, 1),
+            _charge(-side, side, -1),
+            _charge(-side, -side, 1),
+            _charge(side, -side, -1),
+        ]
+    if preset == "electric_hexagon":
+        return _hexagon_charges((1, 1, 1, 1, 1, 1))
+    if preset == "electric_hexagon_alternating":
+        return _hexagon_charges((1, -1, 1, -1, 1, -1))
     if preset == "magnetic_dipole":
         return [SourceInput(x=0.0, y=0.0, kind="dipole", strength=1.0)]
     if preset == "halbach_array":
@@ -266,7 +343,7 @@ def _build_model(request: SceneRequest) -> _SceneModel:
     inputs = list(_default_sources(request.preset) if request.sources is None else request.sources)
     payloads = _source_payloads(inputs)
 
-    if request.preset == "electric_dipole":
+    if request.preset in ELECTRIC_PRESETS:
         indexed_active = [
             (index, source)
             for index, source in enumerate(inputs)
@@ -276,9 +353,14 @@ def _build_model(request: SceneRequest) -> _SceneModel:
         active = [source for _, source in indexed_active]
         centers = np.array([[source.x, source.y] for source in active], dtype=float)
         signed_strengths = np.array([source.strength for source in active], dtype=float)
-        if not np.any(signed_strengths > 0) or not np.any(signed_strengths < 0):
+        if request.preset == "electric_dipole" and (
+            not np.any(signed_strengths > 0) or not np.any(signed_strengths < 0)
+        ):
             raise ValueError("electric dipole needs at least one positive and one negative source")
         field = PointChargeField(signed_strengths * 1.0e-9, centers)
+        title, field_model = ELECTRIC_TITLES[request.preset]
+        if request.sources is not None and request.preset != "electric_dipole":
+            title, field_model = ELECTRIC_TITLES["edited"]
         _require_seed_budget(
             request.preset,
             "电荷",
@@ -292,11 +374,11 @@ def _build_model(request: SceneRequest) -> _SceneModel:
             trace_jobs=tuple(
                 electric_source_jobs(indexed_active, request.density, SOURCE_SEED_RADIUS)
             ),
-            trace_options=DEFAULT_TRACE_OPTIONS,
+            trace_options=ELECTRIC_TRACE_OPTIONS,
             scalar_label="|E|",
             scalar_unit="V/m",
-            title="电偶极子的电场线",
-            field_model="三维点电荷场在 z=0 对称平面上的限制",
+            title=title,
+            field_model=field_model,
             projection_note="该平面法向场分量为零，所示曲线是真实场线，不是投影流线。",
             seed_mode=SeedMode.COVERAGE,
             seed_description=(

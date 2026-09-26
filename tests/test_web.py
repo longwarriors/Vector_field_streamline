@@ -42,6 +42,9 @@ from vectorviz.web.seeding import TraceJob, allocate_seed_counts
     ),
     [
         ("electric_dipole", {"positive", "negative"}, {"nC"}, "|E|", "V/m", 6),
+        ("electric_quadrupole", {"positive", "negative"}, {"nC"}, "|E|", "V/m", 8),
+        ("electric_hexagon", {"positive"}, {"nC"}, "|E|", "V/m", 12),
+        ("electric_hexagon_alternating", {"positive", "negative"}, {"nC"}, "|E|", "V/m", 6),
         ("magnetic_dipole", {"dipole"}, {"A·m²"}, "|B|", "T", 6),
         ("halbach_array", {"dipole"}, {"A·m²"}, "|B|", "T", 8),
         ("current_loop", {"wire_out", "wire_into"}, {"A"}, "|B|", "T", 6),
@@ -413,17 +416,124 @@ def test_unequal_electric_sources_share_budget_and_preserve_boundary_inflow() ->
         TraceDirection.FORWARD: 4,
         TraceDirection.BACKWARD: 14,
     }
+    # The line leaving +1 nC directly away from -5 nC ends at the real null
+    # point on the axis at x = -0.85 (1 + sqrt 5) / (sqrt 5 - 1).
     assert scene.metadata.termination_counts == {
-        "exclusion_hit": 9,
+        "exclusion_hit": 8,
+        "null_field": 1,
         "domain_exit": 9,
     }
     assert sum(scene.metadata.termination_counts.values()) == request.density
     assert Counter((line.direction, line.termination) for line in scene.lines) == {
-        (1, "exclusion_hit"): 4,
+        (1, "exclusion_hit"): 3,
+        (1, "null_field"): 1,
         (-1, "domain_exit"): 9,
     }
+    null_line = next(line for line in scene.lines if line.termination == "null_field")
+    null_x = -0.85 * (1.0 + math.sqrt(5.0)) / (math.sqrt(5.0) - 1.0)
+    np.testing.assert_allclose(null_line.points[-1], (null_x, 0.0), atol=1.0e-6)
     assert scene.metadata.suppressed_count == 5
     assert scene.metadata.rendered_line_count == 13
+
+
+@pytest.mark.parametrize(
+    ("preset", "expected_signs"),
+    [
+        ("electric_quadrupole", [1, -1, 1, -1]),
+        ("electric_hexagon", [1, 1, 1, 1, 1, 1]),
+        ("electric_hexagon_alternating", [1, -1, 1, -1, 1, -1]),
+    ],
+)
+def test_electric_arrangement_presets_share_the_charge_contract(
+    client: TestClient, preset: str, expected_signs: list[int]
+) -> None:
+    presets = {item["id"]: item for item in client.get("/api/presets").json()}
+    assert presets[preset]["source_separation"] == {
+        "exclusive_minimum": web_scene.MIN_SOURCE_SEPARATION,
+        "unit": "m",
+    }
+
+    default = client.post("/api/scene", json={"preset": preset, "density": 12, "resolution": 32})
+    assert default.status_code == 200
+    payload = default.json()
+    sources = payload["sources"]
+    assert [int(math.copysign(1, source["strength"])) for source in sources] == expected_signs
+    assert {source["strength_unit"] for source in sources} == {"nC"}
+    # The arrangements are mirror-exact so lines aimed at the centre stay on axis.
+    xs = sorted(round(source["x"], 12) for source in sources)
+    ys = sorted(round(source["y"], 12) for source in sources)
+    assert xs == sorted(-value for value in xs)
+    assert ys == sorted(-value for value in ys)
+    assert payload["metadata"]["field_model"].endswith("z=0 对称平面上的限制")
+    assert sum(payload["metadata"]["termination_counts"].values()) == 12
+
+    # Charge overrides keep the family contract; a lone charge is accepted and
+    # loses the named-geometry title, while dipoles are rejected.
+    edited = client.post(
+        "/api/scene",
+        json={
+            "preset": preset,
+            "density": 6,
+            "resolution": 32,
+            "sources": [{"x": 0.0, "y": 0.0, "kind": "positive", "strength": 2.0}],
+        },
+    )
+    assert edited.status_code == 200
+    assert edited.json()["metadata"]["title"] == "可编辑点电荷组的电场线"
+    rejected = client.post(
+        "/api/scene",
+        json={
+            "preset": preset,
+            "density": 6,
+            "resolution": 32,
+            "sources": [{"x": 0.0, "y": 0.0, "kind": "dipole", "strength": 1.0}],
+        },
+    )
+    assert rejected.status_code == 422
+    assert "positive and negative" in json.dumps(rejected.json(), ensure_ascii=False)
+
+
+def test_electric_hexagon_lines_converge_to_the_central_null_point() -> None:
+    # Four seeds per charge include one aimed exactly at the centre; in the
+    # z=0 plane the centre is an attracting null, so those six lines end there
+    # with null_field and approach it without crossing.
+    request = SceneRequest(preset="electric_hexagon", density=24, resolution=32)
+
+    model = _build_model(request)
+    scene = build_scene(request)
+
+    assert model.trace_options.null_threshold == web_scene.ELECTRIC_NULL_THRESHOLD
+    assert scene.metadata.termination_counts == {"domain_exit": 18, "null_field": 6}
+    assert scene.metadata.suppressed_count == 0
+    null_lines = [line for line in scene.lines if line.termination == "null_field"]
+    assert len(null_lines) == 6
+    ends = np.asarray([line.points[-1] for line in null_lines])
+    assert np.all(np.hypot(ends[:, 0], ends[:, 1]) < 1.0e-6)
+    # A star node: each line comes in along its own ray, so the last segment
+    # points at the origin and no two lines share an approach direction.
+    previous = np.asarray([line.points[-2] for line in null_lines])
+    last_segments = ends - previous
+    inward = -previous
+    cosines = np.einsum("ij,ij->i", last_segments, inward) / (
+        np.linalg.norm(last_segments, axis=1) * np.linalg.norm(inward, axis=1)
+    )
+    assert np.all(cosines > 0.999)
+    approach_angles = np.sort(np.arctan2(previous[:, 1], previous[:, 0]))
+    gaps = np.diff(np.append(approach_angles, approach_angles[0] + 2.0 * np.pi))
+    assert np.min(gaps) > 0.5
+
+
+def test_electric_quadrupole_center_is_a_saddle_that_lines_pass_by() -> None:
+    scene = build_scene(SceneRequest(preset="electric_quadrupole", density=20, resolution=32))
+
+    counts = scene.metadata.termination_counts
+    assert "null_field" not in counts
+    assert "max_arc_length" not in counts
+    assert counts["exclusion_hit"] >= 16
+    # Every positive charge owns lines into both neighbouring negatives, and
+    # each such pair suppresses the mirrored negative return line.
+    assert scene.metadata.suppressed_count == 8
+    assert scene.metadata.rendered_line_count == len(scene.lines) == 12
 
 
 _TraceScript = dict[
@@ -1422,6 +1532,9 @@ def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
     payload = presets.json()
     assert {preset["id"] for preset in payload} == {
         "electric_dipole",
+        "electric_quadrupole",
+        "electric_hexagon",
+        "electric_hexagon_alternating",
         "magnetic_dipole",
         "halbach_array",
         "current_loop",
@@ -1433,7 +1546,7 @@ def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
         "exclusive_minimum": web_scene.MIN_SOURCE_SEPARATION,
         "unit": "m",
     }
-    for preset_id in ("electric_dipole", "magnetic_dipole", "halbach_array"):
+    for preset_id in (*sorted(web_schemas.ELECTRIC_PRESETS), "magnetic_dipole", "halbach_array"):
         assert by_id[preset_id]["source_separation"] == expected_capability
     for preset_id in ("current_loop", "uniform"):
         assert "source_separation" not in by_id[preset_id]

@@ -15,11 +15,24 @@ from pydantic import (
 
 PresetName = Literal[
     "electric_dipole",
+    "electric_quadrupole",
+    "electric_hexagon",
+    "electric_hexagon_alternating",
     "magnetic_dipole",
     "halbach_array",
     "current_loop",
     "uniform",
 ]
+# Presets that share the point-charge contract: charge-only overrides,
+# circular exclusions, budget by |q| and return-pair suppression.
+ELECTRIC_PRESETS = frozenset(
+    {
+        "electric_dipole",
+        "electric_quadrupole",
+        "electric_hexagon",
+        "electric_hexagon_alternating",
+    }
+)
 SourceInputKind = Literal["positive", "negative", "dipole", "uniform"]
 SourcePayloadKind = Literal[
     "positive",
@@ -116,8 +129,8 @@ class SceneRequest(BaseModel):
         if self.sources is None:
             return self
         kinds = {source.kind for source in self.sources}
-        if self.preset == "electric_dipole" and not kinds <= {"positive", "negative"}:
-            raise ValueError("electric_dipole only accepts positive and negative sources")
+        if self.preset in ELECTRIC_PRESETS and not kinds <= {"positive", "negative"}:
+            raise ValueError(f"{self.preset} only accepts positive and negative sources")
         if self.preset in {"magnetic_dipole", "halbach_array"} and kinds != {"dipole"}:
             raise ValueError(f"{self.preset} accepts dipole sources only")
         if self.preset == "uniform":
