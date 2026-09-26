@@ -64,6 +64,8 @@
 
 9. I. Babuška, J. T. Oden, [“Verification and validation in computational engineering and science”](https://doi.org/10.1016/j.cma.2004.03.002), *Computer Methods in Applied Mechanics and Engineering* **193** (2004)。区分方程是否算对与模型是否描述现实。
 
+10. Dan Anderson, [*Slopefield*](https://openprocessing.org/sketch/1200971)，OpenProcessing 上的 Processing 交互作品。画 $y'=\sin x+0.1y^2$ 的斜率场：逐像素按斜率角灰度的背景、$20\times20$ 无向短线段、光标处加粗短线，以及每帧从光标上下 $\pm50$ px 的 11 个点前后向 Euler（$\Delta x=0.1$）画出的解曲线束。**适合参考**的是它的交互模型——光标即种子、一移动就有一束解曲线——和无向短线段这种箭头之外的方向图层；一阶 ODE $y'=f(x,y)$ 的斜率场就是向量场 $(1,f)$，永无零点，解都是函数图像。**边界**：固定步长 Euler 没有误差控制，也没有终止诊断（只在 $|y|$ 超过画幅 100 倍时停止）；曲线按斜率上色只是显示编码。本项目计划中的光标播种预览束会用网格插值加 RK4 在浏览器端画预览，并明确标注它不是服务端的误差控制积分。
+
 ## 引力、测地线与黑洞成像
 
 1. OpenStax, [*University Physics*, Vol. 1, §13.2 Gravitation Near Earth’s Surface](https://openstax.org/books/university-physics-volume-1/pages/13-2-gravitation-near-earths-surface)。牛顿引力场和场线的公开入门教材。
