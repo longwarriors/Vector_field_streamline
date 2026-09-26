@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-26
+
 ### Changed
 
 - 场线图改用淡紫配色：热图色图由 viridis 换成同一色相的淡紫色阶，明度 L* 从 97 单调降到 40，场越强颜色越深；场线与方向箭头改为带白边的黑墨线，热图上的网格线改为淡墨色。
@@ -112,7 +114,8 @@
 - `density` 定义为整个场景的种子总预算，并在服务端与浏览器提交前共同校验。
 - 场景元数据区分真实不变平面场线与投影流线，并公开播种说明和终止统计。
 
-[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.0...v0.3.1
