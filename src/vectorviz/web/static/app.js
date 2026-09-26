@@ -27,6 +27,7 @@ import {
   sourceSeparationConflict,
 } from "./source-controls.js";
 import { createRenderer, sourceStyle } from "./renderer.js";
+import { createSceneLoader } from "./scene-loader.js";
 import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validation.js";
 
 (() => {
@@ -98,9 +99,6 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   const state = {
     scene: null,
     sourceOverrides: null,
-    requestController: null,
-    requestSequence: 0,
-    debounceTimer: null,
     resizeFrame: null,
     drag: null,
     selectedSource: null,
@@ -302,36 +300,28 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     render();
   }
 
-  async function loadScene({ preserveSources = true } = {}) {
-    window.clearTimeout(state.debounceTimer);
-    state.debounceTimer = null;
-    if (!preserveSources) {
-      state.sourceOverrides = null;
-      elements.sourceStatus.textContent = "";
-    }
-    state.requestController?.abort();
-    const controller = new AbortController();
-    const sequence = ++state.requestSequence;
-    state.requestController = controller;
-    const requestBody = currentRequestBody();
+  async function fetchScene(requestBody, signal) {
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+      signal,
+    });
+    if (!response.ok) throw new Error(await extractError(response));
+    return validateScene(await response.json(), requestBody.preset);
+  }
 
-    setLoading(true);
-    clearError();
-    invalidateSceneView("loading");
-    try {
-      const response = await fetch(API_URL, {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(await extractError(response));
-      const scene = validateScene(await response.json(), elements.preset.value);
-      if (sequence !== state.requestSequence) return;
-
+  const loader = createSceneLoader({
+    fetchScene,
+    onStart() {
+      setLoading(true);
+      clearError();
+      invalidateSceneView("loading");
+    },
+    onSuccess(scene, requestBody) {
       state.scene = scene;
       state.presentationStatus = "ready";
       state.sourceOverrides = sourcesAreEditable() && Array.isArray(requestBody.sources)
@@ -343,27 +333,28 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       render();
       setConnectionStatus("ready", "已同步");
       elements.liveStatus.textContent = `${scene.metadata.title || "场景"}已加载，渲染 ${scene.metadata.rendered_line_count} 条场线，抑制 ${scene.metadata.suppressed_count} 次尝试。`;
-    } catch (error) {
-      if (error.name !== "AbortError" && sequence === state.requestSequence) {
-        invalidateSceneView("error");
-        setError(error.message || "无法连接场景计算服务", {
-          unreachable: error instanceof TypeError,
-        });
-      }
-    } finally {
-      if (sequence === state.requestSequence) {
-        setLoading(false);
-        state.requestController = null;
-      }
+    },
+    onError(error) {
+      invalidateSceneView("error");
+      setError(error.message || "无法连接场景计算服务", {
+        unreachable: error instanceof TypeError,
+      });
+    },
+    onSettled() {
+      setLoading(false);
+    },
+  });
+
+  async function loadScene({ preserveSources = true } = {}) {
+    if (!preserveSources) {
+      state.sourceOverrides = null;
+      elements.sourceStatus.textContent = "";
     }
+    await loader.load(currentRequestBody());
   }
 
   function scheduleLoad(delay = 260) {
-    window.clearTimeout(state.debounceTimer);
-    state.debounceTimer = window.setTimeout(() => {
-      state.debounceTimer = null;
-      loadScene();
-    }, delay);
+    loader.schedule(() => loadScene(), delay);
   }
 
   const TERMINATION_LABELS = Object.freeze({
@@ -795,8 +786,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     const sourceIndex = sourceAt(canvasX, canvasY);
     if (sourceIndex === null) return;
     const needsRequest = state.presentationStatus === "stale";
-    window.clearTimeout(state.debounceTimer);
-    state.debounceTimer = null;
+    loader.cancelScheduled();
     state.selectedSource = sourceIndex;
     state.drag = {pointerId: event.pointerId, sourceIndex, moved: false, needsRequest};
     elements.canvas.setPointerCapture(event.pointerId);
