@@ -79,6 +79,16 @@ PRESETS = [
         description="固定均匀带电细圆环在 z=0 子午面中的真实电场线；与电流线圈同几何。",
     ),
     PresetPayload(
+        id="dielectric_sphere",
+        label="介质球",
+        description="匀强外场中相对介电常数 4 的介质球；场线在球面折射，球内匀强。",
+    ),
+    PresetPayload(
+        id="conducting_sphere",
+        label="导体球",
+        description="匀强外场中的导体球；场线垂直终止于球面感应电荷，球内为零。",
+    ),
+    PresetPayload(
         id="uniform",
         label="匀强电场",
         description="用于验证积分器的直线基准场。",

@@ -5,7 +5,13 @@ from dataclasses import FrozenInstanceError, dataclass
 import numpy as np
 import pytest
 
-from vectorviz import ChargedRingField, CircularLoopField, Domain, TraceDirection
+from vectorviz import (
+    ChargedRingField,
+    CircularLoopField,
+    DielectricSphereField,
+    Domain,
+    TraceDirection,
+)
 from vectorviz.web.schemas import SourceInput
 from vectorviz.web.seeding import (
     TraceJob,
@@ -16,6 +22,7 @@ from vectorviz.web.seeding import (
     halbach_rail_jobs,
     magnetic_source_jobs,
     single_dipole_equatorial_jobs,
+    sphere_equal_flux_jobs,
 )
 
 
@@ -429,6 +436,68 @@ def test_charged_ring_planner_rejects_invalid_inputs(factory: object) -> None:
         factory()  # type: ignore[operator]
 
 
+def test_sphere_jobs_are_mirrored_and_equispaced_in_displacement_flux() -> None:
+    sphere = DielectricSphereField((1.0, 0.0, 0.0), 1.0, relative_permittivity=4.0)
+    domain = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
+
+    jobs = sphere_equal_flux_jobs(sphere, total=8, domain=domain)
+
+    assert len(jobs) == 8
+    assert all(job.direction is TraceDirection.FORWARD for job in jobs)
+    points = _seed_array(jobs)
+    np.testing.assert_allclose(points[:, 0], -2.9999)
+    np.testing.assert_allclose(points[0::2, 1], -points[1::2, 1], rtol=0.0, atol=0.0)
+    heights = points[1::2, 1]
+    assert heights[-1] == pytest.approx(2.88)
+    flux = sphere.flux_function(np.column_stack((points[1::2], np.zeros(4))))
+    np.testing.assert_allclose(flux, flux[-1] * np.array((0.25, 0.5, 0.75, 1.0)), rtol=1.0e-9)
+    # Equal flux is not equal height: the uniform far field makes flux grow as y^2.
+    assert not np.allclose(np.diff(heights), np.diff(heights)[0])
+
+
+def test_odd_sphere_budget_adds_the_axis_line() -> None:
+    sphere = DielectricSphereField((2.0, 0.0, 0.0), 0.5, center=(0.4, -0.3, 0.0), relative_permittivity=3.0)
+    domain = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
+
+    odd_jobs = sphere_equal_flux_jobs(sphere, total=7, domain=domain)
+    even_jobs = sphere_equal_flux_jobs(sphere, total=6, domain=domain)
+
+    assert odd_jobs[0] == TraceJob((-2.9999, -0.3), TraceDirection.FORWARD)
+    assert odd_jobs[1:] == even_jobs
+    points = _seed_array(even_jobs)
+    np.testing.assert_allclose(points[0::2, 1] + points[1::2, 1], -0.6, atol=1.0e-15)
+    # The usable height is limited by the nearer domain edge below the centre.
+    assert points[1::2, 1][-1] == pytest.approx(-0.3 + (2.7 - 0.12))
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: sphere_equal_flux_jobs(CircularLoopField(1, 1), 8, Domain(lower=(-3, -3), upper=(3, 3))),
+        lambda: sphere_equal_flux_jobs(
+            DielectricSphereField((1, 0, 0), 1, relative_permittivity=2), 0, Domain(lower=(-3, -3), upper=(3, 3))
+        ),
+        lambda: sphere_equal_flux_jobs(
+            DielectricSphereField((0, 1, 0), 1, relative_permittivity=2), 8, Domain(lower=(-3, -3), upper=(3, 3))
+        ),
+        lambda: sphere_equal_flux_jobs(
+            DielectricSphereField((1, 0, 0), 1, center=(0, 0, 0.5), relative_permittivity=2),
+            8,
+            Domain(lower=(-3, -3), upper=(3, 3)),
+        ),
+        lambda: sphere_equal_flux_jobs(
+            DielectricSphereField((1, 0, 0), 4, relative_permittivity=2), 8, Domain(lower=(-3, -3), upper=(3, 3))
+        ),
+        lambda: sphere_equal_flux_jobs(
+            DielectricSphereField((1, 0, 0), 1, relative_permittivity=2), 8, Domain(lower=(-3, -3, -3), upper=(3, 3, 3))
+        ),
+    ],
+)
+def test_sphere_planner_rejects_invalid_inputs(factory: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        factory()  # type: ignore[operator]
+
+
 @pytest.mark.parametrize(
     "jobs",
     [
@@ -455,6 +524,11 @@ def test_charged_ring_planner_rejects_invalid_inputs(factory: object) -> None:
         lambda: halbach_rail_jobs(8),
         lambda: current_loop_equal_flux_jobs(CircularLoopField(1, 1, normal=(0, 1, 0)), 8, -2.9999),
         lambda: charged_ring_equal_flux_jobs(ChargedRingField(1e-9, 1, normal=(0, 1, 0)), 8, 0.162),
+        lambda: sphere_equal_flux_jobs(
+            DielectricSphereField((1, 0, 0), 1, relative_permittivity=4),
+            8,
+            Domain(lower=(-3, -3), upper=(3, 3)),
+        ),
     ],
 )
 def test_every_planner_returns_exactly_the_finite_requested_budget(jobs: object) -> None:

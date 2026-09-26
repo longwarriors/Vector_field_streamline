@@ -15,6 +15,7 @@ from vectorviz.core import Domain, SphericalExclusion, VectorField
 from vectorviz.fields import (
     ChargedRingField,
     CircularLoopField,
+    DielectricSphereField,
     MagneticDipoleField,
     PointChargeField,
     UniformField,
@@ -33,6 +34,7 @@ from .schemas import (
     DomainPayload,
     LinePayload,
     MetadataPayload,
+    RegionPayload,
     ScalarPayload,
     SceneRequest,
     SceneResponse,
@@ -48,6 +50,7 @@ from .seeding import (
     halbach_rail_jobs,
     magnetic_source_jobs,
     single_dipole_equatorial_jobs,
+    sphere_equal_flux_jobs,
 )
 
 DOMAIN = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
@@ -61,6 +64,9 @@ CURRENT_LOOP_EXCLUSION_RADIUS = 0.16
 CHARGED_RING_RADIUS = 1.0
 CHARGED_RING_CHARGE_NC = 1.0
 CHARGED_RING_EXCLUSION_RADIUS = 0.16
+SPHERE_RADIUS = 1.0
+SPHERE_APPLIED_FIELD = 1.0
+DIELECTRIC_SPHERE_PERMITTIVITY = 4.0
 HALBACH_SOURCE_COUNT = 8
 HALBACH_X_EXTENT = 2.1
 ELECTRIC_ARRANGEMENT_RADIUS = 0.9
@@ -169,6 +175,27 @@ ELECTRIC_TITLES: dict[str, tuple[str, str]] = {
 }
 
 
+class _PlanarSliceField(VectorField):
+    """The z=0 plane of an axisymmetric field whose axis and centre lie in it."""
+
+    def __init__(self, field: DielectricSphereField) -> None:
+        if field.center[2] != 0.0 or field.applied_field[2] != 0.0:
+            raise ValueError("the z=0 plane is invariant only when it contains the axis")
+        self._field = field
+
+    @property
+    def dimension(self) -> int:
+        return 2
+
+    def evaluate(self, points: object) -> NDArray[np.float64]:
+        coordinates = np.asarray(points, dtype=float)
+        if coordinates.ndim == 0 or coordinates.shape[-1] != 2:
+            raise ValueError(f"points must have shape (..., 2); got {coordinates.shape}.")
+        embedded = np.zeros((*coordinates.shape[:-1], 3), dtype=float)
+        embedded[..., :2] = coordinates
+        return self._field.evaluate(embedded)[..., :2]
+
+
 @dataclass(frozen=True, slots=True)
 class _SceneModel:
     field: VectorField
@@ -185,6 +212,8 @@ class _SceneModel:
     seed_description: str
     reflect_y_symmetric_domain_exits: bool = False
     suppress_electric_return_pairs: bool = False
+    interfaces: tuple[SphericalExclusion, ...] = ()
+    regions: tuple[RegionPayload, ...] = ()
 
     @property
     def seeds(self) -> NDArray[np.float64]:
@@ -383,6 +412,53 @@ def _build_model(request: SceneRequest) -> _SceneModel:
                 "在两个截面周围按等间隔的电通量函数值求根播种，相邻线代表相等电通量间隔；"
                 "奇数预算另含一条沿环面向外的赤道特征线，不带等通量权重。线数不表示电场强度本身。"
             ),
+        )
+
+    if request.preset in {"dielectric_sphere", "conducting_sphere"}:
+        conducting = request.preset == "conducting_sphere"
+        permittivity = math.inf if conducting else DIELECTRIC_SPHERE_PERMITTIVITY
+        sphere = DielectricSphereField(
+            (SPHERE_APPLIED_FIELD, 0.0, 0.0),
+            SPHERE_RADIUS,
+            relative_permittivity=permittivity,
+        )
+        region = RegionPayload(
+            kind=request.preset,
+            x=0.0,
+            y=0.0,
+            radius=SPHERE_RADIUS,
+            relative_permittivity=None if conducting else permittivity,
+            unit="m",
+        )
+        return _SceneModel(
+            field=_PlanarSliceField(sphere),
+            sources=(),
+            exclusions=(),
+            trace_jobs=tuple(sphere_equal_flux_jobs(sphere, request.density, DOMAIN)),
+            trace_options=DEFAULT_TRACE_OPTIONS,
+            scalar_label="|E|",
+            scalar_unit="V/m",
+            title="匀强电场中的导体球" if conducting else "匀强电场中的介质球",
+            field_model=(
+                "匀强外场中的导体球：球内零场，球外匀强场加感应偶极场"
+                if conducting
+                else "匀强外场中相对介电常数 4 的介质球：球内匀强场，球外匀强场加感应偶极场"
+            ),
+            projection_note=(
+                "z=0 平面包含外场方向与球心，是该轴对称场的不变平面，所示曲线是真实三维电场线。"
+            ),
+            seed_mode=SeedMode.EQUAL_FLUX,
+            seed_description=(
+                "从左边界按等间隔的电通量函数值求根播种并镜像到轴两侧，相邻线代表相等电通量；"
+                "导体内场为零，进入球面的线在界面以 null_field 终止，对应终止于感应面电荷。"
+                "奇数预算另含一条轴线特征线。线数不表示电场强度本身。"
+                if conducting
+                else "从左边界按等间隔的电位移通量函数值求根播种并镜像到轴两侧，"
+                "相邻线代表相等的电位移通量 2πΔΨ；D 的法向分量在球面连续而 E 的不连续，"
+                "穿过球面的线在界面事件处折射并续算。奇数预算另含一条轴线特征线。线数不表示电场强度本身。"
+            ),
+            interfaces=(SphericalExclusion(np.array(((0.0, 0.0),)), SPHERE_RADIUS),),
+            regions=(region,),
         )
 
     inputs = list(_default_sources(request.preset) if request.sources is None else request.sources)
@@ -723,6 +799,7 @@ def _trace_lines(model: _SceneModel) -> _TraceSummary:
         domain=DOMAIN,
         options=model.trace_options,
         exclusions=model.exclusions,
+        interfaces=model.interfaces,
     )
     terminations: Counter[str] = Counter()
     start_terminations: Counter[str] = Counter()
@@ -828,6 +905,7 @@ def build_scene(request: SceneRequest) -> SceneResponse:
         # Copy each cached line and its point list; the points are tuples.
         lines=[line.model_copy(update={"points": list(line.points)}) for line in traces.lines],
         sources=list(model.sources),
+        regions=list(model.regions),
         metadata=MetadataPayload(
             title=model.title,
             projection_note=model.projection_note,

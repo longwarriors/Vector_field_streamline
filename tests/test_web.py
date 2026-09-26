@@ -15,7 +15,13 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from vectorviz import ChargedRingField, CircularLoopField, MagneticDipoleField, __version__
+from vectorviz import (
+    ChargedRingField,
+    CircularLoopField,
+    DielectricSphereField,
+    MagneticDipoleField,
+    __version__,
+)
 from vectorviz.tracing import TerminationReason, TraceBranch, TraceDirection, TraceResult
 from vectorviz.web import app as web_app
 from vectorviz.web import scene as web_scene
@@ -49,6 +55,9 @@ from vectorviz.web.seeding import TraceJob, allocate_seed_counts
         ("halbach_array", {"dipole"}, {"A·m²"}, "|B|", "T", 8),
         ("current_loop", {"wire_out", "wire_into"}, {"A"}, "|B|", "T", 6),
         ("charged_ring", {"ring_charge"}, {"nC"}, "|E|", "V/m", 6),
+        # Material spheres are regions, not sources.
+        ("dielectric_sphere", set(), set(), "|E|", "V/m", 6),
+        ("conducting_sphere", set(), set(), "|E|", "V/m", 7),
         # A uniform field has no localized source marker.
         ("uniform", set(), set(), "|E|", "V/m", 6),
     ],
@@ -887,6 +896,122 @@ def test_ring_charge_marker_kind_is_response_only_and_needs_a_nonzero_nc_charge(
             SourcePayload(**{**base, **update})
 
 
+def test_dielectric_sphere_scene_publishes_its_region_and_keeps_displacement_flux(
+    client: TestClient,
+) -> None:
+    # Ten mirrored flux targets: the two lowest pairs carry less displacement
+    # flux than the sphere's cross-section and enter it; the rest pass by.
+    request = SceneRequest(preset="dielectric_sphere", density=20, resolution=32)
+
+    model = _build_model(request)
+    scene = build_scene(request)
+
+    assert scene.sources == []
+    assert [region.model_dump() for region in scene.regions] == [
+        {
+            "kind": "dielectric_sphere",
+            "x": 0.0,
+            "y": 0.0,
+            "radius": 1.0,
+            "relative_permittivity": 4.0,
+            "unit": "m",
+        }
+    ]
+    assert len(model.interfaces) == 1 and model.exclusions == ()
+    seeds = model.seeds
+    assert seeds.shape == (20, 2)
+    np.testing.assert_allclose(seeds[:, 0], -2.9999)
+    np.testing.assert_allclose(seeds[0::2, 1], -seeds[1::2, 1], rtol=0.0, atol=0.0)
+    sphere = DielectricSphereField((1.0, 0.0, 0.0), 1.0, relative_permittivity=4.0)
+    upper = seeds[1::2]
+    flux = sphere.flux_function(np.column_stack((upper, np.zeros(upper.shape[0]))))
+    np.testing.assert_allclose(np.diff(flux), flux[0], rtol=1.0e-9)
+    assert upper[-1, 1] == pytest.approx(3.0 - 0.12)
+
+    assert scene.metadata.termination_counts == {"domain_exit": 20}
+    crossing_lines = 0
+    for line in scene.lines:
+        points = np.asarray(line.points)
+        embedded = np.column_stack((points, np.zeros(points.shape[0])))
+        line_flux = sphere.flux_function(embedded)
+        # The displacement flux function is constant along a line on both sides
+        # of the surface; the interface restart keeps the kink on the surface
+        # and the crossing error at the scale of the solver tolerance.
+        np.testing.assert_allclose(line_flux, line_flux[0], rtol=2.0e-5)
+        inside = np.hypot(points[:, 0], points[:, 1]) < 1.0
+        crossing_lines += int(inside.any())
+        # Inside the sphere the field is uniform along +x: the polyline is straight.
+        if inside.sum() >= 3:
+            np.testing.assert_allclose(points[inside][:, 1], points[inside][0, 1], atol=2.0e-6)
+    assert crossing_lines == 4
+    assert scene.metadata.seed_mode is SeedMode.EQUAL_FLUX
+    assert "电位移通量" in scene.metadata.seed_description
+    assert "界面" in scene.metadata.seed_description
+    assert "不变平面" in scene.metadata.projection_note
+
+    rejected = client.post(
+        "/api/scene",
+        json={
+            "preset": "dielectric_sphere",
+            "sources": [{"x": 0.0, "y": 0.0, "kind": "positive", "strength": 1.0}],
+        },
+    )
+    assert rejected.status_code == 422
+    assert "does not accept" in json.dumps(rejected.json())
+    payload = client.post(
+        "/api/scene", json={"preset": "electric_dipole", "density": 6, "resolution": 32}
+    ).json()
+    assert payload["regions"] == []
+
+
+def test_conducting_sphere_lines_end_on_the_surface_with_null_field() -> None:
+    request = SceneRequest(preset="conducting_sphere", density=7, resolution=64)
+
+    model = _build_model(request)
+    scene = build_scene(request)
+
+    assert scene.regions[0].relative_permittivity is None
+    assert scene.regions[0].kind == "conducting_sphere"
+    axis = model.trace_jobs[0]
+    assert axis.seed == (-2.9999, 0.0)
+    ended = [line for line in scene.lines if line.termination == "null_field"]
+    passed = [line for line in scene.lines if line.termination == "domain_exit"]
+    assert len(ended) >= 3 and len(passed) >= 2
+    assert len(ended) + len(passed) == 7
+    for line in ended:
+        end = np.asarray(line.points[-1])
+        assert np.hypot(*end) == pytest.approx(1.0, abs=1.0e-9)
+        assert end[0] < 0.0
+    axis_line = scene.lines[0]
+    assert axis_line.termination == "null_field"
+    np.testing.assert_allclose(axis_line.points[-1], (-1.0, 0.0), atol=1.0e-9)
+    # The interior is a genuine zero field: sampled, finite and unmasked.
+    values = np.asarray(scene.scalar.values, dtype=object).reshape(64, 64)
+    mask = np.asarray(scene.scalar.mask).reshape(64, 64)
+    x = np.linspace(-3.0, 3.0, 64)
+    y = np.linspace(3.0, -3.0, 64)
+    inside = np.hypot(x[np.newaxis, :], y[:, np.newaxis]) < 0.9
+    assert not mask[inside].any()
+    assert all(value == 0.0 for value in values[inside])
+
+
+def test_region_payload_validates_its_material_contract() -> None:
+    base = {"kind": "dielectric_sphere", "x": 0.0, "y": 0.0, "radius": 1.0, "unit": "m"}
+    web_schemas.RegionPayload(**base, relative_permittivity=4.0)
+    web_schemas.RegionPayload(**{**base, "kind": "conducting_sphere"})
+    for update in (
+        {},
+        {"kind": "conducting_sphere", "relative_permittivity": 4.0},
+        {"relative_permittivity": 0.5},
+        {"relative_permittivity": 4.0, "radius": 0.0},
+        {"relative_permittivity": 4.0, "unit": "cm"},
+        {"relative_permittivity": 4.0, "kind": "cube"},
+        {"relative_permittivity": 4.0, "extra": 1},
+    ):
+        with pytest.raises(ValueError):
+            web_schemas.RegionPayload(**{**base, **update})
+
+
 def test_current_loop_planar_adapter_matches_the_invariant_3d_field() -> None:
     loop = CircularLoopField(1.0, 1.0, normal=(0.0, 1.0, 0.0))
     planar = _PlanarMeridionalField(loop)
@@ -1636,6 +1761,8 @@ def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
         "halbach_array",
         "current_loop",
         "charged_ring",
+        "dielectric_sphere",
+        "conducting_sphere",
         "uniform",
     }
     assert all(preset["label"] and preset["description"] for preset in payload)
@@ -1646,7 +1773,13 @@ def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
     }
     for preset_id in (*sorted(web_schemas.ELECTRIC_PRESETS), "magnetic_dipole", "halbach_array"):
         assert by_id[preset_id]["source_separation"] == expected_capability
-    for preset_id in ("current_loop", "charged_ring", "uniform"):
+    for preset_id in (
+        "current_loop",
+        "charged_ring",
+        "dielectric_sphere",
+        "conducting_sphere",
+        "uniform",
+    ):
         assert "source_separation" not in by_id[preset_id]
 
 

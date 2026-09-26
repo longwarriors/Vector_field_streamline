@@ -22,10 +22,16 @@ PresetName = Literal[
     "halbach_array",
     "current_loop",
     "charged_ring",
+    "dielectric_sphere",
+    "conducting_sphere",
     "uniform",
 ]
-# Presets whose geometry is fixed by the server and returned as read-only markers.
-FIXED_PRESETS = frozenset({"current_loop", "charged_ring", "uniform"})
+# Presets whose geometry is fixed by the server and returned as read-only
+# markers or regions.
+FIXED_PRESETS = frozenset(
+    {"current_loop", "charged_ring", "dielectric_sphere", "conducting_sphere", "uniform"}
+)
+RegionKind = Literal["dielectric_sphere", "conducting_sphere"]
 # Presets that share the point-charge contract: charge-only overrides,
 # circular exclusions, budget by |q| and return-pair suppression.
 ELECTRIC_PRESETS = frozenset(
@@ -242,6 +248,25 @@ class SourcePayload(_ResponsePayload):
         return self
 
 
+class RegionPayload(_ResponsePayload):
+    """A material region drawn as geometry: a sphere seen in the web plane."""
+
+    kind: RegionKind
+    x: FiniteFloat
+    y: FiniteFloat
+    radius: FiniteFloat = Field(gt=0.0)
+    relative_permittivity: FiniteFloat | None = Field(default=None, ge=1.0)
+    unit: Literal["m"]
+
+    @model_validator(mode="after")
+    def validate_material(self) -> "RegionPayload":
+        if self.kind == "dielectric_sphere" and self.relative_permittivity is None:
+            raise ValueError("dielectric_sphere regions must state relative_permittivity")
+        if self.kind == "conducting_sphere" and self.relative_permittivity is not None:
+            raise ValueError("conducting_sphere regions have no finite relative_permittivity")
+        return self
+
+
 class MetadataPayload(_ResponsePayload):
     title: str
     projection_note: str
@@ -259,6 +284,7 @@ class SceneResponse(_ResponsePayload):
     scalar: ScalarPayload
     lines: list[LinePayload]
     sources: list[SourcePayload]
+    regions: list[RegionPayload] = Field(default_factory=list)
     metadata: MetadataPayload
 
     @model_validator(mode="after")

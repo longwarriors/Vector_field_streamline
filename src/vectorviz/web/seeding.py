@@ -13,7 +13,7 @@ from numpy.typing import ArrayLike, NDArray
 from scipy.optimize import brentq
 
 from vectorviz.core import Domain
-from vectorviz.fields import ChargedRingField, CircularLoopField
+from vectorviz.fields import ChargedRingField, CircularLoopField, DielectricSphereField
 from vectorviz.tracing import TraceDirection
 
 
@@ -455,6 +455,90 @@ def charged_ring_equal_flux_jobs(
     return jobs
 
 
+def _sphere_flux_at_height(
+    height: float,
+    sphere: DielectricSphereField,
+    edge_x: float,
+    center_y: float,
+) -> float:
+    """Public displacement-flux function on the seeding edge at ``height``."""
+
+    point = (edge_x, center_y + height, 0.0)
+    return float(np.asarray(sphere.flux_function(point)))
+
+
+def _sphere_flux_residual(
+    height: float,
+    sphere: DielectricSphereField,
+    edge_x: float,
+    center_y: float,
+    target: float,
+) -> float:
+    return _sphere_flux_at_height(height, sphere, edge_x, center_y) - target
+
+
+def sphere_equal_flux_jobs(
+    sphere: DielectricSphereField,
+    total: int,
+    domain: Domain,
+    x_inset: float = 1.0e-4,
+    y_inset: float = 0.12,
+) -> list[TraceJob]:
+    """Seed the upstream edge at equal steps of the displacement flux function.
+
+    The applied field must point along +x with the sphere centre in the
+    z=0 plane, so the web plane is a meridional plane. ``total // 2`` targets
+    are spaced equally from one step up to the flux at the edge's largest
+    usable height, inverted to heights and mirrored about the axis; an odd
+    budget adds the axis line, which is the zero-flux member of the family.
+    """
+
+    if not isinstance(sphere, DielectricSphereField):
+        raise TypeError("sphere must be a DielectricSphereField")
+    budget = _positive_integer(total, "total")
+    if not isinstance(domain, Domain) or domain.dimension != 2:
+        raise ValueError("domain must be a two-dimensional Domain")
+    applied = np.asarray(sphere.applied_field)
+    if applied[1] != 0.0 or applied[2] != 0.0 or applied[0] <= 0.0:
+        raise ValueError("the applied field must point along +x")
+    if sphere.center[2] != 0.0:
+        raise ValueError("the sphere centre must lie in the z=0 plane")
+    inset_x = float(x_inset)
+    inset_y = float(y_inset)
+    if not np.isfinite(inset_x) or inset_x < 0.0 or not np.isfinite(inset_y) or inset_y < 0.0:
+        raise ValueError("insets must be finite and non-negative")
+    edge_x = float(domain.lower[0]) + inset_x
+    center_y = float(sphere.center[1])
+    height_limit = min(
+        float(domain.upper[1]) - center_y,
+        center_y - float(domain.lower[1]),
+    ) - inset_y
+    if height_limit <= 0.0:
+        raise ValueError("the sphere centre must leave seedable height on both sides")
+    if np.hypot(edge_x - float(sphere.center[0]), 0.0) <= sphere.radius:
+        raise ValueError("the seeding edge must lie outside the sphere")
+
+    pair_count = budget // 2
+    jobs: list[TraceJob] = []
+    if budget % 2:
+        jobs.append(TraceJob((edge_x, center_y), TraceDirection.FORWARD))
+    if pair_count == 0:
+        return jobs
+
+    top_flux = _sphere_flux_at_height(height_limit, sphere, edge_x, center_y)
+    targets = np.linspace(top_flux / pair_count, top_flux, pair_count)
+    for target in targets:
+        height = brentq(
+            _sphere_flux_residual,
+            0.0,
+            height_limit,
+            args=(sphere, edge_x, center_y, float(target)),
+        )
+        jobs.append(TraceJob((edge_x, center_y - height), TraceDirection.FORWARD))
+        jobs.append(TraceJob((edge_x, center_y + height), TraceDirection.FORWARD))
+    return jobs
+
+
 __all__ = [
     "TraceJob",
     "allocate_seed_counts",
@@ -464,4 +548,5 @@ __all__ = [
     "halbach_rail_jobs",
     "magnetic_source_jobs",
     "single_dipole_equatorial_jobs",
+    "sphere_equal_flux_jobs",
 ]
