@@ -1283,6 +1283,10 @@ input[type="range"]::-moz-range-thumb {
   --note: var(--vv-note-wire);
 }
 
+[data-source-kind="ring_charge"] {
+  --note: var(--vv-note-positive);
+}
+
 .fixed-source {
   display: grid;
   align-items: center;

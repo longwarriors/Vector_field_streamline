@@ -47,6 +47,7 @@ export const CANVAS_THEME = deepFreeze({
       dipole: "#fff09a",
       wire_out: "#7fa052",
       wire_into: "#7fa052",
+      ring_charge: "#e45f95",
     },
     // A white inner ring and an ink outer ring: on any background one of the
     // two keeps at least 4:1, so markers read on the colormap and on bare paper.

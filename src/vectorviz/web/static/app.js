@@ -39,6 +39,13 @@ import {
     dipole: "A·m²",
     wire_out: "A",
     wire_into: "A",
+    ring_charge: "nC",
+  });
+  // Read-only marker kinds, and the exact marker set each fixed preset returns.
+  const MARKER_KINDS = new Set(["wire_out", "wire_into", "ring_charge"]);
+  const FIXED_MARKER_KINDS = Object.freeze({
+    current_loop: ["wire_into", "wire_out"],
+    charged_ring: ["ring_charge", "ring_charge"],
   });
   const EDITABLE_SOURCE_PRESETS = new Set([
     "electric_dipole",
@@ -355,23 +362,26 @@ import {
       if (source.angle_deg !== undefined && source.angle_deg !== null) return false;
       if (source.kind === "positive") return source.strength > 0;
       if (source.kind === "negative") return source.strength < 0;
+      if (source.kind === "ring_charge") return source.strength !== 0;
       return (
         (source.kind === "wire_out" || source.kind === "wire_into") &&
         source.strength >= 0
       );
     });
-    const wireSources = scene.sources.filter(
-      ({ kind }) => kind === "wire_out" || kind === "wire_into",
-    );
-    const expectsLoopMarkers = elements.preset.value === "current_loop";
-    const validLoopMarkers = expectsLoopMarkers
-      ? wireSources.length === 2 &&
-        scene.sources.length === 2 &&
-        wireSources.some(({ kind }) => kind === "wire_out") &&
-        wireSources.some(({ kind }) => kind === "wire_into") &&
-        wireSources[0].strength === wireSources[1].strength
-      : wireSources.length === 0;
-    if (!validSources || !validLoopMarkers) {
+    const markerSources = scene.sources.filter(({ kind }) => MARKER_KINDS.has(kind));
+    const expectedMarkers = FIXED_MARKER_KINDS[elements.preset.value];
+    // A fixed preset returns exactly its two markers with one shared strength;
+    // every other preset returns no read-only marker at all.
+    const validFixedMarkers = expectedMarkers
+      ? markerSources.length === expectedMarkers.length &&
+        scene.sources.length === expectedMarkers.length &&
+        markerSources
+          .map(({ kind }) => kind)
+          .sort()
+          .every((kind, index) => kind === expectedMarkers[index]) &&
+        markerSources.every(({ strength }) => strength === markerSources[0].strength)
+      : markerSources.length === 0;
+    if (!validSources || !validFixedMarkers) {
       throw new Error("场源缺少有效坐标、强度或 strength_unit");
     }
     const metadata = scene.metadata;
@@ -627,6 +637,7 @@ import {
       magnetic_dipole: "磁偶极子场",
       halbach_array: "Halbach 阵列磁场",
       current_loop: "圆形电流线圈磁场",
+      charged_ring: "带电圆环电场",
       uniform: "匀强场",
     }[value] || "物理场";
   }
@@ -1036,6 +1047,7 @@ import {
     dipole: "→",
     wire_out: "⊙",
     wire_into: "⊗",
+    ring_charge: "+",
   });
 
   // validateScene admits only the kinds listed in SOURCE_STRENGTH_UNITS.
@@ -1148,7 +1160,10 @@ import {
     if (!editable && sources.length) {
       const fixed = document.createElement("p");
       fixed.className = "fixed-sources-note";
-      fixed.textContent = "两个标记是同一圆环的截面位置，电流与位置由预设固定、不可移动。";
+      fixed.textContent =
+        preset === "charged_ring"
+          ? "两个标记是同一带电圆环的截面位置，电荷与位置由预设固定、不可移动。"
+          : "两个标记是同一圆环的截面位置，电流与位置由预设固定、不可移动。";
       elements.sourceEditorList.append(fixed);
       sources.forEach((source, index) => {
         const row = document.createElement("div");
@@ -1197,6 +1212,7 @@ import {
   function readableSourceName(source, index) {
     if (source.kind === "wire_out") return "电流出屏";
     if (source.kind === "wire_into") return "电流入屏";
+    if (source.kind === "ring_charge") return "圆环截面";
     if (source.kind === "dipole") return `磁偶极子 ${index + 1}`;
     if (source.kind === "positive") return `正电荷 ${index + 1}`;
     return `负电荷 ${index + 1}`;

@@ -106,6 +106,7 @@ def _browser_presets() -> list[dict[str, object]]:
             "source_separation": editable,
         },
         {"id": "current_loop", "label": "圆形电流线圈", "description": "fixture"},
+        {"id": "charged_ring", "label": "带电圆环", "description": "fixture"},
         {"id": "uniform", "label": "匀强场", "description": "fixture"},
     ]
 
@@ -140,6 +141,38 @@ def _browser_loop_scene() -> dict[str, object]:
             "field_model": "test loop",
             "seed_mode": "equal_flux",
             "seed_description": "Fixture equal-ψ loop seeds.",
+        }
+    )
+    return scene
+
+
+def _browser_ring_scene() -> dict[str, object]:
+    scene = json.loads(json.dumps(_browser_scene()))
+    metadata = scene["metadata"]
+    assert isinstance(metadata, dict)
+    scene["sources"] = [
+        {
+            "x": -1.0,
+            "y": 0.0,
+            "kind": "ring_charge",
+            "strength": 1.0,
+            "strength_unit": "nC",
+        },
+        {
+            "x": 1.0,
+            "y": 0.0,
+            "kind": "ring_charge",
+            "strength": 1.0,
+            "strength_unit": "nC",
+        },
+    ]
+    metadata.update(
+        {
+            "title": "Charged ring fixture",
+            "projection_note": "Invariant meridional plane",
+            "field_model": "test ring",
+            "seed_mode": "equal_flux",
+            "seed_description": "Fixture equal-flux ring seeds.",
         }
     )
     return scene
@@ -627,19 +660,48 @@ def test_scalar_lines_arrows_sources_and_probe_share_one_transform(
 
 
 @pytest.mark.browser
-def test_current_loop_markers_are_fixed_response_only_sources(
+@pytest.mark.parametrize(
+    ("preset", "fixed_scene", "title", "labels", "strengths", "symbols", "note"),
+    [
+        (
+            "current_loop",
+            _browser_loop_scene(),
+            "Current loop fixture",
+            ["电流出屏", "电流入屏"],
+            ["1 A", "1 A"],
+            ["⊙", "⊗"],
+            "电流与位置由预设固定",
+        ),
+        (
+            "charged_ring",
+            _browser_ring_scene(),
+            "Charged ring fixture",
+            ["圆环截面", "圆环截面"],
+            ["1 nC", "1 nC"],
+            ["+", "+"],
+            "电荷与位置由预设固定",
+        ),
+    ],
+)
+def test_fixed_preset_markers_are_response_only_sources(
     browser_page: tuple[Page, list[str]],
     frontend_url: str,
+    preset: str,
+    fixed_scene: dict[str, object],
+    title: str,
+    labels: list[str],
+    strengths: list[str],
+    symbols: list[str],
+    note: str,
 ) -> None:
     page, page_errors = browser_page
     ordinary_scene = _browser_scene()
-    loop_scene = _browser_loop_scene()
     request_bodies: list[dict[str, object]] = []
 
     def route_scene(route: Route) -> None:
         body = route.request.post_data_json
         request_bodies.append(body)
-        response_scene = loop_scene if body["preset"] == "current_loop" else ordinary_scene
+        response_scene = fixed_scene if body["preset"] == preset else ordinary_scene
         route.fulfill(
             status=200,
             content_type="application/json",
@@ -651,33 +713,35 @@ def test_current_loop_markers_are_fixed_response_only_sources(
     page.goto(frontend_url)
     expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
 
-    page.locator("#preset").select_option("current_loop")
-    expect(page.locator("#scene-title")).to_have_text("Current loop fixture")
+    page.locator("#preset").select_option(preset)
+    expect(page.locator("#scene-title")).to_have_text(title)
     expect(page.locator("#field-canvas")).to_have_attribute("data-draggable", "false")
     expect(page.locator("#field-canvas")).to_have_attribute(
-        "aria-label", "Current loop fixture二维可视化，共 1 条场线、0 个可移动场源。"
+        "aria-label", f"{title}二维可视化，共 1 条场线、0 个可移动场源。"
     )
-    expect(page.locator(".source-label")).to_have_text(["电流出屏", "电流入屏"])
-    expect(page.locator(".source-strength")).to_have_text(["1 A", "1 A"])
+    expect(page.locator(".source-label")).to_have_text(labels)
+    expect(page.locator(".source-strength")).to_have_text(strengths)
     expect(page.locator("#source-editor-list input")).to_have_count(0)
     expect(page.locator("#reset-sources")).to_be_disabled()
     expect(page.locator(".fixed-sources-note")).to_contain_text("不可移动")
+    expect(page.locator(".fixed-sources-note")).to_contain_text(note)
 
     rendered_symbols = page.evaluate(
-        """() => window.__vectorVizCanvasCalls.texts
+        """(symbols) => window.__vectorVizCanvasCalls.texts
           .map(({text}) => text)
-          .filter((text) => text === '⊙' || text === '⊗')"""
+          .filter((text) => symbols.includes(text))""",
+        symbols,
     )
-    assert rendered_symbols[-2:] == ["⊙", "⊗"]
+    assert rendered_symbols[-2:] == symbols
 
     with page.expect_request("**/api/scene") as request_info:
         page.locator("#run-button").click()
     request_body = request_info.value.post_data_json
-    assert request_body["preset"] == "current_loop"
+    assert request_body["preset"] == preset
     assert set(request_body) == {"preset", "density", "resolution"}
     expect(page.locator("#loading-overlay")).to_be_hidden()
     expect(page.locator("#connection-label")).to_have_text("已同步")
-    expect(page.locator("#scene-title")).to_have_text("Current loop fixture")
+    expect(page.locator("#scene-title")).to_have_text(title)
 
     target = page.evaluate(
         """async () => {
@@ -705,7 +769,7 @@ def test_current_loop_markers_are_fixed_response_only_sources(
     page.wait_for_timeout(550)
 
     assert len(request_bodies) == baseline_requests
-    expect(page.locator(".source-strength")).to_have_text(["1 A", "1 A"])
+    expect(page.locator(".source-strength")).to_have_text(strengths)
     assert page_errors == []
 
 
