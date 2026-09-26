@@ -7,6 +7,8 @@
 ### Added
 
 - `ChargedRingField`：均匀带电理想细圆环的三维电场，与 `CircularLoopField` 共用几何和椭圆积分代码，`flux_function()` 用 Paxton 的圆盘立体角闭式给出电通量函数。新预设 `charged_ring` 在 z=0 子午面显示真实电场线，两个只读 `ring_charge` 标记表示同一圆环的截面；种子按等间隔通量函数值围绕截面求根，`seed_mode` 为 `equal_flux`，奇数预算另含环外赤道射线。
+- `DielectricSphereField`：匀强外场中介质球或导体球的分段解析电场，`flux_function()` 给出 $\mathbf D/\varepsilon_0$ 的连续通量函数。新预设 `dielectric_sphere`（$\varepsilon_r=4$）与 `conducting_sphere` 没有场源，响应新增 `regions` 字段给出球面截线，前端画成虚线圆并标注材料；种子在左边界按等间隔电位移通量求根，`seed_mode` 为 `equal_flux`。其他预设的 `regions` 为空列表。
+- `FieldLineTracer` 与 `trace_field_line` 新增 `interfaces`：线到达场不连续的曲面时以事件停在界面上并在另一侧重启，折射点不再被自适应步长抹平；越过界面后场为零或非有限时在界面上终止，滑动接触以 `solver_failure` 结束。未登记界面时行为逐位不变。
 - 三个电荷排布预设：`electric_quadrupole`（正方形顶点上正负交替的四个电荷）、`electric_hexagon`（正六边形顶点上六个等量正电荷）和 `electric_hexagon_alternating`（同一六边形上正负交替）。它们与 `electric_dipole` 共用点电荷契约：可增删、拖动电荷，公布源间距能力，按 $|q|$ 分配预算并抑制重复返线；收到 `sources` 覆盖后标题改为“可编辑点电荷组的电场线”。
 
 ### Changed

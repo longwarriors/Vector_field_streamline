@@ -305,6 +305,35 @@ $\Lambda_0(\xi,m)=\tfrac{2}{\pi}\left[E(m)F(\xi\,|\,1-m)+K(m)E(\xi\,|\,1-m)-K(m)
 !!! example "对照阅读：matplotlib 三角剖分画法"
     知乎文章[《python 绘制理想圆环的电场》](https://zhuanlan.zhihu.com/p/430569468)用数值求积算电势，再对三角剖分上的三次插值取梯度。    它适合看等势线的画法，但奇点软化和插值梯度不能照搬进场模型；逐条说明见[参考页的勘误](../references.md#zhihu-charged-ring)。
 
+## 边界条件：匀强场中的介质球与导体球
+
+前面的场都由源直接决定。介质球是第一个由**边界条件**决定的例子：把相对介电常数为 $\varepsilon_r$、半径为 $a$ 的球放进匀强外场 $\mathbf E_0$，在球面上要求电势连续、$\mathbf D$ 的法向分量连续，解出
+
+$$
+\mathbf E_{\mathrm{in}}=\frac{3}{\varepsilon_r+2}\mathbf E_0,
+\qquad
+\mathbf E_{\mathrm{out}}=\mathbf E_0+\frac{a^3\alpha}{r^3}\left[3(\mathbf E_0\cdot\widehat{\mathbf r})\widehat{\mathbf r}-\mathbf E_0\right],
+\qquad
+\alpha=\frac{\varepsilon_r-1}{\varepsilon_r+2}.
+$$
+
+球内是比外场弱的匀强场，球外是外场加一个感应偶极。[^jackson-sphere] 让 $\varepsilon_r\to\infty$ 就得到导体球：球内场为零，$\alpha=1$，球面上的场垂直于表面。`DielectricSphereField` 实现这个分段解析解，`math.inf` 表示导体。
+
+球面上的场是不连续的：切向分量连续，法向分量在介质球上按 $\varepsilon_rE_{n,\mathrm{in}}=E_{n,\mathrm{out}}$ 跳变。所以场线在球面**折射**，$\tan\theta_{\mathrm{in}}=\varepsilon_r\tan\theta_{\mathrm{out}}$（$\theta$ 从法向量起）。通量也要分开说：$\mathbf E$ 的通量在球面不守恒（束缚面电荷），$\mathbf D$ 的通量守恒。以外场方向为轴，$\mathbf D/\varepsilon_0$ 的通量函数是
+
+$$
+\Psi_D=\begin{cases}
+\dfrac{\varepsilon_r}{2}\dfrac{3E_0}{\varepsilon_r+2}\rho^2, & r<a,\\[1em]
+\dfrac{E_0\rho^2}{2}\left(1+\dfrac{2\alpha a^3}{r^3}\right), & r>a,
+\end{cases}
+$$
+
+它在球面连续，所以一条场线从头到尾保持同一个 $\Psi_D$，这也是检验积分器能否正确穿过界面的现成不变量。
+
+自适应求解器在不连续处会用一步跨过界面，那一步的各级导数来自两侧，折射点被抹平。VectorViz 的追踪器接受 `interfaces`：线到达球面时以事件停在球面上，沿到达界面的运动方向前进几个 ulp 后重新启动，折射点因此落在球面上；跨越那一步的局部误差仍在容差量级，介质球预设实测 $\Psi_D$ 沿线相对漂移约 $10^{-5}$，无界面事件时约 $10^{-4}$。导体球内场为零，进入球面的线在界面上以 `null_field` 停下，对应终止于感应面电荷。数值细节见[第 3 章](03-tracing.md#interfaces)。
+
+浏览器的 `dielectric_sphere` 预设取 $\varepsilon_r=4$、$a=1\ \mathrm m$、$E_0=1\ \mathrm{V/m}$ 沿 $+x$，`conducting_sphere` 取导体极限；两者都没有场源，响应用 `regions` 给出球的截线并在图上画成虚线圆。所画的 $z=0$ 平面包含外场方向与球心，是该轴对称场的不变平面。种子在左边界按等间隔 $\Psi_D$ 求根，见[切片与验证](04-slices-and-validation.md)。
+
 ## 三类场模型
 
 | 类型 | 怎样得到 $\mathbf F(\mathbf x)$ | 优点 | 主要误差 |
@@ -333,6 +362,7 @@ vectors = field.evaluate(points)  # points.shape == vectors.shape == (..., D)
 - [ ] 奇点进入 mask，不填零，也不加入任意大的 epsilon。
 - [ ] 轴对称磁场画 $\psi=\rho A_\phi$，并检查是否存在 $B_\phi$。
 - [ ] 轴对称无散电场画通量函数 $\Psi$，并写明割线在哪里。
+- [ ] 场不连续的界面交给追踪器的 `interfaces`，并用两侧都连续的通量函数检验穿越。
 
 下一章把已经能求值的 $\mathbf F(\mathbf x)$ 交给自适应 ODE 求解器。
 
@@ -348,6 +378,7 @@ vectors = field.evaluate(points)  # points.shape == vectors.shape == (..., D)
 [^openstax-current-loop]: OpenStax, [§12.1 Biot–Savart Law](https://openstax.org/books/university-physics-volume-2/pages/12-1-the-biot-savart-law) 与 [§12.4 Magnetic Field of a Current Loop](https://openstax.org/books/university-physics-volume-2/pages/12-4-magnetic-field-of-a-current-loop)。
 [^nasa-loop]: J. C. Simpson et al., [“Simple Analytic Expressions for the Magnetic Field of a Circular Current Loop”](https://ntrs.nasa.gov/citations/20010038494), NASA Technical Reports Server, 2001。
 [^scipy-elliptic]: SciPy，[`ellipk`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipk.html)、[`ellipe`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipe.html) 与 [`ellipkm1`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipkm1.html)；前两者使用参数 $m$，后者直接使用 $p=1-m$。
+[^jackson-sphere]: J. D. Jackson, *Classical Electrodynamics*, 3rd ed., Wiley 1999, §4.4，匀强场中的介质球；导体球是 $\varepsilon_r\to\infty$ 的极限。
 [^paxton]: F. Paxton, [“Solid Angle Calculation for a Circular Disk”](https://doi.org/10.1063/1.1716590), *Review of Scientific Instruments* 30 (1959), 254–258。离轴点对圆盘所张立体角的椭圆积分闭式。
 [^scipy-incomplete]: SciPy，[`ellipkinc`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipkinc.html) 与 [`ellipeinc`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipeinc.html)，不完全椭圆积分，参数约定同样是 $m=k^2$。
 [^ogilvie-flux]: G. I. Ogilvie, [“Astrophysical fluid dynamics”](https://doi.org/10.1017/S0022377816000489), *Journal of Plasma Physics* 82 (2016), §9.2。

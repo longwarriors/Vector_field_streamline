@@ -61,6 +61,7 @@ vectors = field.evaluate(points)
 | `MagneticDipoleField` | 磁偶极近似与远场模型 |
 | `CircularLoopField` | 理想细圆电流环的三维磁感应强度 |
 | `ChargedRingField` | 均匀带电理想细圆环的三维电场，圆环的静电孪生 |
+| `DielectricSphereField` | 匀强外场中介质球或导体球的三维电场，分段解析 |
 | `CompositeField` | 对多个同维场做线性叠加 |
 
 所有物理场内部应采用一致单位。输入源参数的单位与坐标系不得只存在于图标题里。
@@ -101,6 +102,23 @@ psi = ring.flux_function(points)
 
 `flux_function()` 返回电场的轴对称通量函数 $\Psi$：穿过与轴同心、半径为 $\rho$、轴向位置为 $z$ 的圆盘的电通量除以 $2\pi$，满足 $E_\rho=-\rho^{-1}\partial_z\Psi$、$E_z=\rho^{-1}\partial_\rho\Psi$。它在轴上为 0、关于 $z$ 为奇函数、细环上为 `NaN`；环外的平面 $z=0$ 是割线，$\Psi$ 在那里跳变 $Q/(2\pi\varepsilon_0)$，恰好落在割线上的点取 $z\to0^+$ 的值。实现用圆盘对环上一点所张立体角的 Paxton 闭式（完全与不完全椭圆积分），测试与沿半径的直接通量求积比较。
 
+#### `DielectricSphereField`
+
+```python
+sphere = DielectricSphereField(
+    applied_field=(1.0, 0.0, 0.0),
+    radius=1.0,
+    center=(0.0, 0.0, 0.0),
+    relative_permittivity=4.0,  # math.inf for a conductor
+)
+field = sphere.evaluate(points)
+psi = sphere.flux_function(points)
+```
+
+`applied_field` 是远离球的匀强外场（V/m，非零），`radius` 与 `center` 使用 m，`relative_permittivity` 不小于 1，`math.inf` 表示导体。球内是匀强场 $3\mathbf E_0/(\varepsilon_r+2)$（导体为零），球外是 $\mathbf E_0$ 加感应偶极 $\mathbf p=4\pi\varepsilon_0a^3\alpha\mathbf E_0$ 的场，$\alpha=(\varepsilon_r-1)/(\varepsilon_r+2)$。场处处有限：切向分量在球面连续，法向分量按束缚面电荷跳变；恰在球面上的点取球外值。`polarizability`、`interior_field` 与 `is_conductor` 是只读属性。
+
+`flux_function()` 返回 $\mathbf D/\varepsilon_0$ 的轴对称通量函数：以外场方向为轴，球内取 $\varepsilon_r\mathbf E$、球外取 $\mathbf E$ 穿过同轴圆盘的通量除以 $2\pi$。因为 $\mathbf D$ 的法向分量在介质表面连续，它在球面连续，等值线同时是 $\mathbf E$ 与 $\mathbf D$ 的场线；导体的球内值为 0，函数在球面跳变，线终止于自由面电荷。
+
 ### `TraceOptions`
 
 构造签名：
@@ -128,6 +146,8 @@ TraceOptions(
 调用方应通过 `TraceOptions` 配置追踪器，不依赖模块内部常量。
 
 ### `FieldLineTracer`
+
+`interfaces` 是场不连续的曲面（例如材料边界），用带符号 `margin()` 的区域给出，可与 `exclusions` 共用 `SphericalExclusion`。线到达界面时求解器在界面上以事件停下，再沿到达界面的运动方向前进几个 ulp 重新启动，所以折射点由事件定位，不被自适应步长抹平；跨越界面那一步本身的局部误差仍在容差量级（介质球场景实测 $\Psi$ 沿线相对漂移约 $10^{-5}$，无界面事件时约 $10^{-4}$）。越过界面后场为零或非有限时，分支在界面上以相应原因终止；连续三次重启都没有前进（外侧场指回界面的滑动接触）时以 `solver_failure` 终止并在 `message` 中说明。没有 `interfaces` 时代码路径与此前逐位相同。
 
 ```python
 tracer = FieldLineTracer(
@@ -200,11 +220,13 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 - `halbach_array`
 - `current_loop`
 - `charged_ring`
+- `dielectric_sphere`
+- `conducting_sphere`
 - `uniform`
 
 此端点是可用预设及其交互能力的权威目录；当前无构建客户端随版本静态提供同一组选项，并由契约测试防止两边漂移。客户端不应假设列表永久不变。
 
-`electric_dipole`、`electric_quadrupole`、`electric_hexagon`、`electric_hexagon_alternating`、`magnetic_dipole` 与 `halbach_array` 是可编辑点源预设，因此返回 `source_separation`。`exclusive_minimum: 0.322` 表示任意两个实际拥有排除区域的源中心距离必须**严格大于** 0.322 m；等于该值仍冲突。固定的 `current_loop`、`charged_ring` 与 `uniform` 没有这项能力，响应省略该字段；兼容客户端也应把缺失或 `null` 都解释为“不提供源间距交互”。
+`electric_dipole`、`electric_quadrupole`、`electric_hexagon`、`electric_hexagon_alternating`、`magnetic_dipole` 与 `halbach_array` 是可编辑点源预设，因此返回 `source_separation`。`exclusive_minimum: 0.322` 表示任意两个实际拥有排除区域的源中心距离必须**严格大于** 0.322 m；等于该值仍冲突。固定的 `current_loop`、`charged_ring`、`dielectric_sphere`、`conducting_sphere` 与 `uniform` 没有这项能力，响应省略该字段；兼容客户端也应把缺失或 `null` 都解释为“不提供源间距交互”。
 
 ### `POST /api/scene`
 
@@ -229,7 +251,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 | `preset` | 否 | `/api/presets` 返回的稳定标识符；默认 `electric_dipole` |
 | `density` | 否 | 种子总预算，整数范围 6–40，默认 18，不代表物理场强；每个参与播种的源至少分配 1 个种子 |
 | `resolution` | 否 | 两个方向共同使用的标量网格分辨率，整数范围 32–144 |
-| `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；电四极子、六个正电荷和三对交替电荷预设接受 1–8 个任意符号的电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及固定的 `current_loop`/`charged_ring`/`uniform` 预设 override 会被拒绝 |
+| `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；电四极子、六个正电荷和三对交替电荷预设接受 1–8 个任意符号的电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及固定的 `current_loop`/`charged_ring`/`dielectric_sphere`/`conducting_sphere`/`uniform` 预设 override 会被拒绝 |
 
 `sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m，范围均为 $[-2.8,2.8]$。请求模型 `SourceInput.kind` 只接受 `positive`、`negative`、`dipole`、`uniform`；响应专用的 `wire_out`/`wire_into`/`ring_charge` 不能提交。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。单位由预设决定，请求不得提交 `strength_unit`。
 
@@ -258,6 +280,7 @@ $$
 - 默认 Halbach 在 $x\in[-2.1,2.1]$、$y=\pm0.45$ m 的两条平行轨道上等距覆盖并双向追踪；上轨分到 $\lceil density/2\rceil$ 个 job，下轨分到 $\lfloor density/2\rfloor$ 个，`seed_mode: "coverage"`；
 - 圆环在环内赤道段调用公开的 `CircularLoopField.flux_function()`，以求根方式选择等 $\psi$ 的镜像轮廓；奇数预算再增加一条轴线特征线，整体 `seed_mode: "equal_flux"`；
 - 带电圆环在两个截面周围半径 0.162 m 的种子圆上调用公开的 `ChargedRingField.flux_function()`：环外赤道割线上下的 $\Psi$ 从 $+Q/(4\pi\varepsilon_0)$ 单调降到 $-Q/(4\pi\varepsilon_0)$，取 $\lfloor density/2\rfloor$ 个等分区间的中点为目标求根，再镜像到另一截面；目标恰为 0 的种子直接放在环内赤道上，因为它通向中心鞍点，任何离轴舍入都会把它偏转。奇数预算另加一条从 $+x$ 截面沿环面向外的赤道射线（上下两半场的分界线），整体 `seed_mode: "equal_flux"`；
+- 介质球与导体球在左边界 $x=-3+10^{-4}$ m 上调用公开的 `DielectricSphereField.flux_function()`：从 $\Psi_D/\lfloor density/2\rfloor$ 到边界最大可用高度 $y=2.88$ m 处的 $\Psi_D$ 等分取目标求根，再镜像到轴两侧；奇数预算另加轴线（$\Psi_D=0$ 的成员），整体 `seed_mode: "equal_flux"`。介质球的线在球面折射后继续，导体球的线在球面以 `null_field` 终止；
 - 匀强场仍从左边界等距覆盖播种，`seed_mode: "coverage"`。
 
 每个 job 无论是否最终渲染，都恰好给 `metadata.termination_counts` 的一个原因加 1，所以 `sum(termination_counts.values()) == density`。对 `BOTH` job，`termination` 和 `termination_counts` 记录点序末端的正向分支，`start_termination` 与 `start_termination_counts` 另记点序起点的反向分支；非双向场景的起点端统计为空对象。双向曲线的点始终从反向端经过种子排到正向端，因此 `direction` 为 `1`。
@@ -294,6 +317,7 @@ $$
       "termination": "domain_exit"
     }
   ],
+  "regions": [],
   "sources": [
     {
       "x": -1.0,
@@ -352,6 +376,21 @@ $$
 `charged_ring` 固定返回两个只读 `ring_charge` 标记，画作带正号的圆点：它们是同一个均匀带电圆环与 z=0 子午面的两个交点，`strength` 都是同一个非零总电荷 `1 nC`。该场景使用与点电荷相同的 $10^{-6}\ \mathrm{V/m}$ 零场终止阈值，环内赤道线在中心零场点以 `null_field` 停止。
 
 `current_loop` 固定返回两个只读标记：`wire_out` 画作 ⊙（电流出屏），`wire_into` 画作 ⊗（电流入屏）。两者是**同一个环形导体与 z=0 子午面的两个交点**，不是两根独立导线；二者的 `strength` 完全相同，表示同一个非负回路电流幅值，单位 `A`。电流方向只由 `kind` 承载，不使用一正一负的有符号电流。`strength_unit` 与 `wire_*` 都是只读响应元数据，不得混入后续 `SourceInput` 请求；前端也不得拖动或用键盘移动这两个固定标记。
+
+#### `regions`
+
+材料区域是几何，不是场源：`dielectric_sphere` 与 `conducting_sphere` 各返回一个区域，其他预设返回空列表 `[]`。每个区域给出 `kind`、球心 `x`/`y`、`radius`、`unit: "m"`，介质球另给 `relative_permittivity`（不小于 1），导体球该字段为 `null`。前端把区域画成该平面上的虚线截线并标注材料，区域内的场是真实值、照常着色；缺少这一字段的旧响应按空列表处理，但存在时每个区域必须完整，否则整个场景被判为无效。
+
+```json
+{
+  "kind": "dielectric_sphere",
+  "x": 0.0,
+  "y": 0.0,
+  "radius": 1.0,
+  "relative_permittivity": 4.0,
+  "unit": "m"
+}
+```
 
 #### `metadata`
 
@@ -426,6 +465,10 @@ $$
       heading_level: 4
 
 ::: vectorviz.fields.ChargedRingField
+    options:
+      heading_level: 4
+
+::: vectorviz.fields.DielectricSphereField
     options:
       heading_level: 4
 
