@@ -1,11 +1,11 @@
 import { CANVAS_THEME } from "./canvas-theme.js";
 import {
   PALETTE,
-  colorForScalar,
   getScaleType,
   paletteCssGradient,
   resolveScale,
 } from "./color-scale.js";
+import { formatEditorValue, formatValue } from "./formatting.js";
 import {
   NARROW_PLOT_WIDTH,
   calculatePlotRect,
@@ -19,7 +19,6 @@ import {
   canRemoveSource,
   createSource,
   densityForSeedBudget,
-  effectiveDipoleAngleDeg,
   isElectricPreset,
   normalizeAngleDeg,
   seedingSourceCount,
@@ -27,28 +26,14 @@ import {
   snapSourcePosition,
   sourceSeparationConflict,
 } from "./source-controls.js";
+import { createRenderer, sourceStyle } from "./renderer.js";
+import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validation.js";
 
 (() => {
   "use strict";
 
   const API_URL = "/api/scene";
   const PRESETS_URL = "/api/presets";
-  const SOURCE_STRENGTH_UNITS = Object.freeze({
-    positive: "nC",
-    negative: "nC",
-    dipole: "A·m²",
-    wire_out: "A",
-    wire_into: "A",
-    ring_charge: "nC",
-  });
-  // Read-only marker kinds, and the exact marker set each fixed preset returns.
-  const MARKER_KINDS = new Set(["wire_out", "wire_into", "ring_charge"]);
-  const FIXED_MARKER_KINDS = Object.freeze({
-    current_loop: ["wire_into", "wire_out"],
-    charged_ring: ["ring_charge", "ring_charge"],
-  });
-  const REGION_KINDS = new Set(["dielectric_sphere", "conducting_sphere"]);
-  const REGION_PRESETS = new Set(REGION_KINDS);
   const EDITABLE_SOURCE_PRESETS = new Set([
     "electric_dipole",
     "electric_quadrupole",
@@ -57,12 +42,6 @@ import {
     "magnetic_dipole",
     "halbach_array",
   ]);
-  const SEED_MODE_LABELS = Object.freeze({
-    coverage: "覆盖播种",
-    equal_flux: "等通量播种",
-    feature: "特征播种",
-  });
-
   const elements = {
     canvas: document.querySelector("#field-canvas"),
     stage: document.querySelector("#canvas-stage"),
@@ -115,7 +94,7 @@ import {
     liveStatus: document.querySelector("#live-status"),
   };
 
-  const context = elements.canvas.getContext("2d", { alpha: false });
+  const renderer = createRenderer(elements.canvas, CANVAS_THEME);
   const state = {
     scene: null,
     sourceOverrides: null,
@@ -132,11 +111,6 @@ import {
     presetCapabilities: new Map(),
     pixelRatio: 1,
   };
-
-  function finiteNumber(value, fallback = 0) {
-    const number = Number(value);
-    return Number.isFinite(number) ? number : fallback;
-  }
 
   function setConnectionStatus(status, label) {
     elements.connectionState.dataset.state = status;
@@ -271,195 +245,6 @@ import {
     return fallback;
   }
 
-  function validateScene(scene) {
-    if (!scene || typeof scene !== "object") throw new Error("响应不是有效的场景对象");
-    const xDomain = scene.domain?.x;
-    const yDomain = scene.domain?.y;
-    const coordinateSystem = scene.domain?.coordinate_system;
-    const coordinateUnit = scene.domain?.unit;
-    if (
-      !Array.isArray(xDomain) ||
-      !Array.isArray(yDomain) ||
-      xDomain.length !== 2 ||
-      yDomain.length !== 2 ||
-      !xDomain.every(Number.isFinite) ||
-      !yDomain.every(Number.isFinite) ||
-      xDomain[0] >= xDomain[1] ||
-      yDomain[0] >= yDomain[1] ||
-      coordinateSystem !== "cartesian" ||
-      coordinateUnit !== "m"
-    ) {
-      throw new Error("场景缺少有效的笛卡尔 domain.x / domain.y / unit");
-    }
-
-    const nx = Number(scene.scalar?.nx);
-    const ny = Number(scene.scalar?.ny);
-    const values = scene.scalar?.values;
-    const mask = scene.scalar?.mask;
-    if (!Number.isInteger(nx) || !Number.isInteger(ny) || nx < 2 || ny < 2) {
-      throw new Error("标量网格尺寸无效");
-    }
-    if (!Array.isArray(values) || values.length !== nx * ny) {
-      throw new Error(`标量网格应包含 ${nx * ny} 个值`);
-    }
-    if (!Array.isArray(mask) || mask.length !== nx * ny) {
-      throw new Error(`标量遮罩应包含 ${nx * ny} 个布尔值`);
-    }
-    const invalidScalarIndex = values.findIndex((value, index) => {
-      if (typeof mask[index] !== "boolean") return true;
-      return mask[index]
-        ? value !== null
-        : typeof value !== "number" || !Number.isFinite(value);
-    });
-    if (invalidScalarIndex !== -1) {
-      throw new Error(`标量值与遮罩在索引 ${invalidScalarIndex} 未严格配对`);
-    }
-    if (
-      (scene.scalar.scale !== "linear" && scene.scalar.scale !== "log") ||
-      typeof scene.scalar.label !== "string" ||
-      typeof scene.scalar.unit !== "string" ||
-      !Number.isFinite(scene.scalar.vmin) ||
-      !Number.isFinite(scene.scalar.vmax) ||
-      scene.scalar.vmax <= scene.scalar.vmin ||
-      (scene.scalar.scale === "log" && scene.scalar.vmin <= 0)
-    ) {
-      throw new Error("标量色标元数据无效");
-    }
-
-    if (!Array.isArray(scene.lines) || !Array.isArray(scene.sources)) {
-      throw new Error("场景 lines 与 sources 必须为数组");
-    }
-    if (
-      !scene.lines.every(
-        (line) =>
-          line &&
-          typeof line === "object" &&
-          (line.start_termination === undefined ||
-            line.start_termination === null ||
-            (typeof line.start_termination === "string" && line.start_termination.length > 0)),
-      )
-    ) {
-      throw new Error("场线 start_termination 必须是非空文本或 null");
-    }
-    const validSources = scene.sources.every((source) => {
-      if (
-        !source ||
-        !Number.isFinite(source.x) ||
-        !Number.isFinite(source.y) ||
-        !Number.isFinite(source.strength) ||
-        SOURCE_STRENGTH_UNITS[source.kind] !== source.strength_unit
-      ) {
-        return false;
-      }
-      if (source.kind === "dipole") {
-        if (source.angle_deg === undefined || source.angle_deg === null) {
-          source.angle_deg = 90;
-        }
-        return (
-          Number.isFinite(source.angle_deg) &&
-          source.angle_deg >= 0 &&
-          source.angle_deg < 360
-        );
-      }
-      if (source.angle_deg !== undefined && source.angle_deg !== null) return false;
-      if (source.kind === "positive") return source.strength > 0;
-      if (source.kind === "negative") return source.strength < 0;
-      if (source.kind === "ring_charge") return source.strength !== 0;
-      return (
-        (source.kind === "wire_out" || source.kind === "wire_into") &&
-        source.strength >= 0
-      );
-    });
-    const markerSources = scene.sources.filter(({ kind }) => MARKER_KINDS.has(kind));
-    const expectedMarkers = FIXED_MARKER_KINDS[elements.preset.value];
-    // A fixed preset returns exactly its two markers with one shared strength;
-    // every other preset returns no read-only marker at all.
-    const validFixedMarkers = expectedMarkers
-      ? markerSources.length === expectedMarkers.length &&
-        scene.sources.length === expectedMarkers.length &&
-        markerSources
-          .map(({ kind }) => kind)
-          .sort()
-          .every((kind, index) => kind === expectedMarkers[index]) &&
-        markerSources.every(({ strength }) => strength === markerSources[0].strength)
-      : markerSources.length === 0;
-    if (!validSources || !validFixedMarkers) {
-      throw new Error("场源缺少有效坐标、强度或 strength_unit");
-    }
-    // Regions are additive: an older server omits the field entirely; once
-    // present it must be a list that describes every material sphere.
-    if (scene.regions === undefined) {
-      scene.regions = [];
-    }
-    const validRegions =
-      Array.isArray(scene.regions) &&
-      scene.regions.every((region) => {
-        if (!region || typeof region !== "object" || !REGION_KINDS.has(region.kind)) {
-          return false;
-        }
-        if (
-          !Number.isFinite(region.x) ||
-          !Number.isFinite(region.y) ||
-          !Number.isFinite(region.radius) ||
-          region.radius <= 0 ||
-          region.unit !== "m"
-        ) {
-          return false;
-        }
-        const permittivity = region.relative_permittivity;
-        if (region.kind === "dielectric_sphere") {
-          return Number.isFinite(permittivity) && permittivity >= 1;
-        }
-        return permittivity === undefined || permittivity === null;
-      });
-    // A sphere preset returns exactly one region of its own material.
-    const expectedRegionKind = REGION_PRESETS.has(elements.preset.value)
-      ? elements.preset.value
-      : null;
-    const regionsMatchPreset =
-      validRegions &&
-      (expectedRegionKind
-        ? scene.regions.length === 1 && scene.regions[0].kind === expectedRegionKind
-        : scene.regions.length === 0);
-    if (!regionsMatchPreset) {
-      throw new Error("区域几何缺少有效的种类、圆心、半径、单位或介电常数，或与预设不符");
-    }
-    const metadata = scene.metadata;
-    const terminationCounts = metadata?.termination_counts;
-    const startTerminationCounts = metadata?.start_termination_counts;
-    const validCountMap = (counts) =>
-      counts &&
-      typeof counts === "object" &&
-      !Array.isArray(counts) &&
-      Object.values(counts).every((count) => Number.isInteger(count) && count >= 0);
-    const hasSeedDescription = Object.hasOwn(metadata || {}, "seed_description");
-    const knownSeedMode = Object.hasOwn(SEED_MODE_LABELS, metadata?.seed_mode);
-    const validSeedDescription = hasSeedDescription
-      ? typeof metadata.seed_description === "string" && metadata.seed_description.length > 0
-      : !knownSeedMode;
-    if (
-      !metadata ||
-      typeof metadata !== "object" ||
-      Array.isArray(metadata) ||
-      typeof metadata.title !== "string" ||
-      typeof metadata.projection_note !== "string" ||
-      typeof metadata.field_model !== "string" ||
-      typeof metadata.seed_mode !== "string" ||
-      metadata.seed_mode.length === 0 ||
-      !validSeedDescription ||
-      !validCountMap(terminationCounts) ||
-      !validCountMap(startTerminationCounts) ||
-      !Number.isInteger(metadata.suppressed_count) ||
-      metadata.suppressed_count < 0 ||
-      !Number.isInteger(metadata.rendered_line_count) ||
-      metadata.rendered_line_count < 0 ||
-      metadata.rendered_line_count !== scene.lines.length
-    ) {
-      throw new Error("场景 metadata 缺少有效的模型、播种或终止统计");
-    }
-    return scene;
-  }
-
   function invalidateSceneView(status) {
     state.scene = null;
     state.selectedSource = null;
@@ -544,7 +329,7 @@ import {
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(await extractError(response));
-      const scene = validateScene(await response.json());
+      const scene = validateScene(await response.json(), elements.preset.value);
       if (sequence !== state.requestSequence) return;
 
       state.scene = scene;
@@ -684,52 +469,39 @@ import {
     }[value] || "物理场";
   }
 
-  function resizeCanvas() {
-    const rect = elements.canvas.getBoundingClientRect();
-    const ratio = Math.min(window.devicePixelRatio || 1, 2.5);
-    const width = Math.max(1, Math.round(rect.width * ratio));
-    const height = Math.max(1, Math.round(rect.height * ratio));
-    if (elements.canvas.width !== width || elements.canvas.height !== height) {
-      elements.canvas.width = width;
-      elements.canvas.height = height;
-    }
-    context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    state.pixelRatio = ratio;
-    return { width: rect.width, height: rect.height };
-  }
-
   function worldToCanvas(x, y) {
     return state.transform.worldToCanvas(x, y);
   }
 
-  function canvasToWorld(canvasX, canvasY) {
-    return state.transform.canvasToWorld(canvasX, canvasY);
-  }
-
   function render() {
-    const size = resizeCanvas();
-    context.clearRect(0, 0, size.width, size.height);
-    context.fillStyle = CANVAS_THEME.paper;
-    context.fillRect(0, 0, size.width, size.height);
+    const size = renderer.resize();
+    state.pixelRatio = size.ratio;
     elements.canvas.dataset.sceneState = state.presentationStatus;
-    if (!state.scene) return;
-
+    if (!state.scene) {
+      renderer.render({ scene: null, size });
+      return;
+    }
     state.plotRect = calculatePlotRect(size.width, size.height, state.scene.domain);
     state.transform = createCoordinateTransform(state.scene.domain, state.plotRect);
     publishPlotRect(size.width);
-    if (state.presentationStatus === "stale") {
-      drawGridAndAxes({ onField: false });
-      drawSources();
-      return;
-    }
-    state.scale = resolveScale(state.scene.scalar);
-    const uncoloredCells = drawHeatmap();
-    drawGridAndAxes({ onField: true });
-    drawStreamlines();
-    drawRegions();
-    drawSources();
-    elements.legendUncolored.hidden = !hatchShowsBesideMarkers(uncoloredCells);
+    if (state.presentationStatus !== "stale") state.scale = resolveScale(state.scene.scalar);
+    const outcome = renderer.render({
+      size,
+      scene: state.scene,
+      status: state.presentationStatus,
+      plotRect: state.plotRect,
+      transform: state.transform,
+      scale: state.scale,
+      selectedSource: state.selectedSource,
+      pixelRatio: state.pixelRatio,
+    });
+    if (state.presentationStatus === "stale") return;
+    elements.legendUncolored.hidden = !outcome.hatchVisible;
     elements.legendSources.hidden = state.scene.sources.length === 0;
+  }
+
+  function canvasToWorld(canvasX, canvasY) {
+    return state.transform.canvasToWorld(canvasX, canvasY);
   }
 
   // Overlays such as the colorbar are laid out against the plot, not the stage.
@@ -745,447 +517,6 @@ import {
     const { x, y } = state.scene.domain;
     style.setProperty("--domain-aspect", String((x[1] - x[0]) / (y[1] - y[0])));
     elements.stage.dataset.plotLayout = width < NARROW_PLOT_WIDTH ? "narrow" : "wide";
-  }
-
-  function drawHeatmap() {
-    const { scalar } = state.scene;
-    const offscreen = document.createElement("canvas");
-    offscreen.width = scalar.nx;
-    offscreen.height = scalar.ny;
-    const offscreenContext = offscreen.getContext("2d");
-    const image = offscreenContext.createImageData(scalar.nx, scalar.ny);
-
-    // The API uses row-major values, with y descending from ymax to ymin.
-    const uncolored = [];
-    for (let index = 0; index < scalar.values.length; index += 1) {
-      const color = colorForScalar(scalar.values[index], Boolean(scalar.mask?.[index]), state.scale);
-      if (color[3] === 0) uncolored.push(index);
-      const offset = index * 4;
-      image.data[offset] = color[0];
-      image.data[offset + 1] = color[1];
-      image.data[offset + 2] = color[2];
-      image.data[offset + 3] = color[3];
-    }
-    offscreenContext.putImageData(image, 0, 0);
-    const source = uncolored.length
-      ? interpolateOverColoredNodes(image.data, scalar.nx, scalar.ny, samplesPerCell(scalar))
-      : offscreen;
-
-    // Scalar nodes include both domain endpoints, so texel centres (i + 0.5)
-    // must land on the plot edges: sample the source from the first to the
-    // last texel centre instead of stretching whole texels across the plot.
-    const { left, top, right, bottom } = state.plotRect;
-    context.save();
-    context.imageSmoothingEnabled = true;
-    context.drawImage(
-      source,
-      0.5,
-      0.5,
-      source.width - 1,
-      source.height - 1,
-      left,
-      top,
-      right - left,
-      bottom - top,
-    );
-    context.restore();
-    const cells = uncolored.map(cellRect);
-    if (cells.length) drawHatch(cells);
-    return cells;
-  }
-
-  // Samples per cell for the masked path: about one per 2 device px, at most
-  // 16 per cell and about 1024 across the plot (so a large, dense display
-  // stays near 20 ms), and never fewer than 4, which keeps the smoothing
-  // between samples inside the uncoloured cells.
-  function samplesPerCell(scalar) {
-    const { left, top, right, bottom } = state.plotRect;
-    const cells = Math.max(scalar.nx, scalar.ny) - 1;
-    const cell = Math.max((right - left) / (scalar.nx - 1), (bottom - top) / (scalar.ny - 1));
-    const wanted = Math.ceil((cell * state.pixelRatio) / 2);
-    return Math.max(4, Math.min(16, wanted, Math.floor(1024 / cells)));
-  }
-
-  // Smoothing the raw raster would blend each coloured cell toward its
-  // uncoloured neighbours, and on this colormap any colour there reads as a
-  // field value. Interpolate bilinearly over the coloured nodes only: each
-  // sample is the weight-normalised mean of the coloured corners of its cell,
-  // so no colour crosses into, out of or across an uncoloured node, and a
-  // sample whose weighted corners are all uncoloured stays transparent (it
-  // lies in a hatched cell). Where all four corners are coloured this is the
-  // ordinary bilinear value; drawImage then smooths between the samples.
-  function interpolateOverColoredNodes(data, nx, ny, factor) {
-    const width = (nx - 1) * factor + 1;
-    const height = (ny - 1) * factor + 1;
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const target = canvas.getContext("2d");
-    const image = target.createImageData(width, height);
-    const out = image.data;
-    let weight = 0;
-    let red = 0;
-    let green = 0;
-    let blue = 0;
-    const add = (offset, corner) => {
-      if (corner === 0 || data[offset + 3] === 0) return;
-      weight += corner;
-      red += corner * data[offset];
-      green += corner * data[offset + 1];
-      blue += corner * data[offset + 2];
-    };
-    for (let row = 0; row < height; row += 1) {
-      const j = Math.min(Math.floor(row / factor), ny - 2);
-      const fy = row / factor - j;
-      for (let column = 0; column < width; column += 1) {
-        const i = Math.min(Math.floor(column / factor), nx - 2);
-        const fx = column / factor - i;
-        const corner = (j * nx + i) * 4;
-        weight = 0;
-        red = 0;
-        green = 0;
-        blue = 0;
-        add(corner, (1 - fx) * (1 - fy));
-        add(corner + 4, fx * (1 - fy));
-        add(corner + nx * 4, (1 - fx) * fy);
-        add(corner + nx * 4 + 4, fx * fy);
-        if (weight === 0) continue;
-        const offset = (row * width + column) * 4;
-        out[offset] = Math.round(red / weight);
-        out[offset + 1] = Math.round(green / weight);
-        out[offset + 2] = Math.round(blue / weight);
-        out[offset + 3] = 255;
-      }
-    }
-    target.putImageData(image, 0, 0);
-    return canvas;
-  }
-
-  // The nearest-node cell of a scalar sample, clipped to the plot.
-  function cellRect(index) {
-    const { nx, ny } = state.scene.scalar;
-    const { left, top, right, bottom } = state.plotRect;
-    const dx = (right - left) / (nx - 1);
-    const dy = (bottom - top) / (ny - 1);
-    const x = left + (index % nx) * dx;
-    const y = top + Math.floor(index / nx) * dy;
-    return {
-      left: Math.max(left, x - dx / 2),
-      top: Math.max(top, y - dy / 2),
-      right: Math.min(right, x + dx / 2),
-      bottom: Math.min(bottom, y + dy / 2),
-    };
-  }
-
-  function drawHatch(cells) {
-    const { left, top, right, bottom } = state.plotRect;
-    const height = bottom - top;
-    context.save();
-    context.beginPath();
-    cells.forEach((cell) => {
-      context.rect(cell.left, cell.top, cell.right - cell.left, cell.bottom - cell.top);
-    });
-    // One path, so neighbouring cells join without antialiased seams.
-    context.fillStyle = CANVAS_THEME.hatch.base;
-    context.fill();
-    context.clip();
-    context.beginPath();
-    for (let offset = -height; offset < right - left; offset += CANVAS_THEME.hatch.spacing) {
-      context.moveTo(left + offset, bottom);
-      context.lineTo(left + offset + height, top);
-    }
-    context.strokeStyle = CANVAS_THEME.hatch.line;
-    // One CSS px at every pixel ratio, so the hatching never thins out.
-    context.lineWidth = 1;
-    context.stroke();
-    context.restore();
-  }
-
-  // Hatching counts as visible only when at least one hatch spacing of it
-  // shows outside a marker's outer ring, which ends at r = 13.
-  const MARKER_COVER_RADIUS =
-    CANVAS_THEME.marker.outerRingRadius +
-    CANVAS_THEME.marker.outerRingWidth / 2 +
-    CANVAS_THEME.hatch.spacing;
-
-  // The legend only names hatching that can be seen beside the markers.
-  function hatchShowsBesideMarkers(cells) {
-    const centres = state.scene.sources.map((source) =>
-      worldToCanvas(finiteNumber(source.x), finiteNumber(source.y)),
-    );
-    return cells.some((cell) => {
-      const corners = [
-        [cell.left, cell.top],
-        [cell.right, cell.top],
-        [cell.left, cell.bottom],
-        [cell.right, cell.bottom],
-      ];
-      return !centres.some(([cx, cy]) =>
-        corners.every(([x, y]) => Math.hypot(x - cx, y - cy) <= MARKER_COVER_RADIUS),
-      );
-    });
-  }
-
-  function niceTicks(minimum, maximum, count = 5) {
-    const span = maximum - minimum;
-    if (!Number.isFinite(span) || span <= 0) return [minimum];
-    const rough = span / count;
-    const magnitude = 10 ** Math.floor(Math.log10(rough));
-    const normalized = rough / magnitude;
-    const step = (normalized < 1.5 ? 1 : normalized < 3 ? 2 : normalized < 7 ? 5 : 10) * magnitude;
-    const ticks = [];
-    for (let value = Math.ceil(minimum / step) * step; value <= maximum + step * 1e-9; value += step) {
-      ticks.push(Math.abs(value) < step * 1e-9 ? 0 : value);
-    }
-    return ticks;
-  }
-
-  function drawGridAndAxes({ onField }) {
-    const { left, top, right, bottom } = state.plotRect;
-    const [xmin, xmax] = state.scene.domain.x;
-    const [ymin, ymax] = state.scene.domain.y;
-    context.save();
-    context.lineWidth = 1;
-    context.font = CANVAS_THEME.axes.font;
-    context.fillStyle = CANVAS_THEME.axes.tick;
-    context.strokeStyle = onField ? CANVAS_THEME.axes.gridOnField : CANVAS_THEME.axes.gridOnPaper;
-
-    niceTicks(xmin, xmax).forEach((tick) => {
-      const [x] = worldToCanvas(tick, ymin);
-      context.beginPath();
-      context.moveTo(x, top);
-      context.lineTo(x, bottom);
-      context.stroke();
-      context.textAlign = "center";
-      context.textBaseline = "top";
-      context.fillText(formatAxisValue(tick), x, bottom + 8);
-    });
-
-    niceTicks(ymin, ymax).forEach((tick) => {
-      const [, y] = worldToCanvas(xmin, tick);
-      context.beginPath();
-      context.moveTo(left, y);
-      context.lineTo(right, y);
-      context.stroke();
-      context.textAlign = "right";
-      context.textBaseline = "middle";
-      context.fillText(formatAxisValue(tick), left - 7, y);
-    });
-
-    // One device pixel, centred on a pixel row, so the frame stays crisp.
-    const ratio = state.pixelRatio;
-    const snap = (value) => (Math.round(value * ratio) + 0.5) / ratio;
-    context.strokeStyle = CANVAS_THEME.axes.frame;
-    context.lineWidth = 1 / ratio;
-    context.strokeRect(snap(left), snap(top), snap(right) - snap(left), snap(bottom) - snap(top));
-
-    const unit = String(state.scene.domain.unit || "").trim();
-    const axisTitle = (axis) => (unit ? `${axis} / ${unit}` : axis);
-    context.fillStyle = CANVAS_THEME.axes.title;
-    context.font = CANVAS_THEME.axes.titleFont;
-    context.textAlign = "left";
-    context.textBaseline = "bottom";
-    context.fillText(axisTitle("y"), left, top - 8);
-    context.textAlign = "center";
-    context.textBaseline = "top";
-    context.fillText(axisTitle("x"), (left + right) / 2, bottom + 28);
-    context.restore();
-  }
-
-  // A material sphere is drawn as its dashed outline in the plane, with the
-  // material named above it; the field inside is real and stays coloured.
-  function drawRegions() {
-    const { region: theme } = CANVAS_THEME;
-    for (const region of state.scene.regions) {
-      const [x, y] = worldToCanvas(region.x, region.y);
-      const [edgeX] = worldToCanvas(region.x + region.radius, region.y);
-      const radius = Math.abs(edgeX - x);
-      context.save();
-      context.beginPath();
-      context.arc(x, y, radius, 0, Math.PI * 2);
-      context.strokeStyle = theme.halo;
-      context.lineWidth = theme.haloWidth;
-      context.stroke();
-      context.setLineDash(theme.dash);
-      context.strokeStyle = theme.outline;
-      context.lineWidth = theme.outlineWidth;
-      context.stroke();
-      context.setLineDash([]);
-      const label =
-        region.kind === "conducting_sphere"
-          ? "导体"
-          : `εr = ${formatValue(region.relative_permittivity)}`;
-      context.font = theme.labelFont;
-      context.textAlign = "center";
-      context.textBaseline = "bottom";
-      context.lineJoin = "round";
-      context.strokeStyle = theme.labelHalo;
-      context.lineWidth = 4;
-      context.strokeText(label, x, y - radius - 6);
-      context.fillStyle = theme.label;
-      context.fillText(label, x, y - radius - 6);
-      context.restore();
-    }
-  }
-
-  function validPoints(line) {
-    if (!Array.isArray(line?.points)) return [];
-    return line.points
-      .filter((point) => Array.isArray(point) && point.length >= 2)
-      .map((point) => [Number(point[0]), Number(point[1])])
-      .filter((point) => point.every(Number.isFinite));
-  }
-
-  function drawStreamlines() {
-    const lines = state.scene.lines;
-    context.save();
-    context.lineJoin = "round";
-    context.lineCap = "round";
-
-    for (const line of lines) {
-      const points = state.transform.projectPoints(validPoints(line));
-      if (points.length < 2) continue;
-      tracePath(points);
-      context.strokeStyle = CANVAS_THEME.line.halo;
-      context.lineWidth = CANVAS_THEME.line.haloWidth;
-      context.stroke();
-      tracePath(points);
-      context.strokeStyle = CANVAS_THEME.line.core;
-      context.lineWidth = CANVAS_THEME.line.coreWidth;
-      context.stroke();
-      drawDirectionArrows(points, line.direction);
-    }
-    context.restore();
-  }
-
-  function tracePath(points) {
-    context.beginPath();
-    context.moveTo(points[0][0], points[0][1]);
-    for (let index = 1; index < points.length; index += 1) {
-      context.lineTo(points[index][0], points[index][1]);
-    }
-  }
-
-  function directionSign(direction) {
-    if (typeof direction === "number") return direction < 0 ? -1 : 1;
-    const normalized = String(direction || "forward").toLowerCase();
-    return normalized.includes("back") || normalized === "-" ? -1 : 1;
-  }
-
-  function drawDirectionArrows(points, direction) {
-    const segments = [];
-    let total = 0;
-    for (let index = 1; index < points.length; index += 1) {
-      const dx = points[index][0] - points[index - 1][0];
-      const dy = points[index][1] - points[index - 1][1];
-      const length = Math.hypot(dx, dy);
-      if (length > 0) {
-        segments.push({ from: points[index - 1], to: points[index], length, start: total });
-        total += length;
-      }
-    }
-    if (total < 28) return;
-
-    const arrowCount = clamp(Math.floor(total / 130), 1, 3);
-    const sign = directionSign(direction);
-    context.fillStyle = CANVAS_THEME.arrow.fill;
-    context.strokeStyle = CANVAS_THEME.arrow.stroke;
-    context.lineWidth = CANVAS_THEME.arrow.strokeWidth;
-    for (let arrowIndex = 1; arrowIndex <= arrowCount; arrowIndex += 1) {
-      const target = (total * arrowIndex) / (arrowCount + 1);
-      const segment = segments.find((candidate) => candidate.start + candidate.length >= target);
-      if (!segment) continue;
-      const fraction = (target - segment.start) / segment.length;
-      const x = segment.from[0] + (segment.to[0] - segment.from[0]) * fraction;
-      const y = segment.from[1] + (segment.to[1] - segment.from[1]) * fraction;
-      const ux = ((segment.to[0] - segment.from[0]) / segment.length) * sign;
-      const uy = ((segment.to[1] - segment.from[1]) / segment.length) * sign;
-      drawArrowhead(x, y, ux, uy);
-    }
-  }
-
-  function drawArrowhead(x, y, ux, uy) {
-    const length = 8;
-    const halfWidth = 3.6;
-    const baseX = x - ux * length;
-    const baseY = y - uy * length;
-    const px = -uy;
-    const py = ux;
-    context.beginPath();
-    context.moveTo(x, y);
-    context.lineTo(baseX + px * halfWidth, baseY + py * halfWidth);
-    context.lineTo(baseX - px * halfWidth, baseY - py * halfWidth);
-    context.closePath();
-    context.stroke();
-    context.fill();
-  }
-
-  const SOURCE_GLYPHS = Object.freeze({
-    positive: "+",
-    negative: "−",
-    dipole: "→",
-    wire_out: "⊙",
-    wire_into: "⊗",
-    ring_charge: "+",
-  });
-
-  // validateScene admits only the kinds listed in SOURCE_STRENGTH_UNITS.
-  function sourceStyle(source) {
-    const { kind } = source;
-    return {
-      kind,
-      fill: CANVAS_THEME.marker.fill[kind],
-      symbol: SOURCE_GLYPHS[kind],
-      rotation:
-        kind === "dipole" ? (-effectiveDipoleAngleDeg(source) * Math.PI) / 180 : undefined,
-    };
-  }
-
-  function drawSources() {
-    const { marker } = CANVAS_THEME;
-    state.scene.sources.forEach((source, index) => {
-      const [x, y] = worldToCanvas(finiteNumber(source.x), finiteNumber(source.y));
-      const style = sourceStyle(source);
-      context.save();
-      context.beginPath();
-      context.arc(x, y, 10, 0, Math.PI * 2);
-      context.fillStyle = style.fill;
-      context.fill();
-      context.strokeStyle = marker.ring;
-      context.lineWidth = marker.ringWidth;
-      context.stroke();
-      context.beginPath();
-      context.arc(x, y, marker.outerRingRadius, 0, Math.PI * 2);
-      context.strokeStyle = marker.outerRing;
-      context.lineWidth = marker.outerRingWidth;
-      context.stroke();
-      context.fillStyle = marker.glyph;
-      context.font = marker.glyphFont;
-      context.textAlign = "center";
-      context.textBaseline = "middle";
-      if (Number.isFinite(style.rotation)) {
-        context.translate(x, y);
-        context.rotate(style.rotation);
-        context.fillText(style.symbol, 0, 0.5);
-        context.rotate(-style.rotation);
-        context.translate(-x, -y);
-      } else {
-        context.fillText(style.symbol, x, y + 0.5);
-      }
-      if (index === state.selectedSource) {
-        // A white under-ring keeps the blue dashes visible on the dark colormap end.
-        context.beginPath();
-        context.arc(x, y, 16, 0, Math.PI * 2);
-        context.strokeStyle = marker.selectionUnder;
-        context.lineWidth = 4;
-        context.stroke();
-        context.strokeStyle = marker.selection;
-        context.lineWidth = 2;
-        context.setLineDash([4, 3]);
-        context.stroke();
-      }
-      context.restore();
-    });
   }
 
   function createSourceName(source, index) {
@@ -1619,29 +950,6 @@ import {
     markSceneStale();
     renderSourceEditors();
     scheduleLoad(400);
-  }
-
-  function formatValue(value) {
-    if (!Number.isFinite(value)) return "—";
-    const absolute = Math.abs(value);
-    if ((absolute > 0 && absolute < 0.001) || absolute >= 10000) return value.toExponential(2);
-    return new Intl.NumberFormat("zh-CN", { maximumSignificantDigits: 4 }).format(value);
-  }
-
-  // Tick labels use the typographic minus sign (U+2212).
-  function formatAxisValue(value) {
-    const text =
-      Math.abs(value) >= 1000 || (Math.abs(value) > 0 && Math.abs(value) < 0.01)
-        ? value.toExponential(1)
-        : Number(value.toPrecision(3)).toString();
-    return text.replace(/^-/, "\u2212");
-  }
-
-  function formatEditorValue(value) {
-    const number = finiteNumber(value);
-    return Math.abs(number) >= 1e4 || (Math.abs(number) > 0 && Math.abs(number) < 1e-4)
-      ? number.toExponential(4)
-      : Number(number.toPrecision(6)).toString();
   }
 
   async function bootstrap() {
