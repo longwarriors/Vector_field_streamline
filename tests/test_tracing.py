@@ -747,7 +747,7 @@ def test_dense_output_keeps_the_interface_crossing_points() -> None:
     assert np.all(np.diff(branch.arc_length) > 0.0)
 
 
-def test_a_distant_interface_leaves_the_sampled_line_unchanged() -> None:
+def test_a_distant_interface_leaves_the_sampled_line_unchanged_to_rounding() -> None:
     field = UniformField((1.0, 0.28))
     domain = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
     options = TraceOptions(max_arc_length=12.0, max_step=0.09, output_step=0.045)
@@ -763,8 +763,11 @@ def test_a_distant_interface_leaves_the_sampled_line_unchanged() -> None:
     )
 
     # Registering a far-away interface only splits the integration into
-    # distance-limited chunks; the sampled points and the outcome are the same.
-    assert plain.points.tobytes() == guarded.points.tobytes()
+    # distance-limited chunks; the sampled points agree to rounding (the
+    # chunk boundary changes the step sequence, which on some platforms
+    # moves the last bit) and the outcome is the same. Bitwise identity is
+    # promised only when no interface is registered at all.
+    np.testing.assert_allclose(plain.points, guarded.points, rtol=0.0, atol=1.0e-12)
     assert plain.forward is not None and guarded.forward is not None
     assert plain.forward.termination is guarded.forward.termination
 
