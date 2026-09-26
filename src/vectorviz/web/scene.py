@@ -230,9 +230,10 @@ def _charge(x: float, y: float, sign: int) -> SourceInput:
 def _hexagon_charges(signs: tuple[int, ...]) -> list[SourceInput]:
     """Six charges on a regular hexagon, mirror-exact about both axes.
 
-    The vertices are built from one rounded pair of coordinates so that the
-    field is exactly symmetric in floating point; a charge aimed at the
-    centre then stays on its symmetry line instead of drifting off it.
+    The vertices are built from one rounded pair of coordinates so the
+    geometry is exactly symmetric; the summed field is symmetric only to
+    rounding (about 1e-13 V/m), which keeps a line aimed at the centre
+    close enough to its symmetry line for the central sink to capture it.
     """
 
     radius = ELECTRIC_ARRANGEMENT_RADIUS

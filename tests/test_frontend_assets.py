@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -160,3 +161,23 @@ def test_legend_tokens_mirror_the_canvas_theme() -> None:
     assert {name: tokens[name] for name in mirrored} == {
         name: _canvas_theme_value(*source) for name, source in mirrored.items()
     }
+
+
+def test_every_browser_page_test_is_marked_browser() -> None:
+    source = (Path(__file__).with_name("test_frontend.py")).read_text(encoding="utf-8")
+    unmarked = []
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_"):
+            continue
+        if "browser_page" not in {argument.arg for argument in node.args.args}:
+            continue
+        marked = any(
+            isinstance(decorator, ast.Attribute)
+            and decorator.attr == "browser"
+            and isinstance(decorator.value, ast.Attribute)
+            and decorator.value.attr == "mark"
+            for decorator in node.decorator_list
+        )
+        if not marked:
+            unmarked.append(node.name)
+    assert unmarked == []

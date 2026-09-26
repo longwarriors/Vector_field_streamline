@@ -689,7 +689,6 @@ def test_scalar_lines_arrows_sources_and_probe_share_one_transform(
 
 
 @pytest.mark.browser
-@pytest.mark.browser
 def test_region_circle_is_drawn_from_the_scene_payload(
     browser_page: tuple[Page, list[str]],
     frontend_url: str,
@@ -697,11 +696,19 @@ def test_region_circle_is_drawn_from_the_scene_payload(
     page, page_errors = browser_page
     ordinary_scene = _browser_scene()
     sphere_scene = _browser_sphere_scene()
-    broken_scene = json.loads(json.dumps(sphere_scene))
-    broken_scene["regions"][0]["radius"] = 0.0
+    broken_scene = json.loads(json.dumps(ordinary_scene))
+    broken_scene["regions"] = [
+        {"kind": "dielectric_sphere", "x": 0.0, "y": 0.0, "radius": 0.0, "unit": "m", "relative_permittivity": 4.0}
+    ]
+    # The dielectric region served under the conducting preset is a mismatch.
+    wrong_kind_scene = json.loads(json.dumps(sphere_scene))
+    null_regions_scene = json.loads(json.dumps(ordinary_scene))
+    null_regions_scene["regions"] = None
     responses = {
         "dielectric_sphere": sphere_scene,
-        "conducting_sphere": broken_scene,
+        "conducting_sphere": wrong_kind_scene,
+        "halbach_array": null_regions_scene,
+        "magnetic_dipole": broken_scene,
     }
 
     def route_scene(route: Route) -> None:
@@ -751,14 +758,21 @@ def test_region_circle_is_drawn_from_the_scene_payload(
     assert len(matching) >= 2
     assert "εr = 4" in drawn["texts"]
 
-    # A region without a usable radius invalidates the whole scene.
-    page.locator("#preset").select_option("conducting_sphere")
-    expect(page.locator("#error-banner")).to_be_visible()
-    expect(page.locator("#error-message")).to_contain_text("区域几何")
-    expect(page.locator("#scene-title")).not_to_have_text("Dielectric sphere fixture")
+    # A region whose material does not match the preset, an explicit null
+    # list and a region without a usable radius each invalidate the scene.
+    for preset in ("conducting_sphere", "halbach_array", "magnetic_dipole"):
+        with page.expect_response("**/api/scene"):
+            page.locator("#preset").select_option("dielectric_sphere")
+        expect(page.locator("#scene-title")).to_have_text("Dielectric sphere fixture")
+        with page.expect_response("**/api/scene"):
+            page.locator("#preset").select_option(preset)
+        expect(page.locator("#error-banner")).to_be_visible()
+        expect(page.locator("#error-message")).to_contain_text("区域几何")
+        expect(page.locator("#scene-title")).to_have_text("场景不可用")
     assert page_errors == []
 
 
+@pytest.mark.browser
 @pytest.mark.parametrize(
     ("preset", "fixed_scene", "title", "labels", "strengths", "symbols", "note"),
     [

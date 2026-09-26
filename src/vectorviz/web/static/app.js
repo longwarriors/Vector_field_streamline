@@ -386,9 +386,9 @@ import {
     if (!validSources || !validFixedMarkers) {
       throw new Error("场源缺少有效坐标、强度或 strength_unit");
     }
-    // Regions are additive: an older server omits them; a present list must
-    // describe every material sphere completely.
-    if (scene.regions === undefined || scene.regions === null) {
+    // Regions are additive: an older server omits the field entirely; once
+    // present it must be a list that describes every material sphere.
+    if (scene.regions === undefined) {
       scene.regions = [];
     }
     const validRegions =
@@ -412,9 +412,17 @@ import {
         }
         return permittivity === undefined || permittivity === null;
       });
-    const expectsRegion = REGION_PRESETS.has(elements.preset.value);
-    if (!validRegions || (expectsRegion ? scene.regions.length !== 1 : scene.regions.length !== 0)) {
-      throw new Error("区域几何缺少有效的种类、圆心、半径、单位或介电常数");
+    // A sphere preset returns exactly one region of its own material.
+    const expectedRegionKind = REGION_PRESETS.has(elements.preset.value)
+      ? elements.preset.value
+      : null;
+    const regionsMatchPreset =
+      validRegions &&
+      (expectedRegionKind
+        ? scene.regions.length === 1 && scene.regions[0].kind === expectedRegionKind
+        : scene.regions.length === 0);
+    if (!regionsMatchPreset) {
+      throw new Error("区域几何缺少有效的种类、圆心、半径、单位或介电常数，或与预设不符");
     }
     const metadata = scene.metadata;
     const terminationCounts = metadata?.termination_counts;
