@@ -913,3 +913,40 @@ def test_a_sink_below_the_hop_size_of_the_solver_is_still_reached() -> None:
     assert float(np.hypot(*branch.terminal_point)) <= 1.0e-12
     assert abs(float(branch.arc_length[-1]) - float(np.hypot(1.0, 0.5))) < 1.0e-6
     assert branch.nfev < 5_000
+
+
+def test_a_hop_sequence_longer_than_the_guard_window_ends_by_bisection() -> None:
+    # The documented exception to "existing lines are unchanged". Found by
+    # the acceptance review: from this seed on the axis of a +1/-6.233 nC pair
+    # the unguarded solver hopped 220 steps (109 reversals) before a step end
+    # happened to land in the null threshold. That landing is luck, not
+    # convergence, and no finite window can wait for every such case; the
+    # guard stops it once 48 of the last 128 steps reverse and bisects to the
+    # null instead, ending closer to it and with fewer evaluations.
+    strength = -6.233139491160254
+    charges = PointChargeField([1.0e-9, strength * 1.0e-9], [(-0.85, 0.0), (0.85, 0.0)])
+    field = _BudgetedField(charges, budget=20_000)
+    tracer = FieldLineTracer(
+        field,
+        domain=Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0)),
+        exclusions=[SphericalExclusion([(-0.85, 0.0), (0.85, 0.0)], 0.16)],
+        options=TraceOptions(
+            max_arc_length=18.0,
+            max_step=0.09,
+            rtol=2.0e-6,
+            atol=1.0e-8,
+            null_threshold=1.0e-6,
+            output_step=None,
+        ),
+    )
+    result = tracer.trace((-2.0983939708554207, 0.0), direction=TraceDirection.FORWARD)
+    branch = result.forward
+    assert branch is not None
+    assert branch.termination is TerminationReason.NULL_FIELD
+    assert "null point was located by bisection" in branch.message
+    # The axis null of this pair sits at x = -0.85 (1 + sqrt(s)) / (sqrt(s) - 1).
+    root = -0.85 * (1.0 + np.sqrt(-strength)) / (np.sqrt(-strength) - 1.0)
+    assert abs(float(branch.terminal_point[0]) - root) < 1.0e-6
+    assert branch.field_magnitude[-1] <= 1.0e-6
+    # The unguarded solver needed 4421 evaluations to land by chance.
+    assert branch.nfev < 4_000
