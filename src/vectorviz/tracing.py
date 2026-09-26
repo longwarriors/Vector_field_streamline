@@ -9,10 +9,66 @@ from enum import StrEnum
 from typing import Any
 
 import numpy as np
+import scipy.integrate
 from numpy.typing import ArrayLike
 from scipy.integrate import solve_ivp
 
 from .core import Domain, ExclusionRegion, FloatArray, VectorField, _as_points
+
+# The right-hand side is the unit flow direction, so along a smooth line it
+# turns only a little within one error-controlled step. A step whose end
+# direction opposes its start direction has straddled a reversal: the branch
+# has run head-on into a null point (or an unregistered discontinuity). A
+# line that reaches the null threshold on its next step ends there as it
+# always has; when no step end enters the threshold, the solver instead hops
+# back and forth across the reversal in a limit cycle of tiny steps until
+# the arc budget is spent. Every step reverses in one such cycle (a saddle
+# approached along its axis) and every other step in another (a sink with a
+# threshold far below the hop size), so three reversals within the last
+# eight steps end the integration and the branch locates the null instead.
+STALL_DIRECTION_COSINE = -0.5
+STALL_WINDOW_STEPS = 8
+STALL_REVERSALS_IN_WINDOW = 3
+
+_STALL_AWARE_SOLVERS: dict[str, type] = {}
+
+
+def _stall_aware_solver(method: str) -> str | type:
+    """A solve_ivp method that stops on a stalled step, else the name unchanged."""
+
+    solver = _STALL_AWARE_SOLVERS.get(method)
+    if solver is not None:
+        return solver
+    base = getattr(scipy.integrate, method, None)
+    if not (isinstance(base, type) and issubclass(base, scipy.integrate.OdeSolver)):
+        return method
+
+    class StallAwareSolver(base):  # type: ignore[valid-type, misc]
+        stalled = False
+        # One bit per recent step, set when that step reversed the direction.
+        reversal_history = 0
+
+        def step(self) -> str | None:
+            direction_old = getattr(self, "f", None)
+            if direction_old is not None:
+                direction_old = np.array(direction_old, dtype=float, copy=True)
+            message = super().step()
+            direction_new = getattr(self, "f", None)
+            if self.status != "running" or direction_old is None or direction_new is None:
+                return message
+            reversed_now = float(np.dot(direction_old, direction_new)) < STALL_DIRECTION_COSINE
+            self.reversal_history = ((self.reversal_history << 1) | int(reversed_now)) & (
+                (1 << STALL_WINDOW_STEPS) - 1
+            )
+            if self.reversal_history.bit_count() >= STALL_REVERSALS_IN_WINDOW:
+                self.stalled = True
+                self.status = "finished"
+            return message
+
+    StallAwareSolver.__name__ = f"StallAware{base.__name__}"
+    StallAwareSolver.__qualname__ = StallAwareSolver.__name__
+    _STALL_AWARE_SOLVERS[method] = StallAwareSolver
+    return StallAwareSolver
 
 
 class TraceDirection(StrEnum):
@@ -299,6 +355,68 @@ class FieldLineTracer:
             return point, TerminationReason.NULL_FIELD
         return candidate, None
 
+    def _locate_null_after_stall(
+        self, point: FloatArray, sign: float, step: float
+    ) -> tuple[FloatArray | None, int]:
+        """Bracket the direction reversal ahead of a stalled step and bisect to the null.
+
+        The flow direction at ``point`` is followed until the field's component
+        along it changes sign, then the sign change is bisected. A continuous
+        field that reverses along a segment vanishes somewhere near it; the
+        search succeeds when it finds a point at or below the null threshold
+        and returns it with the number of field evaluations spent, otherwise
+        ``None`` (the reversal is a discontinuity, not a null).
+        """
+
+        options = self.options
+        evaluations = 0
+
+        def field(candidate: FloatArray) -> tuple[FloatArray, float]:
+            nonlocal evaluations
+            evaluations += 1
+            return self._field_at(candidate)
+
+        vector, magnitude = field(point)
+        if not np.all(np.isfinite(vector)) or not np.isfinite(magnitude):
+            return None, evaluations
+        if magnitude <= options.null_threshold:
+            return point, evaluations
+        direction = sign * vector / magnitude
+
+        def along(distance: float) -> tuple[float, float]:
+            candidate_vector, candidate_magnitude = field(point + distance * direction)
+            if not np.all(np.isfinite(candidate_vector)) or not np.isfinite(candidate_magnitude):
+                return math.nan, math.nan
+            return sign * float(np.dot(candidate_vector, direction)), candidate_magnitude
+
+        lower = 0.0
+        upper = max(float(step), 4.0 * float(np.finfo(float).eps) * max(1.0, float(np.max(np.abs(point)))))
+        upper_along, upper_magnitude = along(upper)
+        for _doubling in range(64):
+            if not upper_along > 0.0 or upper >= options.max_step:
+                break
+            lower = upper
+            upper *= 2.0
+            upper_along, upper_magnitude = along(upper)
+        if upper_magnitude <= options.null_threshold:
+            return point + upper * direction, evaluations
+        if not upper_along < 0.0:
+            return None, evaluations
+        for _bisection in range(200):
+            middle = 0.5 * (lower + upper)
+            middle_along, middle_magnitude = along(middle)
+            if math.isnan(middle_along):
+                return None, evaluations
+            if middle_magnitude <= options.null_threshold:
+                return point + middle * direction, evaluations
+            if middle_along > 0.0:
+                lower = middle
+            else:
+                upper = middle
+            if upper - lower <= 2.0 * float(np.finfo(float).eps) * max(1.0, upper):
+                break
+        return None, evaluations
+
     def _branch_without_integration(
         self,
         seed: FloatArray,
@@ -531,6 +649,10 @@ class FieldLineTracer:
         termination: TerminationReason | None = None
         integration_first_step = options.first_step
         stalled_restarts = 0
+        solver_method = _stall_aware_solver(options.method)
+        stall_terminal: FloatArray | None = None
+        stall_message: str | None = None
+        stall_evaluations = 0
         while branch_start < options.max_arc_length:
             branch_end = min(options.max_arc_length, branch_start + chunk_length)
             interface_margins = [float(interface.margin(branch_state)) for interface in self.interfaces]
@@ -547,7 +669,7 @@ class FieldLineTracer:
                 rhs,
                 (branch_start, branch_end),
                 branch_state,
-                method=options.method,
+                method=solver_method,
                 rtol=options.rtol,
                 atol=options.atol,
                 max_step=options.max_step,
@@ -587,6 +709,35 @@ class FieldLineTracer:
                 break
             if solution.status < 0:
                 termination = TerminationReason.SOLVER_FAILURE
+                break
+            if solution.status == 0 and float(solution.t[-1]) < branch_end:
+                # The solver stopped on a stalled step: it is averaging a
+                # direction reversal it cannot step across. Locate the null
+                # the reversal implies; a reversal without a null is a
+                # discontinuity the field did not declare as an interface.
+                stall_state = np.asarray(solution.y[:, -1], dtype=float)
+                stall_step = (
+                    float(solution.t[-1] - solution.t[-2])
+                    if solution.t.size > 1
+                    else options.max_step
+                )
+                stall_terminal, stall_evaluations = self._locate_null_after_stall(
+                    stall_state, sign, stall_step
+                )
+                if stall_terminal is not None:
+                    termination = TerminationReason.NULL_FIELD
+                    stall_message = (
+                        "the field direction reverses within "
+                        f"{2.0 * stall_step:.1e} of the stalled step; the null point "
+                        "was located by bisection"
+                    )
+                else:
+                    termination = TerminationReason.SOLVER_FAILURE
+                    stall_message = (
+                        "the solver stalled at a direction reversal near "
+                        f"({', '.join(f'{value:.6g}' for value in stall_state)}) "
+                        "with no null point within the threshold"
+                    )
                 break
             crossed = [
                 (interface, side)
@@ -687,12 +838,17 @@ class FieldLineTracer:
                 ]
             )
 
+        if stall_terminal is not None and not np.array_equal(stall_terminal, points[-1]):
+            points = np.concatenate((points, stall_terminal[np.newaxis, :]), axis=0)
+
         magnitudes = np.linalg.norm(self.field.evaluate(points), axis=-1)
 
         if encountered_nonfinite and termination is TerminationReason.SOLVER_FAILURE:
             termination = TerminationReason.NONFINITE_FIELD
 
         message = solutions[-1].message
+        if stall_message is not None:
+            message = stall_message
         if stalled_restarts >= 3:
             message = "the branch is trapped sliding along an interface"
         if termination is TerminationReason.NONFINITE_FIELD:
@@ -710,7 +866,7 @@ class FieldLineTracer:
             field_magnitude=np.asarray(magnitudes, dtype=float),
             termination=termination,
             message=message,
-            nfev=sum(int(solution.nfev) for solution in solutions),
+            nfev=sum(int(solution.nfev) for solution in solutions) + stall_evaluations,
         )
 
     def trace(

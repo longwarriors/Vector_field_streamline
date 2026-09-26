@@ -9,6 +9,7 @@ from numpy.typing import ArrayLike, NDArray
 from vectorviz import (
     Domain,
     FieldLineTracer,
+    PointChargeField,
     SphericalExclusion,
     TerminationReason,
     ToroidalExclusion,
@@ -824,3 +825,91 @@ def test_trace_options_reject_invalid_numerical_controls(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         _options(**overrides)
+
+
+class _BudgetedField(VectorField):
+    """Wraps a field and fails the test fast instead of letting a stalled trace hang."""
+
+    def __init__(self, field: VectorField, budget: int) -> None:
+        self.field = field
+        self.budget = budget
+        self.evaluations = 0
+
+    @property
+    def dimension(self) -> int:
+        return self.field.dimension
+
+    def evaluate(self, points: ArrayLike) -> NDArray[np.float64]:
+        self.evaluations += 1
+        if self.evaluations > self.budget:
+            raise RuntimeError(f"the field was evaluated more than {self.budget} times")
+        return self.field.evaluate(points)
+
+
+def test_a_branch_running_head_on_into_a_null_stops_there_with_null_field() -> None:
+    # Six equal charges on a hexagon have a saddle of E between each adjacent
+    # pair. From the domain edge on the symmetry axis through the lowest pair
+    # the backward branch runs straight into that saddle: the direction
+    # reverses across it, no step end reaches the null threshold (a few
+    # nanometres wide here) before the solver's stages straddle the reversal,
+    # and the plain integration hopped back and forth in 1e-5 steps until its
+    # arc budget was spent (the web request for this seed never returned).
+    # Three reversing steps now stop it and the null is bisected.
+    radius, half, height = 0.9, 0.45, 0.9 * np.sqrt(3.0) / 2.0
+    vertices = [
+        (radius, 0.0),
+        (half, height),
+        (-half, height),
+        (-radius, 0.0),
+        (-half, -height),
+        (half, -height),
+    ]
+    charges = PointChargeField([1.0e-9] * 6, vertices)
+    field = _BudgetedField(charges, budget=20_000)
+    tracer = FieldLineTracer(
+        field,
+        domain=Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0)),
+        options=TraceOptions(
+            max_arc_length=18.0,
+            max_step=0.09,
+            rtol=2.0e-6,
+            atol=1.0e-8,
+            null_threshold=1.0e-6,
+            output_step=None,
+        ),
+    )
+    result = tracer.trace((0.0, -3.0), direction=TraceDirection.BACKWARD)
+    branch = result.backward
+    assert branch is not None
+    assert branch.termination is TerminationReason.NULL_FIELD
+    assert "null point was located by bisection" in branch.message
+    terminal = branch.terminal_point
+    assert abs(float(terminal[0])) < 1.0e-12
+    assert -0.75 < float(terminal[1]) < -0.65
+    assert branch.field_magnitude[-1] <= 1.0e-6
+    # The branch is the axis segment from the seed up to the saddle plus the
+    # few reversing hops (about 1e-4 in all), and cheap.
+    assert abs(float(branch.arc_length[-1]) - (3.0 + float(terminal[1]))) < 1.0e-3
+    assert branch.nfev < 5_000
+
+
+def test_a_sink_below_the_hop_size_of_the_solver_is_still_reached() -> None:
+    # F = -r with a null threshold of 1e-12: the solver hops across the origin
+    # in 1e-8 steps, reversing on every other step, and never lands within
+    # 1e-12 of it. The guard's window catches this alternating cycle too, and
+    # the bisection along the flow direction ends exactly at the origin.
+    field = _BudgetedField(_LinearSinkField(), budget=20_000)
+    tracer = FieldLineTracer(
+        field,
+        options=TraceOptions(
+            max_arc_length=4.0, max_step=0.1, null_threshold=1.0e-12, output_step=None
+        ),
+    )
+    result = tracer.trace((1.0, 0.5), direction=TraceDirection.FORWARD)
+    branch = result.forward
+    assert branch is not None
+    assert branch.termination is TerminationReason.NULL_FIELD
+    assert "null point was located by bisection" in branch.message
+    assert float(np.hypot(*branch.terminal_point)) <= 1.0e-12
+    assert abs(float(branch.arc_length[-1]) - float(np.hypot(1.0, 0.5))) < 1.0e-6
+    assert branch.nfev < 5_000
