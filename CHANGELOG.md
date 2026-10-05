@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-10-05
+
 ### Added
 
 - 响应新增可选的 `vector` 网格：与 `scalar` 同一次求值、同一排列的面内分量 `u`、`v`（quiver 命名），未裁剪 float64，`null` 与 `scalar.mask` 逐点一致，另给 `label`（`E`/`B`）与 `unit`；导体球内部是真实的零向量而不是 `null`。当前服务端总是返回它。
@@ -160,7 +162,8 @@
 - `density` 定义为整个场景的种子总预算，并在服务端与浏览器提交前共同校验。
 - 场景元数据区分真实不变平面场线与投影流线，并公开播种说明和终止统计。
 
-[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.3...v0.3.4
