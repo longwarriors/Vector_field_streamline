@@ -854,7 +854,8 @@ def test_a_branch_running_head_on_into_a_null_stops_there_with_null_field() -> N
     # nanometres wide here) before the solver's stages straddle the reversal,
     # and the plain integration hopped back and forth in 1e-5 steps until its
     # arc budget was spent (the web request for this seed never returned).
-    # Three reversing steps now stop it and the null is bisected.
+    # Once 48 of the last 128 steps reverse, the guard stops it and the null
+    # is bisected.
     radius, half, height = 0.9, 0.45, 0.9 * np.sqrt(3.0) / 2.0
     vertices = [
         (radius, 0.0),
@@ -948,5 +949,6 @@ def test_a_hop_sequence_longer_than_the_guard_window_ends_by_bisection() -> None
     root = -0.85 * (1.0 + np.sqrt(-strength)) / (np.sqrt(-strength) - 1.0)
     assert abs(float(branch.terminal_point[0]) - root) < 1.0e-6
     assert branch.field_magnitude[-1] <= 1.0e-6
-    # The unguarded solver needed 4421 evaluations to land by chance.
+    # The unguarded solver needed 3749 evaluations to land by chance here
+    # (4421 with the scene's dense output).
     assert branch.nfev < 4_000
