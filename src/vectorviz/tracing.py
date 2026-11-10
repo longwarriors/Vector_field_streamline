@@ -13,7 +13,16 @@ import scipy.integrate
 from numpy.typing import ArrayLike
 from scipy.integrate import solve_ivp
 
-from .core import Domain, ExclusionRegion, FloatArray, VectorField, _as_points
+from ._trace_geometry import first_exclusion_event
+from .core import (
+    Domain,
+    ExclusionRegion,
+    FloatArray,
+    SphericalExclusion,
+    ToroidalExclusion,
+    VectorField,
+    _as_points,
+)
 
 # The right-hand side is the unit flow direction, so along a smooth line it
 # turns only a little within one error-controlled step; a step whose end
@@ -656,6 +665,15 @@ class FieldLineTracer:
         stall_terminal: FloatArray | None = None
         stall_message: str | None = None
         stall_evaluations = 0
+        checked_exclusions = tuple(
+            region for region in self.exclusions
+            if isinstance(region, (SphericalExclusion, ToroidalExclusion))
+        )
+        geometry_parameter: float | None = None
+        geometry_message: str | None = None
+        # Shared across interface/closure chunks: difficult contact geometry
+        # must not create an unbounded amount of subdivision work.
+        geometry_budget = [8192]
         while branch_start < options.max_arc_length:
             branch_end = min(options.max_arc_length, branch_start + chunk_length)
             interface_margins = [float(interface.margin(branch_state)) for interface in self.interfaces]
@@ -677,7 +695,7 @@ class FieldLineTracer:
                 atol=options.atol,
                 max_step=options.max_step,
                 first_step=integration_first_step,
-                dense_output=options.output_step is not None or closure_enabled,
+                dense_output=options.output_step is not None or closure_enabled or bool(checked_exclusions),
                 events=events,
             )
             solutions.append(solution)
@@ -704,6 +722,27 @@ class FieldLineTracer:
                 if is_closed_candidate(solution, candidate_parameter):
                     closure_parameter = candidate_parameter
                     termination = TerminationReason.CLOSED_LOOP
+                    break
+            if checked_exclusions:
+                geometric_event = first_exclusion_event(
+                    solution, checked_exclusions, options.method,
+                    end_parameter=closure_parameter,
+                    budget=geometry_budget,
+                    known_exclusion_parameter=(
+                        physical_terminal_time
+                        if physical_termination is TerminationReason.EXCLUSION_HIT else None
+                    ),
+                )
+                if geometric_event is not None:
+                    geometry_parameter, confirmed = geometric_event
+                    termination = (
+                        TerminationReason.EXCLUSION_HIT if confirmed else TerminationReason.SOLVER_FAILURE
+                    )
+                    geometry_message = (
+                        "an exclusion entry hidden inside a solver step was located"
+                        if confirmed else
+                        "exclusion contact could not be resolved within the geometric verification limits"
+                    )
                     break
             if closure_parameter is not None:
                 break
@@ -785,6 +824,7 @@ class FieldLineTracer:
             termination = TerminationReason.SOLVER_FAILURE
 
         end_parameter = (
+            geometry_parameter if geometry_parameter is not None else
             closure_parameter if closure_parameter is not None else float(solutions[-1].t[-1])
         )
         if options.output_step is not None:
@@ -795,7 +835,7 @@ class FieldLineTracer:
             if crossings:
                 # The kinks themselves belong in the polyline, not only the grid samples.
                 parameters = np.unique(np.concatenate((parameters, np.asarray(crossings))))
-        elif closure_enabled:
+        elif closure_enabled or geometry_parameter is not None:
             parameters = np.concatenate(
                 [
                     solution.t if index == 0 else solution.t[1:]
@@ -814,12 +854,17 @@ class FieldLineTracer:
                 ]
             )
 
-        if parameters.size == 0 or not np.isclose(parameters[-1], end_parameter):
+        parameter_tolerance = 8.0 * np.finfo(float).eps * max(abs(end_parameter), np.finfo(float).tiny)
+        if (
+            parameters.size == 0
+            or (parameters.size == 1 and end_parameter > 0.0)
+            or not np.isclose(parameters[-1], end_parameter, rtol=0.0, atol=parameter_tolerance)
+        ):
             parameters = np.append(parameters, end_parameter)
         else:
             parameters[-1] = end_parameter
 
-        if options.output_step is not None or closure_enabled:
+        if options.output_step is not None or closure_enabled or geometry_parameter is not None:
             sampled_points: list[FloatArray] = []
             solution_index = 0
             for parameter in parameters:
@@ -846,12 +891,18 @@ class FieldLineTracer:
 
         magnitudes = np.linalg.norm(self.field.evaluate(points), axis=-1)
 
-        if encountered_nonfinite and termination is TerminationReason.SOLVER_FAILURE:
+        if (
+            encountered_nonfinite
+            and termination is TerminationReason.SOLVER_FAILURE
+            and geometry_parameter is None
+        ):
             termination = TerminationReason.NONFINITE_FIELD
 
         message = solutions[-1].message
         if stall_message is not None:
             message = stall_message
+        if geometry_message is not None:
+            message = geometry_message
         if stalled_restarts >= 3:
             message = "the branch is trapped sliding along an interface"
         if termination is TerminationReason.NONFINITE_FIELD:

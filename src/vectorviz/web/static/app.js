@@ -219,10 +219,12 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     return capabilities;
   }
 
-  async function loadPresetCapabilities() {
-    const response = await fetch(PRESETS_URL, {headers: {Accept: "application/json"}});
+  async function loadPresetCapabilities(signal) {
+    const response = await fetch(PRESETS_URL, {headers: {Accept: "application/json"}, signal});
     if (!response.ok) throw new Error(await extractError(response));
-    state.presetCapabilities = validatePresetCapabilities(await response.json());
+    const capabilities = validatePresetCapabilities(await response.json());
+    signal.throwIfAborted();
+    state.presetCapabilities = capabilities;
   }
 
   function currentRequestBody() {
@@ -342,6 +344,9 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   }
 
   async function fetchScene(requestBody, signal) {
+    // Initialization, retries and preset changes share one cancellable path:
+    // a scene cannot become editable before its capabilities are available.
+    if (!state.presetCapabilities.size) await loadPresetCapabilities(signal);
     const response = await fetch(API_URL, {
       method: "POST",
       headers: {
@@ -1236,21 +1241,6 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     scheduleLoad(400);
   }
 
-  async function bootstrap() {
-    setLoading(true);
-    clearError();
-    try {
-      await loadPresetCapabilities();
-      await loadScene({preserveSources: false});
-    } catch (error) {
-      invalidateSceneView("error");
-      setError(error.message || "无法读取预设能力", {
-        unreachable: error instanceof TypeError,
-      });
-      setLoading(false);
-    }
-  }
-
   elements.form.addEventListener("submit", (event) => event.preventDefault());
   elements.preset.addEventListener("change", () =>
     loadScene({ preserveSources: false, preserveSeeds: false }),
@@ -1330,5 +1320,5 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   elements.colorbar.style.setProperty("--colormap-horizontal", paletteCssGradient("to right"));
   updateRange(elements.density, elements.densityOutput, (value) => String(value));
   updateRange(elements.resolution, elements.resolutionOutput, (value) => `${value} × ${value}`);
-  bootstrap();
+  loadScene({preserveSources: false});
 })();

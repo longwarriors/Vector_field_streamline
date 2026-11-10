@@ -2031,6 +2031,64 @@ def test_frontend_rejects_nonpositive_source_separation_capability(
 
 
 @pytest.mark.browser
+@pytest.mark.parametrize("recovery", ["retry", "preset_change"])
+def test_failed_capability_load_is_retried_before_any_scene(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+    recovery: str,
+) -> None:
+    page, page_errors = browser_page
+    events: list[str] = []
+    capabilities = _browser_presets()
+    for preset in capabilities:
+        if "source_separation" in preset:
+            preset["source_separation"] = {"exclusive_minimum": 0.731, "unit": "m"}
+    scene = _browser_scene()
+    scene["sources"] = [
+        {"x": -1, "y": 0, "kind": "positive", "strength": 1, "strength_unit": "nC"},
+        {"x": 1, "y": 0, "kind": "negative", "strength": -1, "strength_unit": "nC"},
+    ]
+    page.unroute("**/api/presets")
+
+    def route_presets(route: Route) -> None:
+        events.append("presets")
+        first = events.count("presets") == 1
+        route.fulfill(
+            status=503 if first else 200,
+            content_type="application/json",
+            body=json.dumps({"detail": "temporary capability failure"} if first else capabilities),
+        )
+
+    def route_scene(route: Route) -> None:
+        events.append("scene")
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(scene))
+
+    page.route("**/api/presets", route_presets)
+    page.route("**/api/scene", route_scene)
+    page.goto(frontend_url)
+    expect(page.locator("#error-banner")).to_be_visible()
+    assert events == ["presets"]
+
+    if recovery == "retry":
+        page.locator("#retry-button").click()
+    else:
+        page.locator("#preset").select_option("electric_quadrupole")
+    expect(page.locator("#connection-label")).to_have_text("已同步")
+    assert events == ["presets", "presets", "scene"]
+
+    # Recovery must install the fetched capability, not only retry its request.
+    # A 0.5 m gap is legal under the usual 0.322 m limit but illegal here.
+    first_x = page.locator('input[data-source-field="x"]').first
+    first_x.fill("0.5")
+    first_x.press("Tab")
+    expect(first_x).to_have_value("-1")
+    expect(page.locator("#source-status")).to_contain_text("0.731")
+    page.wait_for_timeout(450)
+    assert events == ["presets", "presets", "scene"]
+    assert page_errors == []
+
+
+@pytest.mark.browser
 def test_frontend_displays_seed_mode_and_termination_counts(
     browser_page: tuple[Page, list[str]],
     frontend_url: str,
@@ -2507,6 +2565,71 @@ def test_drag_cancels_pending_edit_and_submits_one_final_request(
     expect(page.locator("#connection-label")).to_have_text("已同步")
     assert len(requests) == baseline + 1
     assert requests[-1]["sources"][0]["x"] > 1.06
+    assert page_errors == []
+
+
+@pytest.mark.browser
+def test_source_snap_at_domain_edges_and_corners_terminates_legally(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    _open_ready_scene(page, frontend_url, _browser_scene())
+    outcome = page.evaluate(
+        """async () => {
+            // A broken ULP adjustment can block synchronously forever. Keep it
+            // off the page thread, with a deadline that terminates the worker.
+            const moduleUrl = new URL('/source-controls.js', location.href).href;
+            const script = `
+                import {snapSourcePosition, sourceSeparationConflict} from ${JSON.stringify(moduleUrl)};
+                const cases = [];
+                for (const sign of [-1, 1]) {
+                    for (const axis of ['x', 'y']) {
+                        const point = (value) => ({x: 0, y: 0, [axis]: sign * value});
+                        cases.push([point(2.3), point(2.7), point(2.8)]);
+                    }
+                }
+                for (const sx of [-1, 1]) {
+                    for (const sy of [-1, 1]) {
+                        const point = (value) => ({x: sx * value, y: sy * value});
+                        cases.push([point(2.3), point(2.7), point(2.8)]);
+                    }
+                }
+                const results = cases.map(([original, obstacle, candidate]) => {
+                    const sources = [
+                        {...original, kind: 'positive', strength: 1},
+                        {...obstacle, kind: 'negative', strength: -1},
+                    ];
+                    const position = snapSourcePosition('electric_dipole', sources, 0, candidate, 0.322);
+                    return {
+                        position,
+                        conflict: Boolean(sourceSeparationConflict('electric_dipole', sources, 0, position, 0.322)),
+                    };
+                });
+                postMessage({results});
+            `;
+            const url = URL.createObjectURL(new Blob([script], {type: 'text/javascript'}));
+            return await new Promise((resolve) => {
+                const worker = new Worker(url, {type: 'module'});
+                const finish = (result) => {
+                    clearTimeout(timer);
+                    worker.terminate();
+                    URL.revokeObjectURL(url);
+                    resolve(result);
+                };
+                const timer = setTimeout(() => finish({timedOut: true}), 2000);
+                worker.onmessage = (event) => finish(event.data);
+                worker.onerror = (event) => finish({error: event.message});
+            });
+        }"""
+    )
+    assert "results" in outcome, outcome
+    assert len(outcome["results"]) == 8
+    for result in outcome["results"]:
+        assert not result["conflict"]
+        for axis in ("x", "y"):
+            assert math.isfinite(result["position"][axis])
+            assert -2.8 <= result["position"][axis] <= 2.8
     assert page_errors == []
 
 

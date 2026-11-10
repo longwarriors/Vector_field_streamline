@@ -63,7 +63,14 @@ class VectorField(ABC):
 
 
 class ExclusionRegion(Protocol):
-    """Structural contract for a signed-margin tracing exclusion."""
+    """Structural contract for a signed-margin tracing exclusion.
+
+    A sign alone supplies no metric bound. Custom exclusions use the solver's
+    sign-change events; the built-in sphere and torus additionally permit
+    geometric checks inside an accepted step. When used as an ``interface``,
+    ``abs(margin)`` must not exceed the distance to the surface, because the
+    tracer also uses it to limit the arc length of each integration chunk.
+    """
 
     @property
     def dimension(self) -> int:

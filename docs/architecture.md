@@ -16,10 +16,12 @@ Vector_field_streamline/
 │       ├── core.py              # VectorField、Domain、排除几何
 │       ├── fields.py            # 解析场与组合场
 │       ├── tracing.py           # 自适应场线积分与结果类型
+│       ├── _trace_geometry.py   # 内置排除区的步内曲线检查（私有）
 │       └── web/
 │           ├── app.py           # HTTP API 与静态资源入口
 │           ├── schemas.py       # 请求/响应契约
 │           ├── seeding.py       # Web 预设的 TraceJob 播种策略
+│           ├── scene.py         # 场景构建、采样、追踪与缓存
 │           └── static/          # 无构建浏览器前端
 └── tests/                       # 单元、验证、Web 契约测试
 ```
@@ -34,8 +36,8 @@ Vector_field_streamline/
 | `fields.py` | 批量求值解析场与组合场 | 播种、积分、颜色映射 |
 | `tracing.py` | 方向归一化、双向积分、事件、终止信息 | 物理源公式、浏览器状态 |
 | 验证代码 | 解析解、不变量、残差与收敛诊断 | 修改模型参数以“修好”结果 |
-| `web/` | 输入校验、预设播种、场景编排、静态资源、JSON 序列化 | 修改核心物理公式、把数值算法复制到前端 |
-| 前端 | 参数交互、图层和提示信息 | 物理公式与积分算法 |
+| Python Web 层 | 输入校验、预设播种、场景编排、静态资源、JSON 序列化 | 复制核心物理公式、改写核心积分政策 |
+| 前端 | 参数交互、图层、提示信息，以及基于采样网格的近似预览 | 物理源公式、作为场景结果返回的自适应追踪 |
 
 ## 核心数据流
 
@@ -56,11 +58,13 @@ sequenceDiagram
         Field-->>Tracer: tangent vectors
         Tracer-->>API: TraceResult
     end
-    API-->>UI: scalar + lines + sources + metadata
-    UI->>UI: 颜色映射、箭头、场线和源图层
+    API-->>UI: scalar + vector + lines + sources + regions + metadata
+    UI->>UI: 绘制图层，向量网格插值生成光标预览
 ```
 
 API 返回数值与科学元数据，而不返回预先栅格化的截图。这样前端可在不重复求解的情况下切换图层、调整颜色或查看探针。
+
+物理公式只在核心实现一次。服务端直接对场模型自适应积分，并处理排除区、材料界面与终止原因；这些轨迹构成场景结果。浏览器允许对已采样向量网格做定步长 RK4 预览，但必须标识其近似性质，且点击后的手动场线仍由服务端求解。两条路径分别验证，预览不能替代核心的解析基准或收敛检查。
 
 ## 核心抽象
 

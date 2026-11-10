@@ -107,13 +107,18 @@ function nudgeOutsideBoundary(position, obstacle, minimum, direction, bounds) {
   const axes = Math.abs(direction.x) >= Math.abs(direction.y) ? ["x", "y"] : ["y", "x"];
   let adjusted = {...position};
   for (const axis of axes) {
-    const obstacleCoordinate = finiteNumber(obstacle[axis]);
     const towardPositive = direction[axis] >= 0;
-    while (
+    // Repair roundoff only. Clipping the projected point to the domain can
+    // leave a macroscopic overlap, which cannot be repaired one ULP at a time.
+    // The caller falls back to the last legal source position if this fails.
+    for (
+      let attempt = 0;
+      attempt < 8 &&
       Math.hypot(
         adjusted.x - finiteNumber(obstacle.x),
         adjusted.y - finiteNumber(obstacle.y),
-      ) <= minimum
+      ) <= minimum;
+      attempt += 1
     ) {
       const next = nextRepresentable(adjusted[axis], towardPositive);
       if (
