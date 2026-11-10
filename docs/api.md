@@ -14,12 +14,14 @@ from vectorviz import (
     DielectricSphereField,
     Domain,
     ExclusionRegion,
+    ElectromagneticSample,
     FieldLineTracer,
     InfiniteWireField,
     LaplaceField,
     MagneticDipoleField,
     MagneticShieldCylinderField,
     OscillatingFlowField,
+    OscillatingElectricDipole,
     PathlineResult,
     PathlineTracer,
     PointChargeField,
@@ -88,6 +90,23 @@ streakline = tracer.streakline((-2.0, 0.0), np.linspace(0.0, 4.0, 18), 4.0)
 `tracer.streakline(site, release_times, observation_time)` 要求释放时间为非空、有限、严格递增的一维数组，每项都不晚于观察时刻。它返回 `StreaklineResult(positions, release_times, arrival_times, terminations, valid, nfev)`：每个释放时刻独立跟踪到同一观察时刻，`positions` 记录实际最终位置，`arrival_times` 记录实际终止时间，`valid` 仅在 `time_end` 时为真。提前终止的位置只供诊断，不能混入观察时刻的脉线。时间窗为零时调用方应传一个释放时间，不传重复值。
 
 这套粒子积分只支持可选的矩形 `Domain`，没有场线追踪器的排除区、材料界面或闭环终止。域边界用于停止追踪，不是固体壁面；不施加反射或无滑移条件。边界种子可向内移动或保持静止；相切接触不停止，恰在最终时刻到达边界记为 `time_end`；已接受步内首次向外穿越的检查见[时间积分教程](tutorial/06-unsteady-flow.md#time-integration)。
+
+### 迟滞电磁场 { #electromagnetism-python }
+
+`OscillatingElectricDipole(moment=(0,0,1e-9), angular_frequency=2π·1e8, phase=0, center=(0,0,0))` 表示真空中的理想局域简谐电偶极子。`moment` 为三维偶极矩振幅向量（C·m），`center` 为 m，`angular_frequency` 为非负 rad/s，`phase` 为 rad；源矩为 `moment*cos(angular_frequency*t + phase)`。构造参数有限，源位置与振幅保留只读数组；零频率允许，得到静态极限。
+
+```python
+from vectorviz import OscillatingElectricDipole
+
+dipole = OscillatingElectricDipole()
+sample = dipole.evaluate([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], 1.25e-9)
+print(sample.electric, sample.magnetic, sample.poynting)
+electric_at_t = dipole.freeze(1.25e-9, "electric")
+```
+
+`evaluate(points, time)` 输入 `(...,3)` 实坐标与一个有限实数时刻（秒），返回 `ElectromagneticSample(electric, magnetic, poynting)`，三个数组形状均与坐标相同，单位依次为 V/m、T、W/m²。模型同时求迟滞 E 和 B，再计算瞬时 S=E×B/μ₀。`freeze(time, observable="electric")` 接受 `electric`、`magnetic`、`poynting`，返回三维 `VectorField`，可交给 `FieldLineTracer`。该对象不是速度场，不用于 `PathlineTracer`。
+
+核心允许负的有限时刻；Web 的一周期窗口是单独的展示限制。布尔或字符串时间、错误点形状、复数输入会被拒绝；源点、非有限点和无法表示的计算结果返回显式 NaN。源点奇点不随偶极矩变零而消失，调用方应给追踪器提供排除几何。`SPEED_OF_LIGHT`、`VACUUM_PERMITTIVITY` 与 `VACUUM_PERMEABILITY` 在 `vectorviz.electromagnetism` 中公开，满足 μ₀ε₀c²=1。完整公式、稳态边界和验证依据见[迟滞电偶极场教程](tutorial/07-retarded-dipole.md)。
 
 ### `SphericalExclusion`
 
@@ -311,7 +330,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 ```json
 {
   "status": "ok",
-  "version": "0.3.10"
+  "version": "0.3.11"
 }
 ```
 
@@ -361,6 +380,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 - `magnetic_shield_cylinder`
 - `flow_oscillating`
 - `flow_steady`
+- `dipole_radiation`
 
 此端点是可用预设及其交互能力的权威目录；当前无构建客户端随版本静态提供同一组选项，并由契约测试防止两边漂移。客户端不应假设列表永久不变。
 
@@ -395,7 +415,9 @@ v0.3.8 新增的六个磁静态预设均为固定几何，不提供 `source_sepa
 | `density` | 否 | 整数范围 6–40，默认 18；静态预设为种子总预算，流场预设为每个站的脉线释放时间目标采样数，不代表场强或质量密度 |
 | `resolution` | 否 | 两个方向共同使用的标量与向量网格分辨率，整数范围 32–144 |
 | `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；电四极子、六个正电荷和三对交替电荷预设接受 1–8 个任意符号的电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及其他固定几何预设的 override 会被拒绝 |
-| `seeds` | 否 | 1–16 个手动种子 `{x, y}`，单位随预设的 `domain.unit`，范围 $[-3,3]$（即计算域）；静态场每个种子另做双向追踪，流场每个种子另建一个三类曲线共用的释放站；显式空列表、未知字段和越界坐标会被拒绝 |
+| `seeds` | 否 | 1–16 个手动种子 `{x, y}`，单位随预设的 `domain.unit`，旧预设范围 $[-3,3]$、迟滞电偶极范围 $[-6,6]$；每个种子另做双向追踪，流场则另建一个三类曲线共用的释放站；显式空列表、未知字段和越界坐标会被拒绝 |
+| `observable` | 否 | 仅迟滞电偶极接受：`electric`、`magnetic`、`poynting`，缺省为 `electric` |
+| `em_time` | 否 | 仅迟滞电偶极接受：`{"observation": 1.25e-9}`，单位 s，范围 0–$10^{-8}$ s，与流场 `time` 分开 |
 
 `sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m，范围均为 $[-2.8,2.8]$。请求模型 `SourceInput.kind` 只接受 `positive`、`negative`、`dipole`、`uniform`；响应专用的 `wire_out`/`wire_into`/`ring_charge` 不能提交。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。单位由预设决定，请求不得提交 `strength_unit`。
 
@@ -441,6 +463,39 @@ $$
 静态场景中，`seeds` 列出的每个点都用该预设的追踪器设置（同样的容差、排除区、界面与零场阈值）**双向**追踪一次，结果按种子顺序追加在预设线之后，并带 `seed_index`（请求中的 0-based 下标）；预设线不带这个字段。手动线的点序从反向端经种子到正向端，`direction` 为 `1`，`termination` 与 `start_termination` 都存在，种子本身是点列中的一个点。种子恰在球面这类界面上时，追踪器先把起点沿场方向推离界面几个 ulp 再积分（见 [`FieldLineTracer`](#fieldlinetracer)），返回的点列仍包含请求的种子：离它最近、且在 $10^{-6}$ m 内的推离起点被换成种子本身。沿对称轴正对零场点（例如六个正电荷的电荷对之间的鞍点）的种子在该零点以 `null_field` 停下，见追踪器的停滞保护。手动种子**不占** `density` 预算，也不参加电荷场的返线抑制：`termination_counts` 之和仍等于 `density`，手动线的两端原因另记在 `metadata.manual_termination_counts` 与 `metadata.manual_start_termination_counts`，二者之和都等于 `manual_seed_count`（即请求的种子数）。落在排除区内、导体球内或零场点上的种子只得到一个点，不产生线，但仍计入手动终止统计（例如 `exclusion_hit` 或 `null_field`），所以 `rendered_line_count + suppressed_count <= density + manual_seed_count`。
 
 同一场景与预算下，预设线的追踪结果与不带 `seeds` 的请求相同并共用缓存；手动线按种子列表另行缓存，改分辨率时二者都不重算。
+
+#### 迟滞电偶极契约 { #electromagnetic-contract }
+
+```json
+{
+  "preset": "dipole_radiation",
+  "observable": "poynting",
+  "em_time": {"observation": 1.25e-9},
+  "density": 18,
+  "resolution": 80
+}
+```
+
+固定源为原点处沿 z 的 100 MHz 余弦电偶极子，振幅 $10^{-9}$ C·m、初相位 0。`em_time.observation` 必须是有限 JSON 数字，拒绝布尔、字符串及越界值；缺省取 $1.25\times10^{-9}$ s。不接受流场 `time` 或源覆盖。旧预设须省略 `em_time` 与 `observable`，即使显式传 `null` 或默认观察量也拒绝；原流场秒级时间契约保持不变。
+
+域为 $[-6,6]^2$ m；请求的 `seeds[].x/y` 始终表示画布横/纵坐标：E 与 S 时对应三维 x/z，B 时对应 x/y。原点半径 0.12 m 是追踪与网格排除区，范围内手动种子按既有 `exclusion_hit` 终止；它不是修改分母的软化尺度。源几何通过 `electromagnetic` 表达，`sources` 与 `regions` 为空。
+
+响应的 `scalar` 是所选观察量模长，`vector` 是对应真实截面的两个分量，`lines` 是冻结时刻的场线。单位依次为 E: V/m、B: T、S: W/m²。E/S 使用 y=0 的 x–z 子午面，B 使用 z=0 的 x–y 赤道面；不是对任意三维场的投影。默认种子按几何覆盖分配，`density` 仍为 trace-job 总预算，线密度不代表通量。自动 B 种子沿 B 单向追踪，只有末端原因；E/S 和所有手动种子双向追踪并保留双端统计。零场阈值依次为 $10^{-5}$ V/m、$10^{-13}$ T、$10^{-7}$ W/m²；最大弧长 40 m、最大步长 0.09 m、输出间隔 0.045 m，闭环距离容差 0.003 m、最短闭环弧长 0.4 m、切向余弦至少 0.995。
+
+响应新增 `electromagnetic`：
+
+| 字段 | 含义 |
+|---|---|
+| `observable`, `observation_time`, `time_unit` | 所选量、冻结观察时刻、固定 `s` |
+| `frequency_hz`, `period`, `phase` | 源频率 Hz、周期 s、初相位 rad |
+| `moment_amplitude`, `source_position`, `source_axis` | 振幅 C·m、三维源中心 m、固定 z 轴 |
+| `wavelength`, `propagation_speed` | 波长 m 与光速 m/s |
+| `slice`, `horizontal_axis`, `vertical_axis` | `xz` 与 x/z，或 `xy` 与 x/y |
+| `exclusion_radius`, `quantity_description` | 数值排除半径 m 与观察量说明 |
+
+`/api/presets` 的对应项通过可选 `electromagnetic` 能力公开观察量集合、时间上下限与默认时刻。普通场景省略新增响应字段；场景模型验证时间、观察量、切片、标签、单位与源参数的对应关系。曲线缓存键包含观察量和观察时刻；只改网格分辨率可复用曲线。
+
+浏览器按 `t_ns=t_s/1e-9` 显示时间，切换观察量同时改变坐标轴、单位与图例。该预设禁用网格预览束；点击种子仍交给服务端积分。页面显示瞬时 S，近区可以向内；不把它等同于周期平均辐射或光子/粒子路径。永恒简谐解没有突然开启的完整因果瞬态。
 
 #### 流场时间契约 { #flow-time-contract }
 
@@ -778,5 +833,15 @@ $$
       heading_level: 4
 
 ::: vectorviz.flows.PathlineTracer
+    options:
+      heading_level: 4
+
+### 迟滞电磁模型
+
+::: vectorviz.electromagnetism.OscillatingElectricDipole
+    options:
+      heading_level: 4
+
+::: vectorviz.electromagnetism.ElectromagneticSample
     options:
       heading_level: 4

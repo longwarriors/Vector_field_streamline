@@ -1779,6 +1779,7 @@ def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
         "magnetic_shield_cylinder",
         "flow_oscillating",
         "flow_steady",
+        "dipole_radiation",
     }
     assert all(preset["label"] and preset["description"] for preset in payload)
     by_id = {preset["id"]: preset for preset in payload}
@@ -2301,7 +2302,9 @@ def test_static_index_and_assets_are_served(client: TestClient) -> None:
     assert "text/html" in index.headers["content-type"]
     assert "VectorViz" in index.text
     assert "field-canvas" in index.text
-    option_values = re.findall(r'<option value="([^"]+)">', index.text)
+    preset_select = re.search(r'<select\b[^>]*\bid="preset"[^>]*>(.*?)</select>', index.text, re.S)
+    assert preset_select is not None
+    option_values = re.findall(r'<option value="([^"]+)">', preset_select.group(1))
     advertised_presets = [item["id"] for item in client.get("/api/presets").json()]
     assert option_values == advertised_presets
 

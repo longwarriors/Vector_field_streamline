@@ -13,6 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vectorviz.core import Domain, SphericalExclusion, VectorField
+from vectorviz.electromagnetism import OscillatingElectricDipole
 from vectorviz.fields import (
     ChargedRingField,
     CircularLoopField,
@@ -39,10 +40,12 @@ from .schemas import (
     ELECTRIC_PRESETS,
     FLOW_PRESETS,
     DomainPayload,
+    ElectromagneticPayload,
     FlowPayload,
     LinePayload,
     MetadataPayload,
     PathlinePayload,
+    RadiationSeedInput,
     RegionPayload,
     ScalarPayload,
     SceneRequest,
@@ -67,6 +70,7 @@ from .seeding import (
 )
 
 DOMAIN = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
+ELECTROMAGNETIC_DOMAIN = Domain(lower=(-6.0, -6.0), upper=(6.0, 6.0))
 SOURCE_RADIUS = 0.16
 SOURCE_SEED_CLEARANCE = 2.0e-3
 SOURCE_SEED_RADIUS = SOURCE_RADIUS + SOURCE_SEED_CLEARANCE
@@ -275,6 +279,7 @@ class _SceneModel:
     interfaces: tuple[SphericalExclusion, ...] = ()
     regions: tuple[RegionPayload, ...] = ()
     coordinate_unit: Literal["m", "1"] = "m"
+    domain: Domain = DOMAIN
 
     @property
     def seeds(self) -> NDArray[np.float64]:
@@ -631,6 +636,100 @@ def _flow_field(preset: str) -> OscillatingFlowField:
     )
 
 
+class _ElectromagneticSlice(VectorField):
+    """True x-z E/S or x-y B slice for the centred z-axis electric dipole."""
+
+    def __init__(self, time: float, observable: str) -> None:
+        self._axes = (0, 1) if observable == "magnetic" else (0, 2)
+        self._field = OscillatingElectricDipole().freeze(time, observable)
+
+    @property
+    def dimension(self) -> int:
+        return 2
+
+    def evaluate(self, points: object) -> NDArray[np.float64]:
+        coordinates = np.asarray(points, dtype=float)
+        if coordinates.ndim == 0 or coordinates.shape[-1] != 2:
+            raise ValueError(f"points must have shape (..., 2); got {coordinates.shape}.")
+        embedded = np.zeros((*coordinates.shape[:-1], 3), dtype=float)
+        embedded[..., self._axes] = coordinates
+        return self._field.evaluate(embedded)[..., self._axes]
+
+
+def _electromagnetic_payload(request: SceneRequest) -> ElectromagneticPayload:
+    assert request.em_time is not None
+    magnetic = request.observable == "magnetic"
+    return ElectromagneticPayload(
+        observable=request.observable, observation_time=request.em_time.observation,
+        time_unit="s", frequency_hz=1e8, period=1e-8, moment_amplitude=1e-9, phase=0.0,
+        wavelength=299792458.0 / 1e8, propagation_speed=299792458.0,
+        slice="xy" if magnetic else "xz", horizontal_axis="x",
+        vertical_axis="y" if magnetic else "z", exclusion_radius=0.12,
+        source_position=(0.0, 0.0, 0.0), source_axis="z",
+        quantity_description={
+            "electric": "同一观察时刻的瞬时电场线，沿 E 追踪，不是运动轨迹。",
+            "magnetic": "同一观察时刻的瞬时磁场线；赤道面内的真实环向闭环。",
+            "poynting": "瞬时 S=E×B/μ₀ 的能流线；不是周期平均能流、光子或质点轨迹。近区可向内。",
+        }[request.observable],
+    )
+
+
+def _electromagnetic_model(request: SceneRequest) -> _SceneModel:
+    em = _electromagnetic_payload(request)
+    magnetic = request.observable == "magnetic"
+    if magnetic:
+        jobs = tuple(TraceJob((float(radius), 0.0), TraceDirection.FORWARD)
+                     for radius in np.linspace(0.2, 5.7, request.density))
+    else:
+        jobs_list = []
+        for band, radius in enumerate((0.22, 1.1, 4.4)):
+            count = request.density // 3 + int(band < request.density % 3)
+            for angle in 2 * np.pi * (np.arange(count) + 0.25) / count:
+                jobs_list.append(TraceJob(
+                    (float(radius * np.cos(angle)), float(radius * np.sin(angle))),
+                    TraceDirection.BOTH,
+                ))
+        jobs = tuple(jobs_list)
+    symbol, unit, threshold, title = {
+        "electric": ("E", "V/m", 1e-5, "瞬时电场线"),
+        "magnetic": ("B", "T", 1e-13, "瞬时磁场线"),
+        "poynting": ("S", "W/m²", 1e-7, "瞬时能流线"),
+    }[request.observable]
+    return _SceneModel(
+        field=_ElectromagneticSlice(em.observation_time, request.observable),
+        sources=(), exclusions=(SphericalExclusion((0.0, 0.0), 0.12),),
+        trace_jobs=jobs,
+        trace_options=replace(
+            CURRENT_LOOP_TRACE_OPTIONS, max_arc_length=40.0, max_step=0.09,
+            null_threshold=threshold, closure_min_arc_length=0.4,
+            closure_tolerance=0.003, closure_tangent_cosine=0.995,
+        ),
+        scalar_label=f"|{symbol}|", scalar_unit=unit,
+        title=f"振荡电偶极子 · {title}",
+        field_model=(
+            "理想局域电偶极子 p(t)=10⁻⁹ cos(2π·10⁸ t) ẑ C·m；"
+            "真空迟滞时间 t−r/c，c=299792458 m/s，保留近场、感应场和辐射项。"
+            "永恒简谐稳态，不含突然开启的因果瞬态。"
+        ),
+        projection_note=(
+            ("z=0 赤道面，横轴 x、纵轴 y；B 为面内环向场，不把子午面面外 B 丢弃。"
+             if magnetic else "y=0 子午面，横轴 x、纵轴 z；E 与 S 均为面内真实向量。")
+            + "坐标 m；API 时间 s，页面 1 ns=10⁻⁹ s；周期 10 ns，波长 2.99792458 m。"
+            + em.quantity_description
+            + "原点半径 0.12 m 排除区仅用于遮罩与终止，不软化场。"
+            + f"零场终止阈值 {threshold:g} {unit}；网格只表示冻结时刻。"
+        ),
+        seed_mode=SeedMode.COVERAGE,
+        seed_description=(
+            f"{request.density} 个覆盖种子；"
+            + ("在 0.2–5.7 m 赤道半径上取样；非零场种子沿 B 追踪闭环，零场种子按阈值终止。" if magnetic else
+               "分配在半径 0.22、1.1、4.4 m 的三圈上，兼顾近区、感应区和辐射区；双向追踪。")
+            + "不是等通量或等功率播种；线密度不代表场强或辐射强度。"
+        ),
+        domain=ELECTROMAGNETIC_DOMAIN,
+    )
+
+
 def _flow_model(request: SceneRequest) -> _SceneModel:
     assert request.time is not None
     oscillating = request.preset == "flow_oscillating"
@@ -697,6 +796,8 @@ def _trace_flow_cached(key: str) -> FlowPayload:
 
 
 def _build_model(request: SceneRequest) -> _SceneModel:
+    if request.preset == "dipole_radiation":
+        return _electromagnetic_model(request)
     if request.preset in FLOW_PRESETS:
         return _flow_model(request)
     if request.preset in {"laplace_saddle", "laplace_multipole", "slope_linear", "slope_logistic"}:
@@ -1011,9 +1112,9 @@ def _build_model(request: SceneRequest) -> _SceneModel:
 def _sample_grid(model: _SceneModel, resolution: int) -> tuple[ScalarPayload, VectorPayload]:
     """Sample the field once; the scalar grid is the magnitude of the vector grid."""
 
-    x = np.linspace(DOMAIN.lower[0], DOMAIN.upper[0], resolution)
+    x = np.linspace(model.domain.lower[0], model.domain.upper[0], resolution)
     # Canvas rows run from top to bottom, so y is sampled in descending order.
-    y = np.linspace(DOMAIN.upper[1], DOMAIN.lower[1], resolution)
+    y = np.linspace(model.domain.upper[1], model.domain.lower[1], resolution)
     xx, yy = np.meshgrid(x, y, indexing="xy")
     points = np.stack((xx, yy), axis=-1)
     field = model.field.evaluate(points)
@@ -1150,13 +1251,19 @@ _EMPTY_SUMMARY = _TraceSummary(
 def _trace_cache_key(request: SceneRequest) -> str:
     """Everything the preset's lines depend on: the request minus resolution and seeds."""
 
-    return request.model_dump_json(exclude={"resolution", "seeds"})
+    excluded = {"resolution", "seeds"}
+    if request.preset != "dipole_radiation":
+        excluded.update(("em_time", "observable"))
+    return request.model_dump_json(exclude=excluded)
 
 
 def _manual_cache_key(request: SceneRequest) -> str:
     """The manual lines depend on the seeds too, but still not on the resolution."""
 
-    return "manual:" + request.model_dump_json(exclude={"resolution"})
+    excluded = {"resolution"}
+    if request.preset != "dipole_radiation":
+        excluded.update(("em_time", "observable"))
+    return "manual:" + request.model_dump_json(exclude=excluded)
 
 
 def _trace_branches(
@@ -1207,14 +1314,16 @@ def _is_source_kind(model: _SceneModel, index: int | None, kind: str) -> bool:
 def _make_tracer(model: _SceneModel) -> FieldLineTracer:
     return FieldLineTracer(
         model.field,
-        domain=DOMAIN,
+        domain=model.domain,
         options=model.trace_options,
         exclusions=model.exclusions,
         interfaces=model.interfaces,
     )
 
 
-def _trace_manual_lines(model: _SceneModel, seeds: list[SeedInput]) -> _TraceSummary:
+def _trace_manual_lines(
+    model: _SceneModel, seeds: list[SeedInput | RadiationSeedInput]
+) -> _TraceSummary:
     """Trace each manual seed in both directions with the preset's tracer settings.
 
     Manual lines are neither budgeted nor suppressed: a seed inside an
@@ -1373,8 +1482,8 @@ def build_scene(request: SceneRequest) -> SceneResponse:
     ]
     return SceneResponse(
         domain=DomainPayload(
-            x=(float(DOMAIN.lower[0]), float(DOMAIN.upper[0])),
-            y=(float(DOMAIN.lower[1]), float(DOMAIN.upper[1])),
+            x=(float(model.domain.lower[0]), float(model.domain.upper[0])),
+            y=(float(model.domain.lower[1]), float(model.domain.upper[1])),
             coordinate_system="cartesian",
             unit=model.coordinate_unit,
         ),
@@ -1384,8 +1493,13 @@ def build_scene(request: SceneRequest) -> SceneResponse:
         sources=list(model.sources),
         regions=list(model.regions),
         flow=(
-            _trace_flow_cached(request.model_dump_json(exclude={"resolution"})).model_copy(deep=True)
+            _trace_flow_cached(request.model_dump_json(
+                exclude={"resolution", "em_time", "observable"}
+            )).model_copy(deep=True)
             if request.preset in FLOW_PRESETS else None
+        ),
+        electromagnetic=(
+            _electromagnetic_payload(request) if request.preset == "dipole_radiation" else None
         ),
         metadata=MetadataPayload(
             title=model.title,

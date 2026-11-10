@@ -1,8 +1,9 @@
 """VectorViz: reusable scientific vector-field models and field-line tracing."""
 
-__version__ = "0.3.10"
+__version__ = "0.3.11"
 
 from .core import Domain, ExclusionRegion, SphericalExclusion, ToroidalExclusion, VectorField
+from .electromagnetism import ElectromagneticSample, OscillatingElectricDipole
 from .fields import (
     ChargedRingField,
     CircularLoopField,
@@ -40,12 +41,14 @@ __all__ = [
     "CompositeField",
     "DielectricSphereField",
     "Domain",
+    "ElectromagneticSample",
     "ExclusionRegion",
     "FieldLineTracer",
     "InfiniteWireField",
     "LaplaceField",
     "MagneticDipoleField",
     "MagneticShieldCylinderField",
+    "OscillatingElectricDipole",
     "OscillatingFlowField",
     "PathlineResult",
     "PathlineTracer",

@@ -19,6 +19,7 @@ from vectorviz import __version__
 
 from .scene import MIN_SOURCE_SEPARATION, build_scene
 from .schemas import (
+    ElectromagneticCapability,
     PresetPayload,
     SceneRequest,
     SceneResponse,
@@ -163,6 +164,11 @@ PRESETS = [
     PresetPayload(
         id="flow_steady", label="定常流对照",
         description="u=(1, 0.4) m/s；三类曲线落在同一直线上，时间单位 s。",
+    ),
+    PresetPayload(
+        id="dipole_radiation", label="振荡电偶极子：迟滞场",
+        description="100 MHz 理想电偶极子的瞬时 E、B 与能流；按真实不变截面切换，时间以 ns 显示。",
+        electromagnetic=ElectromagneticCapability(),
     ),
 ]
 

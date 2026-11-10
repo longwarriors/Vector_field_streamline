@@ -18,6 +18,7 @@ Vector_field_streamline/
 │       ├── planar_fields.py     # 二维 Laplace 与斜率场
 │       ├── material_fields.py   # 磁屏蔽圆柱壳解析场
 │       ├── flows.py             # 含时速度场、物理时间迹线与脉线
+│       ├── electromagnetism.py  # 同一次迟滞三维求值的 E、B、S 与冻结观察量
 │       ├── tracing.py           # 自适应场线积分与结果类型
 │       ├── _trace_geometry.py   # 内置排除区的步内曲线检查（私有）
 │       └── web/
@@ -39,6 +40,7 @@ Vector_field_streamline/
 | `fields.py`、`planar_fields.py`、`material_fields.py` | 批量求值解析场、斜率场与组合场 | 播种、积分、颜色映射 |
 | `tracing.py` | 方向归一化、双向积分、事件、终止信息 | 物理源公式、浏览器状态 |
 | `flows.py` | 含时速度场、冻结适配器、物理时间粒子积分与释放时间采样 | Web 时间范围、颜色、浏览器状态 |
+| `electromagnetism.py` | 理想简谐电偶极子的迟滞 E/B/S 与冻结观察量 | 切片选择、播种、HTTP 时间范围、粒子动力学 |
 | 验证代码 | 解析解、不变量、残差与收敛诊断 | 修改模型参数以“修好”结果 |
 | Python Web 层 | 输入校验、预设播种、场景编排、静态资源、JSON 序列化 | 复制核心物理公式、改写核心积分政策 |
 | 前端 | 参数交互、图层、提示信息，以及基于采样网格的近似预览 | 物理源公式、作为场景结果返回的自适应追踪 |
@@ -68,7 +70,7 @@ sequenceDiagram
 
 API 返回数值与科学元数据，而不返回预先栅格化的截图。这样前端可在不重复求解的情况下切换图层、调整颜色或查看探针。
 
-上述时序图描述静态场景。含时场景另调用 `TimeDependentField.freeze(T)` 采样并求流线，同时用 `PathlineTracer` 求迹线与脉线；响应增加独立的 `flow` 对象。
+上述时序图描述静态场景。含时流另调用 `TimeDependentField.freeze(T)` 采样并求流线，同时用 `PathlineTracer` 求迹线与脉线；响应增加独立的 `flow` 对象。迟滞电偶极则用 `OscillatingElectricDipole.freeze(T, observable)` 选择 E/B/S，Web 层将真实不变截面嵌入三维后调用核心，不调用粒子积分器；响应增加 `electromagnetic`。时间与观察量均进入曲线缓存键。两类含时预设都禁用浏览器网格预览。
 
 物理公式只在核心实现一次。服务端直接对场模型自适应积分，并处理排除区、材料界面与终止原因；这些轨迹构成场景结果。浏览器允许对已采样向量网格做定步长 RK4 预览，但必须标识其近似性质，且点击后的手动场线仍由服务端求解。两条路径分别验证，预览不能替代核心的解析基准或收敛检查。
 

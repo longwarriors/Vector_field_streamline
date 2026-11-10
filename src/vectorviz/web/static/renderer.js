@@ -378,7 +378,7 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     context.font = theme.axes.titleFont;
     context.textAlign = "left";
     context.textBaseline = "bottom";
-    context.fillText(axisTitle("y"), left, top - 8);
+    context.fillText(axisTitle(view.scene.electromagnetic?.vertical_axis || "y"), left, top - 8);
     context.textAlign = "center";
     context.textBaseline = "top";
     context.fillText(axisTitle("x"), (left + right) / 2, bottom + 28);
@@ -607,6 +607,26 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
   }
 
   function drawSources() {
+    if (view.scene.electromagnetic) {
+      const em = view.scene.electromagnetic;
+      const [x, y] = worldToCanvas(0, 0);
+      const [edge] = worldToCanvas(em.exclusion_radius, 0);
+      context.save();
+      context.beginPath();
+      context.arc(x, y, Math.abs(edge - x), 0, 2 * Math.PI);
+      context.fillStyle = theme.hatch.base;
+      context.fill();
+      context.strokeStyle = theme.region.outline;
+      context.lineWidth = 1;
+      context.setLineDash([3, 2]);
+      context.stroke();
+      context.setLineDash([]);
+      context.beginPath();
+      context.arc(x, y, 2, 0, 2 * Math.PI);
+      context.fillStyle = theme.marker.glyph;
+      context.fill();
+      context.restore();
+    }
     const { marker } = theme;
     view.scene.sources.forEach((source, index) => {
       const [x, y] = worldToCanvas(finiteNumber(source.x), finiteNumber(source.y));

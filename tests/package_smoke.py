@@ -21,6 +21,7 @@ def main() -> None:
                 InfiniteWireField,
                 LaplaceField,
                 MagneticShieldCylinderField,
+                OscillatingElectricDipole,
                 OscillatingFlowField,
                 PathlineTracer,
                 SlopeField,
@@ -42,6 +43,12 @@ def main() -> None:
             assert path.termination == "time_end"
             assert abs(path.points[-1, 0] - 1) < 1e-12
             assert abs(path.points[-1, 1] - 0.4) < 1e-12
+            em = OscillatingElectricDipole()
+            sample = em.evaluate((1.0, 0.0, 0.0), 0.0)
+            assert sample.electric.shape == sample.magnetic.shape == sample.poynting.shape == (3,)
+            assert sample.electric[2] != 0
+            assert sample.magnetic[1] != 0
+            assert em.freeze(0.0, "magnetic").dimension == 3
             for asset in (
                 "index.html",
                 "app.js",
@@ -52,6 +59,7 @@ def main() -> None:
                 "scene-validation.js",
                 "flow-validation.js",
                 "flow-renderer.js",
+                "electromagnetic-validation.js",
                 "formatting.js",
                 "source-controls.js",
                 "coordinates.js",

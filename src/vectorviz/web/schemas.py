@@ -1,6 +1,7 @@
 """Validated request and response models for the browser application."""
 
 from enum import StrEnum
+from math import isclose
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -38,7 +39,9 @@ PresetName = Literal[
     "magnetic_shield_cylinder",
     "flow_oscillating",
     "flow_steady",
+    "dipole_radiation",
 ]
+ElectromagneticObservable = Literal["electric", "magnetic", "poynting"]
 FLOW_PRESETS = frozenset({"flow_oscillating", "flow_steady"})
 # Presets whose geometry is fixed by the server and returned as read-only
 # markers or regions.
@@ -56,6 +59,7 @@ FIXED_PRESETS = frozenset(
         "magnetic_shield_cylinder",
         "flow_oscillating",
         "flow_steady",
+        "dipole_radiation",
         "straight_wire",
         "parallel_wires",
         "antiparallel_wires",
@@ -197,6 +201,23 @@ class FlowTime(BaseModel):
         return self
 
 
+class RadiationSeedInput(BaseModel):
+    """A seed in the larger [-6, 6] m electromagnetic slice."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: FiniteFloat = Field(ge=-6.0, le=6.0)
+    y: FiniteFloat = Field(ge=-6.0, le=6.0)
+
+
+class ElectromagneticTime(BaseModel):
+    """Frozen observation time in seconds, covering one 100 MHz period."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    observation: FiniteTime = Field(default=1.25e-9, ge=0.0, le=1.0e-8)
+
+
 class SceneRequest(BaseModel):
     """Parameters that affect physical sampling and field-line tracing."""
 
@@ -206,8 +227,10 @@ class SceneRequest(BaseModel):
     density: int = Field(default=18, ge=6, le=40)
     resolution: int = Field(default=72, ge=32, le=144)
     time: FlowTime | None = None
+    observable: ElectromagneticObservable = "electric"
+    em_time: ElectromagneticTime | None = None
     sources: list[SourceInput] | None = Field(default=None, min_length=1, max_length=8)
-    seeds: list[SeedInput] | None = Field(
+    seeds: list[SeedInput | RadiationSeedInput] | None = Field(
         default=None,
         min_length=1,
         max_length=MAX_MANUAL_SEEDS,
@@ -219,6 +242,17 @@ class SceneRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_source_override(self) -> "SceneRequest":
+        if self.preset == "dipole_radiation":
+            if self.em_time is None:
+                self.em_time = ElectromagneticTime()
+        else:
+            if self.model_fields_set & {"em_time", "observable"}:
+                raise ValueError("em_time and observable are only valid for dipole_radiation")
+            if self.seeds and any(
+                abs(seed.x) > SEED_COORDINATE_LIMIT or abs(seed.y) > SEED_COORDINATE_LIMIT
+                for seed in self.seeds
+            ):
+                raise ValueError("manual seeds must lie inside [-3, 3] for this preset")
         if self.preset in FLOW_PRESETS:
             if self.time is None:
                 self.time = FlowTime()
@@ -497,6 +531,42 @@ class FlowPayload(_ResponsePayload):
         return self
 
 
+class ElectromagneticPayload(_ResponsePayload):
+    """SI metadata for one true invariant slice of the same 3D retarded field."""
+
+    observable: ElectromagneticObservable
+    observation_time: FiniteTime = Field(ge=0.0, le=1.0e-8)
+    time_unit: Literal["s"]
+    frequency_hz: FiniteTime = Field(gt=0.0)
+    period: FiniteTime = Field(gt=0.0)
+    moment_amplitude: FiniteTime = Field(gt=0.0)
+    phase: FiniteTime
+    wavelength: FiniteTime = Field(gt=0.0)
+    propagation_speed: FiniteTime = Field(gt=0.0)
+    slice: Literal["xz", "xy"]
+    horizontal_axis: Literal["x"]
+    vertical_axis: Literal["y", "z"]
+    exclusion_radius: FiniteTime = Field(gt=0.0)
+    source_position: tuple[FiniteTime, FiniteTime, FiniteTime]
+    source_axis: Literal["z"]
+    quantity_description: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_fixed_model(self) -> "ElectromagneticPayload":
+        expected = ("xy", "y") if self.observable == "magnetic" else ("xz", "z")
+        if (self.slice, self.vertical_axis) != expected:
+            raise ValueError("observable requires its true invariant slice and axes")
+        if (self.frequency_hz != 1e8 or self.moment_amplitude != 1e-9 or self.phase != 0.0
+                or self.propagation_speed != 299792458.0 or self.exclusion_radius != 0.12
+                or self.source_position != (0.0, 0.0, 0.0)):
+            raise ValueError("electromagnetic metadata must describe the fixed preset model")
+        if not isclose(self.period * self.frequency_hz, 1.0, rel_tol=1e-14) or not isclose(
+            self.wavelength * self.frequency_hz, self.propagation_speed, rel_tol=1e-14
+        ):
+            raise ValueError("period and wavelength must agree with frequency and light speed")
+        return self
+
+
 class SceneResponse(_ResponsePayload):
     domain: DomainPayload
     scalar: ScalarPayload
@@ -506,6 +576,26 @@ class SceneResponse(_ResponsePayload):
     regions: list[RegionPayload] = Field(default_factory=list)
     metadata: MetadataPayload
     flow: FlowPayload | None = None
+    electromagnetic: ElectromagneticPayload | None = None
+
+    @model_validator(mode="after")
+    def validate_electromagnetic_contract(self) -> "SceneResponse":
+        if self.electromagnetic is None:
+            return self
+        if self.flow is not None or self.sources or self.regions:
+            raise ValueError("electromagnetic scenes use their own fixed source geometry")
+        label, unit = {
+            "electric": ("E", "V/m"), "magnetic": ("B", "T"), "poynting": ("S", "W/m²")
+        }[self.electromagnetic.observable]
+        if self.domain.unit != "m" or self.domain.x != (-6.0, 6.0) or (
+            self.domain.y != (-6.0, 6.0)
+        ):
+            raise ValueError("electromagnetic domain must be [-6, 6] m on both slice axes")
+        if self.scalar.label != f"|{label}|" or self.scalar.unit != unit or (
+            self.vector is None or self.vector.label != label or self.vector.unit != unit
+        ):
+            raise ValueError("electromagnetic vector and magnitude must match the observable")
+        return self
 
     @model_validator(mode="after")
     def validate_flow_contract(self) -> "SceneResponse":
@@ -558,8 +648,19 @@ class SourceSeparationCapability(_ResponsePayload):
     unit: Literal["m"]
 
 
+class ElectromagneticCapability(_ResponsePayload):
+    observables: tuple[Literal["electric"], Literal["magnetic"], Literal["poynting"]] = (
+        "electric", "magnetic", "poynting"
+    )
+    time_min: Literal[0.0] = 0.0
+    time_max: Literal[1e-8] = 1e-8
+    time_default: Literal[1.25e-9] = 1.25e-9
+    time_unit: Literal["s"] = "s"
+
+
 class PresetPayload(_ResponsePayload):
     id: PresetName
     label: str
     description: str
     source_separation: SourceSeparationCapability | None = None
+    electromagnetic: ElectromagneticCapability | None = None

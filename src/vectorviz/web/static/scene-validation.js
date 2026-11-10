@@ -1,5 +1,6 @@
 /** Structural validation of a scene response against the browser contract. */
 import { validateFlow } from "./flow-validation.js";
+import { validateElectromagnetic } from "./electromagnetic-validation.js";
 
 export const SOURCE_STRENGTH_UNITS = Object.freeze({
   positive: "nC",
@@ -301,5 +302,6 @@ export function validateScene(scene, preset, expected = {}) {
     );
   }
   validateFlow(scene, preset, expected);
+  validateElectromagnetic(scene, preset, expected);
   return scene;
 }

@@ -57,6 +57,14 @@
 
 2. SciPy, [`DOP853`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.DOP853.html) 与 [`solve_ivp`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.solve_ivp.html)。物理时间初值问题、自适应误差控制和稠密输出。项目使用的均匀振荡流闭式通过直接积分速度得到，作为数值实现的独立基准，不是引用来源中的具体算例。
 
+## 迟滞电偶极场
+
+1. R. P. Feynman, R. B. Leighton, M. Sands, [*The Feynman Lectures on Physics*, II §21–4](https://www.feynmanlectures.caltech.edu/II_21.html#Ch21-S4)，Caltech 原版在线教材。式 21.18、21.25 给出迟滞势，式 21.23 与 21.26–27 给出源外 B、E；本项目采用余弦源约定，保留全部近场、感应与辐射项，并从势的数值微分独立检查符号。
+2. 同书 [I §32–1](https://www.feynmanlectures.caltech.edu/I_32.html#Ch32-S1)。周期平均辐射能流及球面积分；页面的瞬时 Poynting 矢量与周期平均量明确区分。
+3. NIST, [speed of light in vacuum](https://physics.nist.gov/cgi-bin/cuu/Value?c)。SI 光速精确值 299792458 m/s；本实现使用锁定 SciPy 的 `epsilon_0` 并由 $\mu_0=1/(\varepsilon_0c^2)$ 保持常数一致。
+
+以上资料用于公式与解释核对；预设的数值、切片、单位、排除半径与验收方案是项目自身的设计，见[迟滞电偶极场教程](tutorial/07-retarded-dipole.md)。
+
 ## 数值积分与向量场可视化
 
 1. J. R. Dormand, P. J. Prince, [“A family of embedded Runge–Kutta formulae”](https://doi.org/10.1016/0771-050X(80)90013-3), *Journal of Computational and Applied Mathematics* **6** (1980), 19–26。

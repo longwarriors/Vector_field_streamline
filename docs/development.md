@@ -1,5 +1,43 @@
 # 开发指南
 
+## v0.3.11 迟滞电偶极场验证边界
+
+模型使用三维真空迟滞解，源矩为 $10^{-9}\cos(2\pi\,10^8t)\hat{\mathbf z}$ C·m。源外完整 E/B 同次求值，再以 E×B/μ₀ 得到瞬时能流；没有将静态场简单乘时间因子。核心可接受一般有限三维源位置、偶极矩振幅、非负角频率和相位。Web 固定这组模型参数，开放观察量及 0–$10^{-8}$ s 时刻，前端以 0–10 ns 显示。核心允许负的有限时刻，模型解释为永恒简谐稳态。
+
+`tests/test_electromagnetism.py` 从迟滞标量势与矢势的独立数值微分核对场符号，并验证静态/低频极限、轴与赤道对称性、隔离感应项的迟滞相位、近区 $r^{-3}$ 与远区 $r^{-1}$ 标度、远区横向性与 cB=n×E。完整 E×B 的周期积分检查两个半径的 $\sin^2\theta/r^2$ 角分布，再以球面积分核对总辐射功率；近区反向能流是单独断言。冻结 B 的三维积分检查圆形闭环；奇点、排除、零场、非有限与溢出有针对性检查。
+
+`tests/test_electromagnetic_scenes.py` 验证三种观察量的真实切片、联合场与网格一致性、严格 JSON 秒时间、单位、源几何、响应跨字段约束、手动播种与时间/观察量缓存。E/S 是 y=0 的 x–z 面，B 是 z=0 的 x–y 面。域为 $[-6,6]^2$ m；0.12 m 排除圆只作遮罩和终止。`tests/test_electromagnetic_frontend.py` 通过真实 API 检查 ns 换算、切片坐标与探针、观察量切换、手动种子、非法响应、窄屏及切回旧流场；共享浏览器 fixture 仍只在 `tests/conftest.py` 注册。
+
+这些验证不覆盖有限天线、源突然开启的完整因果瞬态、材料、自洽源动力学或光子/带电粒子轨迹。瞬时能流与周期平均量分开解释；页面只显示瞬时量，禁用冻结网格预览，物理公式和积分留在 Python。既有材料界面滑移累计行程、含时粒子稠密输出失败与静态资源 no-cache 回归保持原状。
+
+对已发布基线 `b2545b45afc9e8d6ca74e3cc5dcc64e6fb9f7e7c` 导出独立源码快照，在独立 Python 进程中以 `density=6`、`resolution=32` 对照全部 24 个旧预设。省略 `None` 可选字段后的完整 JSON 均一致，包括网格、曲线浮点坐标、终止统计和流场结果。这是固定参数下的兼容抽样，不是全部输入逐位一致性的证明。另抽查默认 1.25 ns 与四分之一周期 2.5 ns 的 E/B/S 共六场景，未出现 `solver_failure`；默认近区赤道面保留向内的 S，B 的节点圆按 `null_field` 终止。
+
+首次完整检查发现旧预设顺序测试扫描了整个页面的 `<option>`，把新增观察量选项也计作预设。该测试先失败，随后将扫描范围限定到 `#preset`，仍严格验证 HTML 预设与 `/api/presets` 的值及顺序完全一致；针对性重跑通过。新浏览器测试另检查 E/B/S 选项的实际请求与切片结果，避免两组下拉框互相混淆。
+
+### v0.3.11 本地验收（2026-11-10）
+
+Windows / Python 3.13.3，锁文件只更新项目版本，依赖版本未变。执行 `uv --cache-dir .uv-cache lock` 和 `uv --cache-dir .uv-cache sync --locked` 后，按 CI 顺序运行：
+
+```powershell
+uv --cache-dir .uv-cache run --no-sync ruff check .
+uv --cache-dir .uv-cache run --no-sync pytest -o cache_dir=.codex-tmp/pytest-cache
+uv --cache-dir .uv-cache run --no-sync mkdocs build --strict
+```
+
+Ruff 与严格文档构建通过。最终完整 pytest **886 项通过**（195.14 s），包含 headless Chromium，行与分支综合覆盖率 **97.29%**。保留一条已有 Starlette/httpx 弃用提示，无失败或跳过。上面的旧下拉框测试修正后，完整门禁从 Ruff 开始重跑；不是仅靠单项重跑宣称整套通过。新增核心 26 项、Web 45 项、浏览器 3 项；开发时另跑受影响旧测试与新旧浏览器联合检查。此验收记录补写后再次严格构建文档。
+
+构件验证执行：
+
+```powershell
+uv --cache-dir .uv-cache build --clear
+uv --cache-dir .uv-cache run --isolated --no-project --with .\dist\vector_field_streamline-0.3.11-py3-none-any.whl python -I tests/package_smoke.py
+uv --cache-dir .uv-cache run --isolated --no-project --with .\dist\vector_field_streamline-0.3.11.tar.gz python -I tests/package_smoke.py
+```
+
+wheel 与 sdist 均构建成功、通过隔离安装冒烟；验证新公共 E/B/S 模型、冻结观察量、版本及 `electromagnetic-validation.js` 等前端资源。沙箱内 TestClient/Chromium 启动停滞、构建工具网络解析不可用后，相关测试、构建与隔离安装提升执行权限完成。版本同步前仅短暂停止已确认属于本项目的预览服务，随后以隐藏窗口恢复。`127.0.0.1:8000/api/health` 已核实为 0.3.11，文档预览仍在 `127.0.0.1:8001/Vector_field_streamline/`。
+
+已目视检查默认 E/B/S 的桌面截图及 390 px 窄屏能流截图，切片轴、单位、原点排除圆、图例和控件正常。没有在本地执行其他操作系统或 Python 版本的 CI 矩阵，跨平台结果以本版本发布提交的 CI 记录为准。生成物与截图均留在忽略目录中。
+
 ## v0.3.10 非定常流验证边界
 
 本版使用空间均匀的二维含时速度场 $\mathbf u=(U,V+A\sin\omega t)$。非定常预设取 $(U,V,A,\omega)=(1,0,0.6,1)$，定常对照取 $(1,0.4,0,1)$；坐标 m、速度 m/s、时间 s。默认站为 $(-2,0)$ m，默认观察时刻 4 s、初始时刻 0 s、释放窗 [0,4] s。这个时刻能清楚区分三类曲线；$T=\pi$ s 的偶然几何重合不能用作差异验收。模型与独立闭式推导见[非定常流教程](tutorial/06-unsteady-flow.md)。

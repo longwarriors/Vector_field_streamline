@@ -2052,6 +2052,11 @@ input[type="range"]::-moz-range-thumb {
 .flow-time-grid label { display: grid; gap: 4px; font-size: var(--vv-fs-12); }
 .flow-time-grid input { width: 100%; min-width: 0; padding: 7px; border: 1px solid var(--vv-control-border); border-radius: var(--vv-r-md); color: var(--vv-ink); background: var(--vv-surface); }
 .flow-controls .field-help { margin-top: 8px; }
+.em-observable-label { display: block; margin-bottom: 6px; font-size: var(--vv-fs-12); }
+#em-observable { width: 100%; min-width: 0; padding: 8px 5px; border: 1px solid var(--vv-control-border); border-radius: var(--vv-r-md); color: var(--vv-ink); background: var(--vv-surface); }
+.em-time-row { margin: 12px 0 8px; }
+#em-observation-time { width: 90px; padding: 6px; border: 1px solid var(--vv-control-border); border-radius: var(--vv-r-md); color: var(--vv-ink); background: var(--vv-surface); }
+#electromagnetic-summary-row[hidden] { display: none; }
 .legend-pathline, .legend-streakline { width: 21px; border-top: 2px dashed var(--vv-flow-pathline); }
 .legend-streakline { border-color: var(--vv-flow-streakline); border-top-style: dotted; }
 .caption-flow { display: block; font-weight: var(--vv-fw-strong); margin-top: 5px; }

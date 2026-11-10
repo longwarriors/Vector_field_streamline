@@ -30,6 +30,7 @@ import { createPreviewGrid, previewBundle } from "./preview.js";
 import { DEFAULT_LAYERS, createRenderer, sourceStyle } from "./renderer.js";
 import { createSceneLoader } from "./scene-loader.js";
 import { FLOW_PRESETS } from "./flow-validation.js";
+import { ELECTROMAGNETIC_PRESET, ELECTROMAGNETIC_OBSERVABLES } from "./electromagnetic-validation.js";
 import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validation.js";
 
 (() => {
@@ -69,6 +70,14 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     captionFlow: document.querySelector("#caption-flow"),
     flowSummaryRow: document.querySelector("#flow-summary-row"),
     flowSummary: document.querySelector("#flow-summary"),
+    electromagneticControls: document.querySelector("#electromagnetic-controls"),
+    emObservable: document.querySelector("#em-observable"),
+    emObservationTime: document.querySelector("#em-observation-time"),
+    emTimeSlider: document.querySelector("#em-time-slider"),
+    emTimeStatus: document.querySelector("#em-time-status"),
+    captionElectromagnetic: document.querySelector("#caption-electromagnetic"),
+    electromagneticSummaryRow: document.querySelector("#electromagnetic-summary-row"),
+    electromagneticSummary: document.querySelector("#electromagnetic-summary"),
     lineLegendLabel: document.querySelector("#line-legend-label"),
     seedHelp: document.querySelector("#seed-help"),
     resolution: document.querySelector("#resolution"),
@@ -244,18 +253,23 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
   }
 
   function isFlow() { return FLOW_PRESETS.has(elements.preset.value); }
+  function isElectromagnetic() { return elements.preset.value === ELECTROMAGNETIC_PRESET; }
 
   function updateFlowControls() {
     const flow = isFlow();
+    const electromagnetic = isElectromagnetic();
+    const emQuantity = ELECTROMAGNETIC_OBSERVABLES[elements.emObservable.value];
+    const lineLabel = flow ? "流线" : electromagnetic ? emQuantity.label : "场线";
     elements.flowControls.hidden = !flow;
+    elements.electromagneticControls.hidden = !electromagnetic;
     elements.densityLabel.textContent = flow ? "每站释放采样数" : "播种预算";
     elements.densityHelp.textContent = flow
       ? "每个固定释放站在释放窗内等间隔采样；零时长窗只采 1 个粒子。" : "每次计算的总种子预算，不代表场强。";
     elements.seedHelp.textContent = flow
       ? "点击添加固定释放站：同一点分别计算流线、迹线、脉线；最多添加 16 个站。"
       : "点击图中位置，由服务端从该点双向积分一条精确场线；最多 16 个。";
-    elements.lineLegendLabel.textContent = flow ? "流线" : "场线";
-    elements.lineCountLabel.textContent = flow ? "流线" : "场线";
+    elements.lineLegendLabel.textContent = lineLabel;
+    elements.lineCountLabel.textContent = lineLabel;
     document.getElementById("termination-label").textContent = flow ? "流线末端终止" : "末端终止";
     document.getElementById("start-termination-label").textContent = flow ? "流线起点端终止" : "起点端终止";
     document.getElementById("manual-summary-label").textContent = flow ? "手动流线" : "手动种子";
@@ -266,17 +280,27 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       "guide-density": "蓝点按释放时刻等间隔采样：每个点是同一观察时刻的一个粒子，点间虚线仅连接相邻存活样本。采样点密度不能直接当成速度或流量。",
       "guide-preview": "含时流禁用浏览器网格预览；热图、斜率短线和探针只读观察时刻的冻结速度场。点击添加一个固定释放站，由服务端分别计算三类曲线。",
     };
+    const emGuide = {
+      "guide-arrows": "箭头表示选中观察量在冻结时刻的方向；近区瞬时能流可能指向源，场线不是光子轨迹或质点迹线。",
+      "guide-density": "三种观察量使用覆盖播种；场线密度不能当成场强、辐射功率或能量密度。切换观察量也可能切换真实截面。",
+      "guide-preview": "迟滞电磁场禁用浏览器网格预览；冻结网格不表达电磁波传播或真实能量运动。点击后由服务端计算选定时刻的场线。",
+    };
     Object.entries(flowGuide).forEach(([id, text]) => {
       const item = document.getElementById(id);
       item.dataset.staticText ??= item.textContent;
-      item.textContent = flow ? text : item.dataset.staticText;
+      item.textContent = flow ? text : electromagnetic ? emGuide[id] : item.dataset.staticText;
     });
+    const probeGuide = document.getElementById("guide-probe");
+    probeGuide.dataset.staticText ??= probeGuide.textContent;
+    probeGuide.textContent = electromagnetic
+      ? `探针读取最近网格点的原值和面内分量，未按色标截断、不插值。方向角从 +x 朝 +${emQuantity.vertical} 逆时针；坐标为 (x, ${emQuantity.vertical}) m。`
+      : probeGuide.dataset.staticText;
     elements.layerToggles.forEach((button) => {
       if (["pathlines", "streaklines"].includes(button.dataset.layer)) button.hidden = !flow;
       if (["sources", "preview"].includes(button.dataset.layer)) button.hidden = flow;
       if (button.dataset.layer === "lines") {
-        button.querySelector("span").textContent = flow ? "流线" : "场线";
-        button.title = flow ? "流线：观察时刻冻结的速度场切线" : "场线";
+        button.querySelector("span").textContent = electromagnetic ? "瞬时线" : lineLabel;
+        button.title = flow ? "流线：观察时刻冻结的速度场切线" : lineLabel;
       }
     });
   }
@@ -317,6 +341,14 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       resolution: Number(elements.resolution.value),
     };
     if (isFlow()) body.time = readTimeControls();
+    if (isElectromagnetic()) {
+      const time = elements.emObservationTime.valueAsNumber;
+      if (!elements.emObservationTime.validity.valid || !Number.isFinite(time) || time < 0 || time > 10) {
+        throw new Error("电磁场观察时刻须为 0–10 ns 的有限数值；1 ns = 10⁻⁹ s。");
+      }
+      body.observable = elements.emObservable.value;
+      body.em_time = { observation: time / 1e9 };
+    }
     if (serializedSources) {
       body.sources = serializedSources;
     }
@@ -374,6 +406,9 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     elements.startTerminationCounts.textContent = "—";
     elements.manualSeedSummary.textContent = "—";
     elements.captionFlow.hidden = true;
+    elements.captionElectromagnetic.hidden = true;
+    elements.electromagneticSummary.textContent = "—";
+    elements.electromagneticSummaryRow.hidden = !isElectromagnetic();
     elements.flowSummary.textContent = "—";
     elements.flowSummaryRow.hidden = !isFlow();
     elements.renderedLineCount.textContent = "—";
@@ -429,6 +464,8 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       seedCount: requestBody.seeds?.length ?? 0,
       seeds: requestBody.seeds || [],
       time: requestBody.time,
+      em_time: requestBody.em_time,
+      observable: requestBody.observable,
       density: requestBody.density,
     });
   }
@@ -447,7 +484,7 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
         ? scene.sources.map(serializeSource)
         : null;
       state.selectedSource = null;
-      state.previewGrid = scene.vector && !scene.flow ? createPreviewGrid(scene) : null;
+      state.previewGrid = scene.vector && !scene.flow && !scene.electromagnetic ? createPreviewGrid(scene) : null;
       state.preview = null;
       renderSourceEditors();
       updateSceneDetails();
@@ -486,11 +523,12 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     try {
       body = currentRequestBody();
       elements.timeStatus.textContent = "";
+      elements.emTimeStatus.textContent = "";
     } catch (error) {
       loader.cancel();
       setLoading(false);
       invalidateSceneView("error");
-      elements.timeStatus.textContent = error.message;
+      (isElectromagnetic() ? elements.emTimeStatus : elements.timeStatus).textContent = error.message;
       setError(error.message);
       return;
     }
@@ -554,6 +592,16 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       scene.metadata.suppressed_count.toLocaleString("zh-CN");
     elements.captionFlow.hidden = !scene.flow;
     elements.flowSummaryRow.hidden = !scene.flow;
+    elements.captionElectromagnetic.hidden = !scene.electromagnetic;
+    elements.electromagneticSummaryRow.hidden = !scene.electromagnetic;
+    if (scene.electromagnetic) {
+      const em = scene.electromagnetic;
+      const quantity = ELECTROMAGNETIC_OBSERVABLES[em.observable];
+      const slice = em.slice === "xz" ? "x–z 子午面（y=0）" : "x–y 赤道面（z=0）";
+      const timeNs = em.observation_time * 1e9;
+      elements.captionElectromagnetic.textContent = `观察 ${formatValue(timeNs)} ns · ${quantity.label} · ${slice} · ${quantity.unit}。所有曲线冻结同一观察时刻。`;
+      elements.electromagneticSummary.textContent = `p(t) = 10⁻⁹ cos(2π × 10⁸ t) ẑ C·m，t 以 s 计；迟滞时间 t − r/c，c = 299792458 m/s，波长 ${formatValue(em.wavelength)} m。源点位于原点，半径 ${em.exclusion_radius} m 的圆内排除求值与追踪。近场、感应场、辐射场同时保留。${em.quantity_description} 永恒简谐稳态，不含突然开启后的完整因果瞬态；S = E × B / μ₀ 为瞬时能流，与周期平均能流不同。`;
+    }
     if (scene.flow) {
       const { time, pathlines, streaklines } = scene.flow;
       elements.captionFlow.textContent = `观察 ${formatValue(time.observation)} s · 迹线初始 ${formatValue(time.initial)} s · 释放窗 [${formatValue(time.release_start)}, ${formatValue(time.release_end)}] s。黑实线：流线；红虚线：迹线；蓝点线：脉线。`;
@@ -598,12 +646,14 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     elements.captionPreview.hidden = !hasVector;
     elements.captionPreview.textContent = scene.flow
       ? `热图、向量探针与斜率短线仅表示观察时刻 ${formatValue(scene.flow.time.observation)} s 的冻结速度场；含时流已禁用网格预览。迹线与脉线由服务端按物理时间积分。`
+      : scene.electromagnetic
+        ? "热图、向量探针与斜率短线只表示当前观察时刻的冻结场；已禁用网格预览，冻结网格不表示电磁波传播或真实能量运动。能流线不是光子或粒子轨迹，近区瞬时能流可反向。"
       : "光标周围的蓝色预览束是浏览器对服务端向量网格做双线性插值再用 RK4 积分的结果，不是服务端积分；点击图中位置可把该种子交给服务端得到精确场线。";
     elements.layerToggles.forEach((button) => {
       if (button.dataset.layer === "slopes" || button.dataset.layer === "preview") {
-        const frozenPreview = button.dataset.layer === "preview" && Boolean(scene.flow);
+        const frozenPreview = button.dataset.layer === "preview" && Boolean(scene.flow || scene.electromagnetic);
         button.disabled = !hasVector || frozenPreview;
-        button.title = frozenPreview ? "含时流禁用网格预览；热图与向量仅表示观察时刻的冻结场" : hasVector ? button.dataset.title : "此响应没有向量分量，无法显示";
+        button.title = frozenPreview ? "含时场禁用网格预览；热图与向量仅表示观察时刻的冻结场" : hasVector ? button.dataset.title : "此响应没有向量分量，无法显示";
       }
     });
     renderSeedStatus();
@@ -688,6 +738,7 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       magnetic_shield_cylinder: "理想磁屏蔽筒",
       flow_oscillating: "非定常横向振荡流",
       flow_steady: "定常流对照",
+      dipole_radiation: "振荡电偶极子 · 迟滞场",
     }[value] || "物理场";
   }
 
@@ -740,9 +791,9 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       heatmap: [outcome.hatchCells > 0, outcome.hatchVisible],
       lines: [true, layers.lines],
       arrows: [true, layers.lines && layers.arrows],
-      sources: [scene.sources.length > 0, layers.sources],
+      sources: [scene.sources.length > 0 || Boolean(scene.electromagnetic), layers.sources],
       slopes: [hasVector, layers.slopes],
-      preview: [hasVector && !scene.flow, layers.preview],
+      preview: [hasVector && !scene.flow && !scene.electromagnetic, layers.preview],
       pathlines: [Boolean(scene.flow), layers.pathlines],
       streaklines: [Boolean(scene.flow), layers.streaklines],
       seeds: [hasManualLines, layers.lines],
@@ -752,7 +803,7 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       chip.hidden = !applicable;
       chip.toggleAttribute("data-layer-off", applicable && !shown);
     });
-    elements.captionPreview.toggleAttribute("data-layer-off", !scene.flow && !layers.preview);
+    elements.captionPreview.toggleAttribute("data-layer-off", !scene.flow && !scene.electromagnetic && !layers.preview);
     const draggableSourceCount = sourcesDraggable() ? state.scene.sources.length : 0;
     elements.canvas.dataset.draggable = String(draggableSourceCount > 0);
     const title = state.scene.metadata.title || presetLabel(elements.preset.value);
@@ -760,6 +811,8 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       "aria-label",
       scene.flow
         ? `${title}二维可视化：流线冻结观察时刻，迹线沿物理时间，脉线表示同时刻粒子位置。${scene.flow.release_sites.length} 个固定释放站，坐标 m、速度 m/s、时间 s。`
+        : scene.electromagnetic
+          ? `${title}二维可视化：${elements.captionElectromagnetic.textContent} 能流线不是光子或粒子轨迹。`
         : `${title}二维可视化，共 ${state.scene.metadata.rendered_line_count} 条场线、${draggableSourceCount} 个可移动场源。`,
     );
   }
@@ -855,11 +908,14 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       ? electric
         ? "可增删电荷；拖动标记或输入坐标。"
         : "可增删磁偶极子并编辑面内方向。"
-      : isFlow() ? "释放站在整个释放时间窗内保持固定。" : "固定预设只显示只读几何标记。";
+      : isFlow() ? "释放站在整个释放时间窗内保持固定。"
+        : isElectromagnetic() ? "理想点电偶极子固定在原点，沿 z 轴振荡。" : "固定预设只显示只读几何标记。";
     elements.interactionHelp.textContent = editable
       ? "拖动场源改变位置；移动指针可探测坐标与场强。"
       : isFlow()
         ? "流线冻结观察时刻；迹线跟随同一粒子；脉线是不同释放时刻的粒子在观察时刻的位置集合。三类图层可分别开关，定常流中重合。"
+        : isElectromagnetic()
+          ? "切换 E、B、S 观察不同冻结场；B 使用赤道面显示真实环向磁场线。改变观察时刻重算迟滞场，点击画布添加服务端种子。"
         : "移动指针可探测坐标与场强；固定标记不可移动。";
     if (!editable && sources.length) {
       const fixed = document.createElement("p");
@@ -893,6 +949,8 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
           ? "匀强场的方向与强度由预设固定。"
           : isFlow()
             ? "固定释放站为 (−2, 0) m；蓝点表示释放位置。点击画布可添加站位，同一站位分别用于三类曲线。速度单位 m/s，时间单位 s。"
+          : isElectromagnetic()
+            ? "原点标记表示局域点偶极源；虚线圆是半径 0.12 m 的数值排除边界，不代表有限尺寸天线。偶极矩幅值 10⁻⁹ C·m，频率 100 MHz；源几何和参数固定。"
           : elements.preset.value === "magnetic_shield_cylinder"
             ? "无限长圆柱壳的内外半径、恒定磁导率与横向外场固定；两条虚线圆是材料界面。"
           : MATHEMATICAL_PRESETS.has(elements.preset.value)
@@ -1283,7 +1341,8 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     const node = nearestNode(state.scene.scalar, state.scene.domain, worldX, worldY);
     const coordinateUnit = String(state.scene.domain.unit || "").trim();
     const unitSuffix = coordinateUnit === "1" ? "" : coordinateUnit ? ` ${coordinateUnit}` : "";
-    elements.probePosition.textContent = `x ${formatEditorValue(node.x)}${unitSuffix} · y ${formatEditorValue(node.y)}${unitSuffix}`;
+    const verticalAxis = state.scene.electromagnetic?.vertical_axis || "y";
+    elements.probePosition.textContent = `x ${formatEditorValue(node.x)}${unitSuffix} · ${verticalAxis} ${formatEditorValue(node.y)}${unitSuffix}`;
     elements.probeValue.textContent = `${state.scene.scalar.label || "场强"} ${formatValue(node.value)} ${state.scene.scalar.unit === "1" ? "（无量纲）" : state.scene.scalar.unit || ""}`.trim();
     elements.probeDirection.textContent = formatProbeDirection(node);
     elements.probeDirection.hidden = !elements.probeDirection.textContent;
@@ -1305,7 +1364,8 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     const v = Number(vector.v[node.index]);
     if (!(Math.hypot(u, v) > 0)) return `${vector.label} 为零向量，无方向`;
     const degrees = ((Math.atan2(v, u) * 180) / Math.PI + 360) % 360;
-    return `方向 ${degrees.toFixed(1)}° · ${vector.label}x ${formatValue(u)} · ${vector.label}y ${formatValue(v)}`;
+    const verticalAxis = state.scene.electromagnetic?.vertical_axis || "y";
+    return `方向 ${degrees.toFixed(1)}° · ${vector.label}x ${formatValue(u)} · ${vector.label}${verticalAxis} ${formatValue(v)}`;
   }
 
   // Up and to the right of the pointer by default; to the left when that
@@ -1399,6 +1459,21 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
   });
   [elements.observationTime, elements.initialTime, elements.releaseStart, elements.releaseEnd].forEach((input) => {
     input.addEventListener("change", () => { if (isFlow()) loadScene(); });
+  });
+  elements.emObservable.addEventListener("change", () => {
+    // A different plane changes the meaning of the second seed coordinate.
+    if (isElectromagnetic()) loadScene({ preserveSeeds: false });
+  });
+  elements.emObservationTime.addEventListener("change", () => {
+    if (elements.emObservationTime.validity.valid) elements.emTimeSlider.value = elements.emObservationTime.value;
+    if (isElectromagnetic()) loadScene();
+  });
+  elements.emTimeSlider.addEventListener("input", () => {
+    elements.emObservationTime.value = elements.emTimeSlider.value;
+  });
+  elements.emTimeSlider.addEventListener("change", () => {
+    elements.emObservationTime.value = elements.emTimeSlider.value;
+    if (isElectromagnetic()) scheduleLoad(SLIDER_COMMIT_DELAY);
   });
   elements.runButton.addEventListener("click", () => loadScene());
   elements.retryButton.addEventListener("click", () => loadScene());

@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-11-10
+
+### Added
+
+- `OscillatingElectricDipole` 与 `ElectromagneticSample` 公共模型：同一三维迟滞真空解同时给出 E、B、瞬时 S=E×B/μ₀，保留近场、感应与辐射项；`freeze(time, observable)` 复用场线积分器。
+- `dipole_radiation` 固定 100 MHz 理想简谐预设，合计 25 个；E/S 使用 x–z 子午面、B 使用 x–y 赤道面的真实环向场线。近区瞬时能流可反向，源点保留奇点并以独立排除几何处理。
+- `observable`、`em_time` 请求与 `electromagnetic` 响应契约，时间用秒；前端独立提供 0–10 ns 控制、观察量切换、切片/单位/源说明。缓存区分观察时刻与观察量，网格分辨率变化复用曲线。
+- 独立迟滞势微分、静态/低频与近远场极限、对称性、Poynting 反向及周期平均辐射规律验证，以及 Web/浏览器契约与交互检查。
+
+### Changed
+
+- 迟滞电磁预设禁用冻结网格预览，手动种子仍由 Python 对解析场追踪。说明能流线不是光子或粒子轨迹，永恒简谐稳态不表示突然开启后的完整因果瞬态。
+- 同步 API、教程、参考资料、路线图和版本元数据；自定义表达式、外部数值网格、通用 PDE、三维与粒子动力学继续后置。
+
 ## [0.3.10] - 2026-11-10
 
 ### Added
@@ -218,8 +232,9 @@
 - `density` 定义为整个场景的种子总预算，并在服务端与浏览器提交前共同校验。
 - 场景元数据区分真实不变平面场线与投影流线，并公开播种说明和终止统计。
 
-[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.10...HEAD
-[0.3.10]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.9...HEAD
+[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.11...HEAD
+[0.3.11]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.10...HEAD
+[0.3.10]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.6...v0.3.7

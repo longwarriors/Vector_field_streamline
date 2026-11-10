@@ -61,6 +61,7 @@
                 <option value="magnetic_shield_cylinder">理想磁屏蔽筒</option>
                 <option value="flow_oscillating">非定常横向振荡流</option>
                 <option value="flow_steady">定常流对照</option>
+                <option value="dipole_radiation">振荡电偶极子 · 迟滞场</option>
               </select>
             </div>
           </div>
@@ -234,6 +235,7 @@
               <span class="caption-text">
                 <span id="projection-note">曲线沿局部场方向积分；颜色表示场强大小。</span>
                 <span class="caption-flow" id="caption-flow" hidden></span>
+                <span class="caption-flow" id="caption-electromagnetic" hidden></span>
                 <span class="caption-seed" id="caption-seed">播种：— · 渲染 — / 抑制 —</span>
                 <span class="caption-preview" id="caption-preview" hidden>
                   光标周围的蓝色预览束是浏览器对服务端向量网格做双线性插值再用 RK4 积分的结果，不是服务端积分；点击图中位置可把该种子交给服务端得到精确场线。
@@ -258,6 +260,22 @@
             </div>
 
             <form id="scene-form">
+              <fieldset id="electromagnetic-controls" class="flow-controls" hidden>
+                <legend>迟滞电磁场 · 冻结观察时刻</legend>
+                <label class="em-observable-label" for="em-observable">观察量与真实切片</label>
+                <select id="em-observable">
+                  <option value="electric">瞬时电场 E · x–z 子午面</option>
+                  <option value="magnetic">瞬时磁场 B · x–y 赤道面</option>
+                  <option value="poynting">瞬时能流 S · x–z 子午面</option>
+                </select>
+                <div class="label-row em-time-row">
+                  <label for="em-observation-time">观察时刻 / ns</label>
+                  <input id="em-observation-time" type="number" min="0" max="10" step="any" value="1.25" required>
+                </div>
+                <input id="em-time-slider" type="range" min="0" max="10" step="0.05" value="1.25" aria-label="观察时刻（ns）">
+                <p class="field-help">0–10 ns，1 ns = 10⁻⁹ s；100 MHz 的一个周期为 10 ns。松开滑块或离开输入框后重算冻结场。</p>
+                <p class="source-status" id="em-time-status" role="status"></p>
+              </fieldset>
               <fieldset id="flow-controls" class="flow-controls" hidden>
                 <legend>物理时间 / s</legend>
                 <div class="flow-time-grid">
@@ -364,7 +382,7 @@
                 <li>色标上下限只是显示范围：尖角表示有格点超出范围、按端色显示，精确值请用探针。</li>
                 <li id="guide-arrows">场线上的箭头只标方向：足够长的线按屏幕弧长放 1–3 个，很短的线不放；箭头大小固定，不表示强弱。</li>
                 <li id="guide-density">场线疏密取决于播种方式和预算，不能直接读成场的强弱；圆环为等通量播种，见“播种说明”。</li>
-                <li>探针吸附到离指针最近的网格点：显示该点的坐标和原值（未按色标截断、不插值），图上的小圆点标出这个点；有向量分量时另显示该点的场方向角（从 +x 朝 +y 逆时针）与两个分量。</li>
+                <li id="guide-probe">探针吸附到离指针最近的网格点：显示该点的坐标和原值（未按色标截断、不插值），图上的小圆点标出这个点；有向量分量时另显示该点的场方向角（从 +x 朝 +y 逆时针）与两个分量。</li>
                 <li>“斜率”图层在采样格点上画沿场方向的等长短线：只表示方向，不分正反，也不表示强弱。</li>
                 <li id="guide-preview">光标周围的蓝色预览束是浏览器对向量网格做双线性插值再用 RK4 积分的结果，随采样分辨率变化，不是服务端积分；点击图中位置才把该种子交给服务端算出精确场线（蓝色光晕），手动种子不占播种预算。</li>
                 <li>对数色标上的短刻度是十的整数次幂，读数时按数量级看。</li>
@@ -413,6 +431,10 @@
                 <div id="flow-summary-row" hidden>
                   <dt>粒子终止</dt>
                   <dd id="flow-summary">—</dd>
+                </div>
+                <div id="electromagnetic-summary-row" hidden>
+                  <dt>迟滞场说明</dt>
+                  <dd id="electromagnetic-summary">—</dd>
                 </div>
                 <div>
                   <dt id="manual-summary-label">手动种子</dt>
