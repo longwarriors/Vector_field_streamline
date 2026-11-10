@@ -249,6 +249,131 @@ def _finite_scalar(value: float, name: str) -> float:
     return float(array)
 
 
+class InfiniteWireField(VectorField):
+    r"""Magnetic flux density of parallel, infinitely long ideal wires in 3D.
+
+    ``position`` gives one point on each wire; ``direction`` is their common
+    axis and is normalized internally. A positive ``current`` flows along
+    that axis. Scalar current is broadcast over all supplied positions.
+    Coordinates are in metres, currents in amperes and the result in teslas
+    when permeability is in SI units. This is a filament model, with no wire
+    radius or field softening. Every wire remains a ``NaN`` singularity even
+    at zero current; remove zero-current wires to remove their singularities.
+
+    Collinearity is tested with a product-roundoff bound for the cross
+    product, allowing a point constructed on a rotated wire to remain
+    singular. This bound never enters the field denominator.
+    """
+
+    def __init__(
+        self,
+        current: ArrayLike,
+        position: ArrayLike = (0.0, 0.0, 0.0),
+        *,
+        direction: ArrayLike = (0.0, 0.0, 1.0),
+        permeability: float = mu_0,
+    ) -> None:
+        positions = np.asarray(position, dtype=float)
+        if positions.ndim == 1:
+            positions = positions[np.newaxis, :]
+        if positions.ndim != 2 or positions.shape[1:] != (3,) or positions.shape[0] == 0:
+            raise ValueError("position must have shape (3,) or (n, 3).")
+        if not np.all(np.isfinite(positions)):
+            raise ValueError("wire positions must be finite.")
+        currents = np.asarray(current, dtype=float)
+        if currents.ndim == 0:
+            currents = np.full(positions.shape[0], float(currents))
+        if currents.ndim != 1 or currents.size != positions.shape[0]:
+            raise ValueError("current must be scalar or contain one value per position.")
+        if not np.all(np.isfinite(currents)):
+            raise ValueError("currents must be finite.")
+        axis = np.asarray(direction, dtype=float)
+        if axis.shape != (3,) or not np.all(np.isfinite(axis)):
+            raise ValueError("direction must have shape (3,) and be finite.")
+        axis_scale = float(np.max(np.abs(axis)))
+        if axis_scale == 0.0:
+            raise ValueError("direction must be nonzero.")
+        axis = axis / axis_scale
+        permeability_value = _finite_scalar(permeability, "permeability")
+        if permeability_value <= 0.0:
+            raise ValueError("permeability must be positive.")
+        self._positions = _readonly(positions)
+        self._currents = _readonly(currents)
+        self._direction = _readonly(axis / np.linalg.norm(axis))
+        self._permeability = permeability_value
+
+    @property
+    def dimension(self) -> int:
+        return 3
+
+    @property
+    def positions(self) -> FloatArray:
+        return self._positions
+
+    @property
+    def currents(self) -> FloatArray:
+        return self._currents
+
+    @property
+    def direction(self) -> FloatArray:
+        return self._direction
+
+    @property
+    def permeability(self) -> float:
+        return self._permeability
+
+    def evaluate(self, points: ArrayLike) -> FloatArray:
+        coordinates = _as_points(points, 3)
+        if coordinates.ndim == 1:
+            return self._evaluate_point(coordinates)
+        return self._evaluate_batch(coordinates)
+
+    def _evaluate_point(self, coordinates: FloatArray) -> FloatArray:
+        nx, ny, nz = (float(value) for value in self._direction)
+        result = np.zeros(3, dtype=float)
+        coefficient = self._permeability / (2.0 * math.pi)
+        for position, current in zip(self._positions, self._currents, strict=True):
+            dx, dy, dz = (float(value) for value in coordinates - position)
+            positive = (ny * dz, nz * dx, nx * dy)
+            negative = (nz * dy, nx * dz, ny * dx)
+            cross = tuple(a - b for a, b in zip(positive, negative, strict=True))
+            if all(
+                abs(value) <= 32.0 * _EPSILON * abs(a) + 32.0 * _EPSILON * abs(b)
+                for value, a, b in zip(cross, positive, negative, strict=True)
+            ):
+                return np.full(3, np.nan)
+            radius = math.hypot(*cross)
+            if not (0.0 < radius < math.inf):
+                return self._evaluate_batch(coordinates)
+            magnitude = coefficient * float(current) / radius
+            for index in range(3):
+                result[index] += magnitude * (cross[index] / radius)
+        return result
+
+    def _evaluate_batch(self, coordinates: FloatArray) -> FloatArray:
+        original_shape = coordinates.shape
+        displacement = coordinates.reshape(-1, 3)[:, None, :] - self._positions[None, :, :]
+        # Keeping each product makes the collinearity bound sensitive only
+        # to cancellation, not to unrelated large axial coordinates.
+        positive = self._direction[[1, 2, 0]] * displacement[..., [2, 0, 1]]
+        negative = self._direction[[2, 0, 1]] * displacement[..., [1, 2, 0]]
+        cross = positive - negative
+        # Scale before adding: the two products can each be finite while
+        # their absolute-value sum would overflow and falsely mark a null.
+        singular = np.all(
+            np.abs(cross) <= 32.0 * _EPSILON * np.abs(positive) + 32.0 * _EPSILON * np.abs(negative),
+            axis=-1,
+        )
+        radius = np.hypot(np.hypot(cross[..., 0], cross[..., 1]), cross[..., 2])
+        # Division by radius twice avoids squaring very large/small distances.
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            magnitude = self._permeability / (2.0 * np.pi) * self._currents / radius
+            contributions = magnitude[..., None] * (cross / radius[..., None])
+        values = np.add.reduce(contributions, axis=1)
+        values[np.any(singular, axis=1)] = np.nan
+        return values.reshape(original_shape)
+
+
 class _CircularFilamentGeometry(VectorField):
     """Validated circle geometry shared by the current loop and the charged ring."""
 

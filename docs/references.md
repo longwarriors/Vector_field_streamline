@@ -24,10 +24,14 @@
     - [§5.4 Electric Field](https://openstax.org/books/university-physics-volume-2/pages/5-4-electric-field)；
     - [§5.6 Electric Field Lines](https://openstax.org/books/university-physics-volume-2/pages/5-6-electric-field-lines)；
     - [§12.1 The Biot–Savart Law](https://openstax.org/books/university-physics-volume-2/pages/12-1-the-biot-savart-law)；
+    - [§12.2 Magnetic Field Due to a Thin Straight Wire](https://openstax.org/books/university-physics-volume-2/pages/12-2-magnetic-field-due-to-a-thin-straight-wire)；
     - [§12.4 Magnetic Field of a Current Loop](https://openstax.org/books/university-physics-volume-2/pages/12-4-magnetic-field-of-a-current-loop)；
+    - [§12.6 Solenoids and Toroids](https://openstax.org/books/university-physics-volume-2/pages/12-6-solenoids-and-toroids)；
     - [§16.1 Maxwell’s Equations and Electromagnetic Waves](https://openstax.org/books/university-physics-volume-2/pages/16-1-maxwells-equations-and-electromagnetic-waves)。
 
 5. J. C. Simpson, J. E. Lane, C. D. Immer, R. C. Youngquist, [“Simple Analytic Expressions for the Magnetic Field of a Circular Current Loop”](https://ntrs.nasa.gov/citations/20010038494), NASA Technical Reports Server, 2001。给出理想细线圈在导体外的笛卡尔、柱坐标和球坐标解析式。
+
+    线圈组另参见 DESY 的 [Helmholtz coils](https://photon-science.desy.de/research/technical_groups/undulators/the_fs_us_magnetic_measurement_lab/helmholtz_coils/index_eng.html)：同轴等半径线圈在间距等于半径时产生中心附近近匀强场。本项目有限螺线管采用离散圆环叠加，不包含螺旋导线、引线和磁芯。
 
 6. G. I. Ogilvie, [“Astrophysical fluid dynamics”](https://doi.org/10.1017/S0022377816000489), *Journal of Plasma Physics* **82** (2016)。§9.2 讨论轴对称磁通函数 $\psi=\rho A_\phi$。
 

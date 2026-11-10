@@ -16,12 +16,14 @@ def main() -> None:
         try:
             os.chdir(temporary_directory)
 
-            from vectorviz import FieldLineTracer, UniformField, __version__
+            from vectorviz import FieldLineTracer, InfiniteWireField, UniformField, __version__
             from vectorviz.web.app import STATIC_DIR, create_app
 
             assert version("vector-field-streamline") == __version__
             assert FieldLineTracer.__module__ == "vectorviz.tracing"
             assert UniformField.__module__ == "vectorviz.fields"
+            assert InfiniteWireField.__module__ == "vectorviz.fields"
+            assert InfiniteWireField(1.0)((1.0, 0.0, 0.0))[1] > 0.0
             for asset in (
                 "index.html",
                 "app.js",

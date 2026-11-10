@@ -11,8 +11,9 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.types import Scope
 
 from vectorviz import __version__
 
@@ -25,6 +26,18 @@ from .schemas import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
+
+
+class _RevalidatingStaticFiles(StaticFiles):
+    """Revalidate unversioned HTML and module imports before browser reuse."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        # Include 304 responses: a fresh document must not use a heuristically
+        # cached validator from an older release against the current API.
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
 
 SOURCE_SEPARATION_CAPABILITY = SourceSeparationCapability(
     exclusive_minimum=MIN_SOURCE_SEPARATION,
@@ -72,6 +85,36 @@ PRESETS = [
         id="current_loop",
         label="圆形电流线圈",
         description="固定理想细圆环在 z=0 子午面中的真实磁力线。",
+    ),
+    PresetPayload(
+        id="straight_wire",
+        label="长直导线",
+        description="无限长直导线的横截面磁场；同心闭环方向遵循右手定则。",
+    ),
+    PresetPayload(
+        id="parallel_wires",
+        label="同向双导线",
+        description="两根无限长平行导线通同向电流；中点为零场点。",
+    ),
+    PresetPayload(
+        id="antiparallel_wires",
+        label="反向双导线",
+        description="两根无限长平行导线通反向电流；两导线之间的磁场增强。",
+    ),
+    PresetPayload(
+        id="solenoid",
+        label="有限螺线管",
+        description="有限个同轴理想圆环叠加的离散绕组近似；展示内部轴向场和外部回流。",
+    ),
+    PresetPayload(
+        id="helmholtz_coils",
+        label="Helmholtz 线圈",
+        description="同向电流的两个同轴圆环，间距等于半径；中心附近磁场较均匀。",
+    ),
+    PresetPayload(
+        id="anti_helmholtz_coils",
+        label="反 Helmholtz 线圈",
+        description="两个同轴圆环通反向电流；中心为零场点，附近形成磁场梯度。",
     ),
     PresetPayload(
         id="charged_ring",
@@ -146,7 +189,7 @@ def create_app() -> FastAPI:
 
     if not STATIC_DIR.is_dir():
         raise RuntimeError(f"browser assets are missing: {STATIC_DIR}")
-    application.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="frontend")
+    application.mount("/", _RevalidatingStaticFiles(directory=STATIC_DIR, html=True), name="frontend")
     return application
 
 

@@ -225,6 +225,40 @@ NASA 技术报告给出了多种坐标系下的等价公式，并把定义域限
 
 理想导线本身仍是奇点，解析公式并不会让它变成普通采样点。三维追踪可用 `ToroidalExclusion` 在圆形中心线周围定义有限半径终止管；这个半径只属于 mask/事件几何，不是给解析场加入有限线径或 epsilon 软化。
 
+## 直导线、有限螺线管与线圈组
+
+无限长细直导线沿单位向量 $\widehat{\mathbf d}$，令 $\mathbf r_\perp$ 为观测点到导线的垂直位移。它在导线外产生
+
+$$
+\mathbf B(\mathbf x)=\frac{\mu I}{2\pi}
+\frac{\widehat{\mathbf d}\times\mathbf r_\perp}{\lVert\mathbf r_\perp\rVert^2}.
+$$
+
+因此 $|B|=\mu|I|/(2\pi\rho)$，方向遵守右手定则，垂直截面上的场线是同心圆。[^openstax-wire] `InfiniteWireField` 支持一根或多根平行导线，参考位置用 m、电流用 A、输出用 T；导线上的点返回 `NaN`，即使电流为零也保留几何奇点。
+
+v0.3.8 的磁静态预设采用以下固定参数，均显示真实三维场在 z=0 不变平面上的限制：
+
+| 预设 | 几何和电流 | 主要观察内容 |
+|---|---|---|
+| `straight_wire` | 原点处沿 +z 的 1 A 无限长导线 | 同心闭合场线、右手定则与 $1/\rho$ 衰减 |
+| `parallel_wires` | x=±0.8 m、y=0 的两根 +z 导线，各 1 A | 中心零场点、分别绕单根和同时包围两根的线族 |
+| `antiparallel_wires` | 相同位置，左根 +z、右根 −z，各 1 A | 两线间磁场相加，外部相消 |
+| `solenoid` | 半径 1 m、轴沿 y 的 8 个同向圆环，中心在 y=−1.2 至 1.2 m 等距分布，各 1 A | 有限绕组内部场和外部回流 |
+| `helmholtz_coils` | 半径 1 m、中心 y=±0.5 m 的同轴圆环，各 1 A、同向 | 中心附近近匀强场 |
+| `anti_helmholtz_coils` | 相同线圈几何，电流方向相反 | 中心零场点与磁场梯度 |
+
+直导线的截面排除半径为 0.12 m；新线圈预设每个导线截面的排除半径为 0.08 m。它们只是积分与显示的排除尺度，不是有限截面导线的物理模型。⊙ 表示沿 +z 的电流，⊗ 表示沿 −z 的电流；一对线圈截面属于同一个圆环。
+
+有限螺线管由 `CompositeField` 叠加 8 个 `CircularLoopField`。这是有限个闭合圆环的离散绕组近似，没有螺旋导线的轴向电流、引线或磁芯。各圈半径为 $R$、中心轴向坐标为 $y_j$ 时，轴线上可独立核对
+
+$$
+B_y(0,y,0)=\sum_j\frac{\mu_0 I_jR^2}{2[R^2+(y-y_j)^2]^{3/2}}.
+$$
+
+Helmholtz 线圈的间距等于半径。[^desy-helmholtz] 同向时中心场为 $(4/5)^{3/2}\mu_0I/R$，轴向二阶导数为零；反向时中心场为零而具有非零一阶梯度。这里的“近匀强”只描述中心附近，不能把整个计算域当作匀强场。
+
+这六个预设使用 `coverage` 播种：选择不同半径或不同线族来展示结构，不宣称相邻线代表相等磁通。闭合检测、手动播种与双端终止统计沿用现有追踪器。磁力线没有普通端点，但有限图框、排除区域和零场点仍会截断图上的曲线；`domain_exit` 不表示磁场在那里消失。
+
 ## 用磁通函数画轴对称场线
 
 对轴对称场，取矢势的环向分量 $A_\phi(\rho,z)$，定义
@@ -376,6 +410,8 @@ vectors = field.evaluate(points)  # points.shape == vectors.shape == (..., D)
 [^mallinson-one-sided]: J. C. Mallinson, [“One-Sided Fluxes—A Magnetic Curiosity?”](https://doi.org/10.1109/TMAG.1973.1067714), *IEEE Transactions on Magnetics* 9 (1973), 678–682。论文直接求解恒幅旋转磁化的平面结构，并说明旋转方向如何选择弱场侧。
 [^halbach-multipole]: K. Halbach, [“Design of Permanent Multipole Magnets with Oriented Rare Earth Cobalt Material”](https://doi.org/10.1016/0029-554X(80)90094-4), *Nuclear Instruments and Methods* 169 (1980), 1–10。
 [^openstax-current-loop]: OpenStax, [§12.1 Biot–Savart Law](https://openstax.org/books/university-physics-volume-2/pages/12-1-the-biot-savart-law) 与 [§12.4 Magnetic Field of a Current Loop](https://openstax.org/books/university-physics-volume-2/pages/12-4-magnetic-field-of-a-current-loop)。
+[^openstax-wire]: OpenStax, [§12.2 Magnetic Field Due to a Thin Straight Wire](https://openstax.org/books/university-physics-volume-2/pages/12-2-magnetic-field-due-to-a-thin-straight-wire)。
+[^desy-helmholtz]: DESY, [Helmholtz coils](https://photon-science.desy.de/research/technical_groups/undulators/the_fs_us_magnetic_measurement_lab/helmholtz_coils/index_eng.html)，等半径、间距等于半径的线圈对。
 [^nasa-loop]: J. C. Simpson et al., [“Simple Analytic Expressions for the Magnetic Field of a Circular Current Loop”](https://ntrs.nasa.gov/citations/20010038494), NASA Technical Reports Server, 2001。
 [^scipy-elliptic]: SciPy，[`ellipk`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipk.html)、[`ellipe`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipe.html) 与 [`ellipkm1`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipkm1.html)；前两者使用参数 $m$，后者直接使用 $p=1-m$。
 [^jackson-sphere]: J. D. Jackson, *Classical Electrodynamics*, 3rd ed., Wiley 1999, §4.4，匀强场中的介质球；导体球是 $\varepsilon_r\to\infty$ 的极限。

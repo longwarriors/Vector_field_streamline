@@ -14,6 +14,12 @@ export const MARKER_KINDS = new Set(["wire_out", "wire_into", "ring_charge"]);
 
 export const FIXED_MARKER_KINDS = Object.freeze({
   current_loop: ["wire_into", "wire_out"],
+  straight_wire: ["wire_out"],
+  parallel_wires: ["wire_out", "wire_out"],
+  antiparallel_wires: ["wire_into", "wire_out"],
+  solenoid: [...Array(8).fill("wire_into"), ...Array(8).fill("wire_out")],
+  helmholtz_coils: ["wire_into", "wire_into", "wire_out", "wire_out"],
+  anti_helmholtz_coils: ["wire_into", "wire_into", "wire_out", "wire_out"],
   charged_ring: ["ring_charge", "ring_charge"],
 });
 
@@ -163,7 +169,7 @@ export function validateScene(scene, preset, expected = {}) {
   });
   const markerSources = scene.sources.filter(({ kind }) => MARKER_KINDS.has(kind));
   const expectedMarkers = FIXED_MARKER_KINDS[preset];
-  // A fixed preset returns exactly its two markers with one shared strength;
+  // Each fixed preset returns its own marker set with one shared magnitude;
   // every other preset returns no read-only marker at all.
   const validFixedMarkers = expectedMarkers
     ? markerSources.length === expectedMarkers.length &&

@@ -571,6 +571,12 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       magnetic_dipole: "磁偶极子场",
       halbach_array: "Halbach 阵列磁场",
       current_loop: "圆形电流线圈磁场",
+      straight_wire: "长直导线磁场",
+      parallel_wires: "同向双导线磁场",
+      antiparallel_wires: "反向双导线磁场",
+      solenoid: "有限螺线管磁场",
+      helmholtz_coils: "Helmholtz 线圈磁场",
+      anti_helmholtz_coils: "反 Helmholtz 线圈磁场",
       charged_ring: "带电圆环电场",
       dielectric_sphere: "介质球电场",
       conducting_sphere: "导体球电场",
@@ -743,10 +749,17 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     if (!editable && sources.length) {
       const fixed = document.createElement("p");
       fixed.className = "fixed-sources-note";
-      fixed.textContent =
-        preset === "charged_ring"
-          ? "两个标记是同一带电圆环的截面位置，电荷与位置由预设固定、不可移动。"
-          : "两个标记是同一圆环的截面位置，电流与位置由预设固定、不可移动。";
+      const fixedNotes = {
+        charged_ring: "两个标记是同一带电圆环的截面位置，电荷与位置由预设固定、不可移动。",
+        current_loop: "两个标记是同一圆环的截面位置，电流与位置由预设固定、不可移动。",
+        straight_wire: "标记是无限长直导线的横截面；电流与位置由预设固定、不可移动。",
+        parallel_wires: "两个标记分别是两根无限长直导线的横截面；电流同向，电流与位置由预设固定、不可移动。",
+        antiparallel_wires: "两个标记分别是两根无限长直导线的横截面；电流反向，电流与位置由预设固定、不可移动。",
+        solenoid: "每一对左右标记表示一个圆环的截面；有限螺线管采用离散圆环绕组近似，电流与位置由预设固定、不可移动。",
+        helmholtz_coils: "每一对左右标记表示一个圆环的截面；两个圆环电流同向，间距等于半径，电流与位置由预设固定、不可移动。",
+        anti_helmholtz_coils: "每一对左右标记表示一个圆环的截面；两个圆环电流反向，电流与位置由预设固定、不可移动。",
+      };
+      fixed.textContent = fixedNotes[preset] || "场源几何与强度由预设固定、不可移动。";
       elements.sourceEditorList.append(fixed);
       sources.forEach((source, index) => {
         const row = document.createElement("div");

@@ -1,6 +1,6 @@
 """VectorViz: reusable scientific vector-field models and field-line tracing."""
 
-__version__ = "0.3.7"
+__version__ = "0.3.8"
 
 from .core import Domain, ExclusionRegion, SphericalExclusion, ToroidalExclusion, VectorField
 from .fields import (
@@ -8,6 +8,7 @@ from .fields import (
     CircularLoopField,
     CompositeField,
     DielectricSphereField,
+    InfiniteWireField,
     MagneticDipoleField,
     PointChargeField,
     UniformField,
@@ -30,6 +31,7 @@ __all__ = [
     "Domain",
     "ExclusionRegion",
     "FieldLineTracer",
+    "InfiniteWireField",
     "MagneticDipoleField",
     "PointChargeField",
     "SphericalExclusion",

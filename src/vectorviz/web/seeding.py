@@ -124,6 +124,34 @@ def allocate_seed_counts(strengths: ArrayLike, total: int) -> NDArray[np.int64]:
     return counts
 
 
+def coverage_segment_jobs(
+    segments: ArrayLike, total: int, *, weights: ArrayLike | None = None
+) -> list[TraceJob]:
+    """Place distinct midpoint samples along prescribed coverage segments.
+
+    Segment weights only allocate the integer budget; they are not flux
+    weights. Endpoints are excluded so a segment can end at a separatrix
+    without deliberately seeding its null point.
+    """
+
+    rails = np.asarray(segments, dtype=float)
+    if rails.ndim != 3 or rails.shape[1:] != (2, 2) or rails.shape[0] == 0:
+        raise ValueError("segments must have shape (n, 2, 2)")
+    if not np.all(np.isfinite(rails)) or np.any(np.all(rails[:, 0] == rails[:, 1], axis=1)):
+        raise ValueError("segments must have finite, distinct endpoints")
+    shares = np.ones(len(rails)) if weights is None else np.asarray(weights, dtype=float)
+    if shares.shape != (len(rails),) or np.any(shares <= 0.0):
+        raise ValueError("weights must provide one positive value per segment")
+    counts = allocate_seed_counts(shares, total)
+    jobs = []
+    for segment, count in zip(rails, counts, strict=True):
+        fractions = (np.arange(count) + 0.5) / count
+        for fraction in fractions:
+            seed = segment[0] + fraction * (segment[1] - segment[0])
+            jobs.append(TraceJob(tuple(seed), TraceDirection.BOTH))
+    return jobs
+
+
 def _materialize_sources(indexed_sources: IndexedSources) -> tuple[tuple[int, _SourceLike], ...]:
     sources = tuple((_source_index(index), source) for index, source in indexed_sources)
     if not sources:
@@ -509,10 +537,13 @@ def sphere_equal_flux_jobs(
         raise ValueError("insets must be finite and non-negative")
     edge_x = float(domain.lower[0]) + inset_x
     center_y = float(sphere.center[1])
-    height_limit = min(
-        float(domain.upper[1]) - center_y,
-        center_y - float(domain.lower[1]),
-    ) - inset_y
+    height_limit = (
+        min(
+            float(domain.upper[1]) - center_y,
+            center_y - float(domain.lower[1]),
+        )
+        - inset_y
+    )
     if height_limit <= 0.0:
         raise ValueError("the sphere centre must leave seedable height on both sides")
     if np.hypot(edge_x - float(sphere.center[0]), 0.0) <= sphere.radius:

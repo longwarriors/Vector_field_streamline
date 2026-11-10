@@ -13,6 +13,7 @@ from vectorviz import (
     Domain,
     ExclusionRegion,
     FieldLineTracer,
+    InfiniteWireField,
     MagneticDipoleField,
     PointChargeField,
     SphericalExclusion,
@@ -61,6 +62,7 @@ vectors = field.evaluate(points)
 | `UniformField` | 匀强向量场与积分器基准 |
 | `PointChargeField` | 二维或三维点电荷电场 |
 | `MagneticDipoleField` | 磁偶极近似与远场模型 |
+| `InfiniteWireField` | 一根或多根平行无限长理想细直导线的三维磁感应强度 |
 | `CircularLoopField` | 理想细圆电流环的三维磁感应强度 |
 | `ChargedRingField` | 均匀带电理想细圆环的三维电场，圆环的静电孪生 |
 | `DielectricSphereField` | 匀强外场中介质球或导体球的三维电场，分段解析 |
@@ -69,6 +71,21 @@ vectors = field.evaluate(points)
 所有物理场内部应采用一致单位。输入源参数的单位与坐标系不得只存在于图标题里。
 
 奇点集合只由源几何决定：`PointChargeField` 与 `MagneticDipoleField` 在源位置、`CircularLoopField` 与 `ChargedRingField` 在细环上都返回显式 `NaN`，即使该源的电荷、磁矩或电流为 0。零强度源在 Web 场景层构建场之前就被剔除；核心不会把源点软化成普通采样点。
+
+#### `InfiniteWireField`
+
+```python
+wires = InfiniteWireField(
+    current=[1.0, -1.0],
+    position=[[-0.8, 0.0, 0.0], [0.8, 0.0, 0.0]],
+    direction=(0.0, 0.0, 1.0),
+)
+field = wires.evaluate(points)
+```
+
+`current` 使用 A，可为标量或与导线数一致的一维数组；`position` 是每根导线上的参考点，单位 m，形状为 `(3,)` 或 `(n, 3)`。所有导线共享非零 `direction`，构造器将它归一化；正电流沿该方向，磁场遵守右手定则。默认 `permeability` 为 `scipy.constants.mu_0`，输出为 T。`positions`、`currents` 与 `direction` 是只读数组。
+
+整个理想导线都是奇点，零电流也保留这项几何定义；奇点返回 `NaN`。模型没有有限导线端部、回流路径或有限线径。浏览器显示垂直于导线的真实不变平面，排除圆只用于追踪和遮罩。
 
 #### `CircularLoopField`
 
@@ -192,7 +209,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 ```json
 {
   "status": "ok",
-  "version": "0.3.7"
+  "version": "0.3.8"
 }
 ```
 
@@ -225,6 +242,12 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 - `magnetic_dipole`
 - `halbach_array`
 - `current_loop`
+- `straight_wire`
+- `parallel_wires`
+- `antiparallel_wires`
+- `solenoid`
+- `helmholtz_coils`
+- `anti_helmholtz_coils`
 - `charged_ring`
 - `dielectric_sphere`
 - `conducting_sphere`
@@ -232,7 +255,9 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 
 此端点是可用预设及其交互能力的权威目录；当前无构建客户端随版本静态提供同一组选项，并由契约测试防止两边漂移。客户端不应假设列表永久不变。
 
-`electric_dipole`、`electric_quadrupole`、`electric_hexagon`、`electric_hexagon_alternating`、`magnetic_dipole` 与 `halbach_array` 是可编辑点源预设，因此返回 `source_separation`。`exclusive_minimum: 0.322` 表示任意两个实际拥有排除区域的源中心距离必须**严格大于** 0.322 m；等于该值仍冲突。固定的 `current_loop`、`charged_ring`、`dielectric_sphere`、`conducting_sphere` 与 `uniform` 没有这项能力，响应省略该字段；兼容客户端也应把缺失或 `null` 都解释为“不提供源间距交互”。
+v0.3.8 新增的六个磁静态预设均为固定几何，不提供 `source_separation`，不接受 `sources` 覆盖（返回 422）；`density`、`resolution` 和手动 `seeds` 与其他预设相同。直导线标记表示横截面，螺线管与线圈组的每一对标记表示同一个圆环的两个截面；均复用 `wire_out`（⊙，电流沿 +z）与 `wire_into`（⊗，沿 −z），`strength` 是电流大小，单位 A。场和向量网格的量为 B，单位 T，曲线是 z=0 不变平面中的真实磁场线。播种为 `coverage`，图中的线密度不代表磁感应强度；各场景的具体布点和近似由 `metadata` 说明。闭合终止仍使用既有的 `closed_loop` 契约。
+
+`electric_dipole`、`electric_quadrupole`、`electric_hexagon`、`electric_hexagon_alternating`、`magnetic_dipole` 与 `halbach_array` 是可编辑点源预设，因此返回 `source_separation`。`exclusive_minimum: 0.322` 表示任意两个实际拥有排除区域的源中心距离必须**严格大于** 0.322 m；等于该值仍冲突。其余固定几何预设没有这项能力，响应省略该字段；兼容客户端也应把缺失或 `null` 都解释为“不提供源间距交互”。
 
 ### `POST /api/scene`
 
@@ -258,7 +283,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 | `preset` | 否 | `/api/presets` 返回的稳定标识符；默认 `electric_dipole` |
 | `density` | 否 | 种子总预算，整数范围 6–40，默认 18，不代表物理场强；每个参与播种的源至少分配 1 个种子 |
 | `resolution` | 否 | 两个方向共同使用的标量与向量网格分辨率，整数范围 32–144 |
-| `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；电四极子、六个正电荷和三对交替电荷预设接受 1–8 个任意符号的电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及固定的 `current_loop`/`charged_ring`/`dielectric_sphere`/`conducting_sphere`/`uniform` 预设 override 会被拒绝 |
+| `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；电四极子、六个正电荷和三对交替电荷预设接受 1–8 个任意符号的电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及其他固定几何预设的 override 会被拒绝 |
 | `seeds` | 否 | 1–16 个手动种子 `{x, y}`，坐标单位 m、范围 $[-3,3]$（即计算域）；每个种子在预设预算之外双向追踪一次，所有预设都接受；显式空列表、未知字段和越界坐标会被拒绝 |
 
 `sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m，范围均为 $[-2.8,2.8]$。请求模型 `SourceInput.kind` 只接受 `positive`、`negative`、`dipole`、`uniform`；响应专用的 `wire_out`/`wire_into`/`ring_charge` 不能提交。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。单位由预设决定，请求不得提交 `strength_unit`。
@@ -286,6 +311,7 @@ $$
 - 电荷与自定义多磁偶极使用逐源几何覆盖，`seed_mode: "coverage"`；
 - 单个 active 磁偶极沿随参数角度旋转的赤道线按距离等距覆盖并双向追踪，`seed_mode: "coverage"`；负强度会反转实际磁矩，但不会改变同一条赤道几何；
 - 默认 Halbach 在 $x\in[-2.1,2.1]$、$y=\pm0.45$ m 的两条平行轨道上等距覆盖并双向追踪；上轨分到 $\lceil density/2\rceil$ 个 job，下轨分到 $\lfloor density/2\rfloor$ 个，`seed_mode: "coverage"`；
+- v0.3.8 的直导线、双导线、螺线管与线圈组使用 `coverage`：按不同半径、主磁通族或局部闭环族选择种子；预算与显示电流截面数无关，允许 `density=6` 的 8 圈螺线管；这些预设不宣称等通量；
 - 圆环在环内赤道段调用公开的 `CircularLoopField.flux_function()`，以求根方式选择等 $\psi$ 的镜像轮廓；奇数预算再增加一条轴线特征线，整体 `seed_mode: "equal_flux"`；
 - 带电圆环在两个截面周围半径 0.162 m 的种子圆上调用公开的 `ChargedRingField.flux_function()`：环外赤道割线上下的 $\Psi$ 从 $+Q/(4\pi\varepsilon_0)$ 单调降到 $-Q/(4\pi\varepsilon_0)$，取 $\lfloor density/2\rfloor$ 个等分区间的中点为目标求根，再镜像到另一截面；目标恰为 0 的种子直接放在环内赤道上，因为它通向中心鞍点，任何离轴舍入都会把它偏转。奇数预算另加一条从 $+x$ 截面沿环面向外的赤道射线（上下两半场的分界线），整体 `seed_mode: "equal_flux"`；
 - 介质球与导体球在左边界 $x=-3+10^{-4}$ m 上调用公开的 `DielectricSphereField.flux_function()`：从 $\Psi_D/\lfloor density/2\rfloor$ 到边界最大可用高度 $y=2.88$ m 处的 $\Psi_D$ 等分取目标求根，再镜像到轴两侧；奇数预算另加轴线（$\Psi_D=0$ 的成员），整体 `seed_mode: "equal_flux"`。介质球的线在球面折射后继续，导体球的线在球面以 `null_field` 终止；
@@ -499,6 +525,10 @@ $$
       heading_level: 4
 
 ::: vectorviz.fields.MagneticDipoleField
+    options:
+      heading_level: 4
+
+::: vectorviz.fields.InfiniteWireField
     options:
       heading_level: 4
 

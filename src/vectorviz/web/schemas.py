@@ -21,6 +21,12 @@ PresetName = Literal[
     "magnetic_dipole",
     "halbach_array",
     "current_loop",
+    "straight_wire",
+    "parallel_wires",
+    "antiparallel_wires",
+    "solenoid",
+    "helmholtz_coils",
+    "anti_helmholtz_coils",
     "charged_ring",
     "dielectric_sphere",
     "conducting_sphere",
@@ -29,7 +35,19 @@ PresetName = Literal[
 # Presets whose geometry is fixed by the server and returned as read-only
 # markers or regions.
 FIXED_PRESETS = frozenset(
-    {"current_loop", "charged_ring", "dielectric_sphere", "conducting_sphere", "uniform"}
+    {
+        "current_loop",
+        "charged_ring",
+        "dielectric_sphere",
+        "conducting_sphere",
+        "uniform",
+        "straight_wire",
+        "parallel_wires",
+        "antiparallel_wires",
+        "solenoid",
+        "helmholtz_coils",
+        "anti_helmholtz_coils",
+    }
 )
 RegionKind = Literal["dielectric_sphere", "conducting_sphere"]
 # Presets that share the point-charge contract: charge-only overrides,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import threading
 from collections import Counter, OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import numpy as np
@@ -15,7 +15,9 @@ from vectorviz.core import Domain, SphericalExclusion, VectorField
 from vectorviz.fields import (
     ChargedRingField,
     CircularLoopField,
+    CompositeField,
     DielectricSphereField,
+    InfiniteWireField,
     MagneticDipoleField,
     PointChargeField,
     UniformField,
@@ -47,6 +49,7 @@ from .schemas import (
 from .seeding import (
     TraceJob,
     charged_ring_equal_flux_jobs,
+    coverage_segment_jobs,
     current_loop_equal_flux_jobs,
     electric_source_jobs,
     halbach_rail_jobs,
@@ -63,6 +66,13 @@ MIN_SOURCE_SEPARATION = SOURCE_RADIUS + SOURCE_SEED_RADIUS
 CURRENT_LOOP_RADIUS = 1.0
 CURRENT_LOOP_CURRENT = 1.0
 CURRENT_LOOP_EXCLUSION_RADIUS = 0.16
+WIRE_EXCLUSION_RADIUS = 0.12
+WIRE_HALF_SEPARATION = 0.8
+COIL_RADIUS = 1.0
+COIL_EXCLUSION_RADIUS = 0.08
+SOLENOID_TURNS = 8
+SOLENOID_HALF_LENGTH = 1.2
+COIL_HALF_SEPARATION = 0.5
 CHARGED_RING_RADIUS = 1.0
 CHARGED_RING_CHARGE_NC = 1.0
 CHARGED_RING_EXCLUSION_RADIUS = 0.16
@@ -113,6 +123,43 @@ CURRENT_LOOP_TRACE_OPTIONS = TraceOptions(
     closure_min_arc_length=0.6,
     closure_tangent_cosine=0.99,
 )
+
+# Large common loops of a finite winding can be longer than a single-loop
+# orbit. The same closure test still stops a completed orbit after one turn.
+MAGNETIC_COVERAGE_TRACE_OPTIONS = replace(
+    CURRENT_LOOP_TRACE_OPTIONS, max_arc_length=32.0, closure_min_arc_length=0.2
+)
+
+
+class _PlanarCurrentField(VectorField):
+    """An invariant z=0 slice of parallel wires or coaxial circular coils."""
+
+    def __init__(self, field: InfiniteWireField | tuple[CircularLoopField, ...]) -> None:
+        if isinstance(field, InfiniteWireField):
+            if np.any(field.direction[:2] != 0.0):
+                raise ValueError("wires must be perpendicular to the z=0 plane")
+            self._field = field
+        else:
+            if not field or any(
+                not isinstance(loop, CircularLoopField)
+                or np.any(loop.center[[0, 2]] != 0.0)
+                or np.any(loop.normal[[0, 2]] != 0.0)
+                for loop in field
+            ):
+                raise ValueError("coils must share the y axis in the z=0 meridional plane")
+            self._field = CompositeField(field)
+
+    @property
+    def dimension(self) -> int:
+        return 2
+
+    def evaluate(self, points: object) -> NDArray[np.float64]:
+        coordinates = np.asarray(points, dtype=float)
+        if coordinates.ndim == 0 or coordinates.shape[-1] != 2:
+            raise ValueError(f"points must have shape (..., 2); got {coordinates.shape}.")
+        embedded = np.zeros((*coordinates.shape[:-1], 3), dtype=float)
+        embedded[..., :2] = coordinates
+        return self._field.evaluate(embedded)[..., :2]
 
 
 class _PlanarMagneticDipoleField(VectorField):
@@ -241,6 +288,148 @@ def _charge(x: float, y: float, sign: int) -> SourceInput:
     return SourceInput(x=float(x), y=float(y), kind=kind, strength=float(sign))
 
 
+def _wire_model(request: SceneRequest) -> _SceneModel:
+    half = WIRE_HALF_SEPARATION
+    if request.preset == "straight_wire":
+        centers = ((0.0, 0.0),)
+        currents = (1.0,)
+        segments = (((0.2, 0.0), (2.85, 0.0)),)
+        weights = None
+        title = "无限长直导线的圆形磁力线"
+        description = "从正 x 半轴等距覆盖不同半径的圆形闭环；线密度不表示磁感应强度。"
+    elif request.preset == "parallel_wires":
+        centers = ((-half, 0.0), (half, 0.0))
+        currents = (1.0, 1.0)
+        # For equal parallel currents the flux contours are Cassini ovals.
+        # Their separatrix intersects the outer x axis at sqrt(2) * half.
+        split = math.sqrt(2.0) * half
+        segments = (
+            ((-half - 0.14, 0.0), (-split + 0.035, 0.0)),
+            ((half + 0.14, 0.0), (split - 0.035, 0.0)),
+            ((split + 0.06, 0.0), (2.85, 0.0)),
+        )
+        weights = (1.0, 1.0, 2.0)
+        title = "同向双平行导线的磁力线"
+        description = (
+            "分别覆盖两根导线周围的局部闭环与包围两根导线的共同闭环，"
+            "避开中心零场分界线；线密度不表示磁感应强度。"
+        )
+    else:
+        centers = ((-half, 0.0), (half, 0.0))
+        currents = (1.0, -1.0)
+        segments = (
+            ((-0.05, 0.0), (-half + 0.16, 0.0)),
+            ((0.05, 0.0), (half - 0.16, 0.0)),
+        )
+        weights = None
+        title = "反向双平行导线的磁力线"
+        description = (
+            "从导线间隙的左右两段等距覆盖各自的闭环族；大环会离开有限视窗，线密度不表示磁感应强度。"
+        )
+    positions = [(x, y, 0.0) for x, y in centers]
+    field = InfiniteWireField(currents, positions)
+    markers = tuple(
+        SourcePayload(
+            x=x,
+            y=y,
+            kind="wire_out" if current > 0.0 else "wire_into",
+            strength=abs(current),
+            strength_unit="A",
+        )
+        for (x, y), current in zip(centers, currents, strict=True)
+    )
+    return _SceneModel(
+        field=_PlanarCurrentField(field),
+        sources=markers,
+        exclusions=(SphericalExclusion(centers, WIRE_EXCLUSION_RADIUS),),
+        trace_jobs=tuple(coverage_segment_jobs(segments, request.density, weights=weights)),
+        trace_options=MAGNETIC_COVERAGE_TRACE_OPTIONS,
+        scalar_label="|B|",
+        scalar_unit="T",
+        title=title,
+        field_model="沿 z 方向的无限长理想细直导线磁场叠加；电流大小 1 A",
+        projection_note="z=0 横截面是磁场的不变平面，所示曲线是真实三维磁力线。",
+        seed_mode=SeedMode.COVERAGE,
+        seed_description=description,
+    )
+
+
+def _coil_model(request: SceneRequest) -> _SceneModel:
+    opposed = request.preset == "anti_helmholtz_coils"
+    if request.preset == "solenoid":
+        positions = np.linspace(-SOLENOID_HALF_LENGTH, SOLENOID_HALF_LENGTH, SOLENOID_TURNS)
+        currents = np.ones(SOLENOID_TURNS)
+        title = "有限长螺线管的磁力线"
+        description = (
+            "8 个半径 1 m、中心沿 y 轴在 [-1.2, 1.2] m 等距排列、各通 1 A 的"
+            "理想圆电流环叠加；是离散绕组近似，未建模螺旋连接线或有限线径"
+        )
+    else:
+        positions = np.array((-COIL_HALF_SEPARATION, COIL_HALF_SEPARATION))
+        currents = np.array((1.0, -1.0 if opposed else 1.0))
+        title = "反 Helmholtz 线圈的磁力线" if opposed else "Helmholtz 线圈的磁力线"
+        description = "两个半径 1 m、中心位于 y=±0.5 m 的同轴理想圆电流环，" + (
+            "电流为 +1 A 与 -1 A；中心为零场点" if opposed else "同向电流各 1 A；中心近匀强"
+        )
+    loops = tuple(
+        CircularLoopField(current, COIL_RADIUS, center=(0.0, y, 0.0), normal=(0.0, 1.0, 0.0))
+        for y, current in zip(positions, currents, strict=True)
+    )
+    markers = tuple(
+        SourcePayload(
+            x=x,
+            y=float(y),
+            kind="wire_out" if -x * current > 0.0 else "wire_into",
+            strength=abs(float(current)),
+            strength_unit="A",
+        )
+        for y, current in zip(positions, currents, strict=True)
+        for x in (-COIL_RADIUS, COIL_RADIUS)
+    )
+    if opposed:
+        segments = tuple(
+            ((sign * 0.08, float(y)), (sign * 0.90, float(y)))
+            for y in positions
+            for sign in (-1, 1)
+        )
+        weights = None
+    else:
+        # The finite viewport cuts the weak, far-returning flux contours.
+        # Reserve coverage for both those central lines and the complete
+        # visible returns; do not repeatedly seed the same closed contour.
+        # At x≈0.802 m a solenoid contour grazes an end winding's
+        # exclusion. Keep the entire seed interval below that contour,
+        # including high-density midpoint samples near the upper bound.
+        outer = 0.79 if request.preset == "solenoid" else 0.90
+        segments = tuple(
+            ((sign * lower, 0.0), (sign * upper, 0.0))
+            for lower, upper in ((0.08, 0.70), (0.73, outer))
+            for sign in (-1, 1)
+        )
+        weights = (1.0, 1.0, 2.0, 2.0)
+    return _SceneModel(
+        field=_PlanarCurrentField(loops),
+        sources=markers,
+        exclusions=(SphericalExclusion([(s.x, s.y) for s in markers], COIL_EXCLUSION_RADIUS),),
+        trace_jobs=tuple(coverage_segment_jobs(segments, request.density, weights=weights)),
+        trace_options=MAGNETIC_COVERAGE_TRACE_OPTIONS,
+        scalar_label="|B|",
+        scalar_unit="T",
+        title=title,
+        field_model=description,
+        projection_note="z=0 子午面是同轴线圈组的不变平面，所示曲线是真实三维磁力线。",
+        seed_mode=SeedMode.COVERAGE,
+        seed_description=(
+            (
+                "在每个线圈内侧的左右半径上等距覆盖播种，分别展示两侧磁通族；"
+                if opposed
+                else "在中平面左右半径分段覆盖主磁通与可见回流，回流段分配较多种子；"
+            )
+            + "局部小环可能未覆盖，线密度不表示磁感应强度。"
+        ),
+    )
+
+
 def _hexagon_charges(signs: tuple[int, ...]) -> list[SourceInput]:
     """Six charges on a regular hexagon, mirror-exact about both axes.
 
@@ -338,6 +527,10 @@ def _require_seed_budget(
 
 
 def _build_model(request: SceneRequest) -> _SceneModel:
+    if request.preset in {"straight_wire", "parallel_wires", "antiparallel_wires"}:
+        return _wire_model(request)
+    if request.preset in {"solenoid", "helmholtz_coils", "anti_helmholtz_coils"}:
+        return _coil_model(request)
     if request.preset == "current_loop":
         loop = CircularLoopField(
             CURRENT_LOOP_CURRENT,
@@ -555,8 +748,7 @@ def _build_model(request: SceneRequest) -> _SceneModel:
             )
             seed_mode = SeedMode.COVERAGE
             seed_description = (
-                "在阵列强、弱场两侧 y=±0.45 m 的平行轨道覆盖播种；"
-                "线密度默认不代表磁感应强度。"
+                "在阵列强、弱场两侧 y=±0.45 m 的平行轨道覆盖播种；线密度默认不代表磁感应强度。"
             )
         elif is_single_magnetic:
             source_index, source = indexed_active[0]
@@ -585,8 +777,7 @@ def _build_model(request: SceneRequest) -> _SceneModel:
             )
             seed_mode = SeedMode.COVERAGE
             seed_description = (
-                "从每个偶极子的实际磁矩外向半球覆盖播种；"
-                "线密度默认不代表磁感应强度。"
+                "从每个偶极子的实际磁矩外向半球覆盖播种；线密度默认不代表磁感应强度。"
             )
         return _SceneModel(
             field=field,
@@ -826,14 +1017,15 @@ def _electric_terminal_source_index(
     return min(
         indexed_charges,
         key=lambda item: abs(
-            float(np.hypot(terminal[0] - item[1].x, terminal[1] - item[1].y))
-            - SOURCE_RADIUS
+            float(np.hypot(terminal[0] - item[1].x, terminal[1] - item[1].y)) - SOURCE_RADIUS
         ),
     )[0]
 
 
 def _is_source_kind(model: _SceneModel, index: int | None, kind: str) -> bool:
-    return index is not None and 0 <= index < len(model.sources) and model.sources[index].kind == kind
+    return (
+        index is not None and 0 <= index < len(model.sources) and model.sources[index].kind == kind
+    )
 
 
 def _make_tracer(model: _SceneModel) -> FieldLineTracer:

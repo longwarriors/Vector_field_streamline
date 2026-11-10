@@ -106,6 +106,12 @@ def _browser_presets() -> list[dict[str, object]]:
             "source_separation": editable,
         },
         {"id": "current_loop", "label": "圆形电流线圈", "description": "fixture"},
+        {"id": "straight_wire", "label": "长直导线", "description": "fixture"},
+        {"id": "parallel_wires", "label": "同向双导线", "description": "fixture"},
+        {"id": "antiparallel_wires", "label": "反向双导线", "description": "fixture"},
+        {"id": "solenoid", "label": "有限螺线管", "description": "fixture"},
+        {"id": "helmholtz_coils", "label": "Helmholtz 线圈", "description": "fixture"},
+        {"id": "anti_helmholtz_coils", "label": "反 Helmholtz 线圈", "description": "fixture"},
         {"id": "charged_ring", "label": "带电圆环", "description": "fixture"},
         {"id": "dielectric_sphere", "label": "介质球", "description": "fixture"},
         {"id": "conducting_sphere", "label": "导体球", "description": "fixture"},
@@ -323,6 +329,108 @@ def _route_scene(page: Page, scene: dict[str, object]) -> None:
             body=json.dumps(scene),
         ),
     )
+
+
+@pytest.mark.browser
+def test_magnetostatic_presets_connect_to_live_api_and_accept_manual_seeds(
+    browser_page: tuple[Page, list[str]],
+    frontend_url: str,
+) -> None:
+    """The real server's six fixed geometries pass the browser's contract."""
+
+    page, page_errors = browser_page
+    page.unroute("**/api/presets")
+    requests: list[dict[str, object]] = []
+    page.on(
+        "request",
+        lambda request: requests.append(request.post_data_json)
+        if request.url.endswith("/api/scene")
+        else None,
+    )
+    page.goto(frontend_url)
+    canvas = page.locator("#field-canvas")
+    expect(canvas).to_have_attribute("data-scene-state", "ready", timeout=30_000)
+    expect(page.locator("#loading-overlay")).to_be_hidden()
+    # The preset switch submits these control values together in one request.
+    page.evaluate("""() => {
+        document.querySelector('#density').value = '6';
+        document.querySelector('#resolution').value = '32';
+    }""")
+    cases = (
+        ("straight_wire", 1, "无限长直导线"),
+        ("parallel_wires", 2, "电流同向"),
+        ("antiparallel_wires", 2, "电流反向"),
+        ("solenoid", 16, "离散圆环绕组近似"),
+        ("helmholtz_coils", 4, "间距等于半径"),
+        ("anti_helmholtz_coils", 4, "电流反向"),
+    )
+    for preset, marker_count, explanation in cases:
+        with page.expect_response("**/api/scene", timeout=30_000) as response_info:
+            page.locator("#preset").select_option(preset)
+        response = response_info.value
+        assert response.status == 200
+        scene = response.json()
+        expect(canvas).to_have_attribute("data-scene-state", "ready", timeout=30_000)
+        expect(page.locator("#loading-overlay")).to_be_hidden()
+        expect(canvas).to_have_attribute("data-draggable", "false")
+        expect(page.locator("#scene-title")).to_have_text(scene["metadata"]["title"])
+        expect(page.locator(".fixed-source")).to_have_count(marker_count)
+        expect(page.locator(".fixed-sources-note")).to_contain_text(explanation)
+        expect(page.locator("#source-actions")).to_be_hidden()
+        expect(page.locator("#source-editor-list input")).to_have_count(0)
+        expect(page.locator("#reset-sources")).to_be_disabled()
+        expect(page.locator("#seed-status")).to_have_text("尚无手动种子。")
+        expect(page.locator("#error-banner")).to_be_hidden()
+        assert scene["vector"]["label"] == "B"
+        assert "sources" not in requests[-1] and "seeds" not in requests[-1]
+
+        # Fixed-source counts are checked, including the 16 solenoid sections.
+        assert page.evaluate(
+            """async ({scene, preset}) => {
+                const {validateScene} = await import('/scene-validation.js');
+                const missingMarker = structuredClone(scene);
+                missingMarker.sources.pop();
+                try { validateScene(missingMarker, preset); return false; }
+                catch { return true; }
+            }""",
+            {"scene": scene, "preset": preset},
+        )
+
+        point = page.evaluate(
+            """async (domain) => {
+                const canvas = document.querySelector('#field-canvas');
+                const rect = canvas.getBoundingClientRect();
+                const {calculatePlotRect, createCoordinateTransform} =
+                    await import('/coordinates.js');
+                const plot = calculatePlotRect(rect.width, rect.height, domain);
+                const transform = createCoordinateTransform(domain, plot);
+                const point = transform.worldToCanvas(0.4, 0.3);
+                return {x: rect.left + point[0], y: rect.top + point[1]};
+            }""",
+            scene["domain"],
+        )
+        plain = canvas.evaluate("canvas => canvas.toDataURL()")
+        request_count = len(requests)
+        page.mouse.move(point["x"], point["y"])
+        expect(page.locator("#probe-direction")).to_contain_text("Bx")
+        page.wait_for_function(
+            "plain => document.querySelector('#field-canvas').toDataURL() !== plain",
+            arg=plain,
+        )
+        assert len(requests) == request_count, "cursor preview is computed locally"
+        with page.expect_response("**/api/scene", timeout=30_000) as seeded_info:
+            page.mouse.click(point["x"], point["y"])
+        assert seeded_info.value.status == 200
+        seeded = seeded_info.value.json()
+        assert seeded["metadata"]["manual_seed_count"] == 1
+        assert any(line.get("seed_index") == 0 for line in seeded["lines"])
+        expect(canvas).to_have_attribute("data-scene-state", "ready", timeout=30_000)
+        expect(page.locator("#loading-overlay")).to_be_hidden()
+        expect(page.locator("#manual-seed-summary")).to_contain_text("1 个种子 → 1 条线")
+        expect(page.locator('.legend-chip[data-layer="seeds"]')).to_be_visible()
+        assert len(requests[-1]["seeds"]) == 1
+        assert "sources" not in requests[-1]
+    assert page_errors == []
 
 
 def _instrument_canvas(page: Page) -> None:

@@ -4,8 +4,21 @@
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-11-10
+
+### Added
+
+- `InfiniteWireField`：一根或多根平行无限长理想细直导线的三维磁场，支持任意共同方向、批量求值与 SI 单位；整条导线为几何奇点，零电流也保留 `NaN` 奇点政策。
+- 六个固定几何磁静态预设：`straight_wire`、`parallel_wires`、`antiparallel_wires`、`solenoid`、`helmholtz_coils`、`anti_helmholtz_coils`。有限螺线管使用 8 个同轴圆环的离散绕组近似；线圈组分别展示近匀强区和中心零场／梯度结构。新预设采用覆盖播种和闭环终止，线密度不表示场强，支持全部图层、探针、预览束与手动种子。
+- 新预设复用只读 `wire_out`/`wire_into` 电流截面标记，电流单位 A、磁感应强度单位 T；前后端均拒绝 `sources` 覆盖，场模型与播种说明在科学详情中公开。
+
+### Changed
+
+- 路线图先补齐磁静态场景，再推进 Laplace／斜率场与理想磁屏蔽筒、非定常流与振荡电偶极子、自定义表达式与数值数据接入、三维与更多动力学。有限长、开口和多层磁屏蔽筒随数值数据接入推进。
+
 ### Fixed
 
+- 静态页面、脚本模块和样式响应明确发送 `Cache-Control: no-cache`，包括 ETag 命中的 304 响应，保留缓存内容但要求复用前重新校验。修复升级后浏览器混用旧版场景校验模块、新菜单和新 API，导致新增磁静态预设统一报“场源缺少有效坐标、强度或 strength_unit”的问题。已经保留旧策略缓存的标签页首次需要强制刷新。
 - 修复 `Radau` 在积分分段末端恰好到达材料界面时抛出 `f(a) and f(b) must have different signs`：对稠密输出施加线性端点残差校正，使事件检测与括区求根使用一致的步端点。校正保留三次多项式结构，界面重启前的排除区检查也读取同一条曲线。
 - 内置球形与环面排除区新增积分步内部的几何检查：用求解器稠密多项式的 Bernstein 包围盒排除安全区间，按时间细分可疑区间，并用实际进入排除区的证据定位首次入口。修复小排除区、薄管和浅掠入射被整步跨过却报 `domain_exit` 的问题。精确切触或舍入尺度内不能判定的情况明确报 `solver_failure`；自定义 signed-margin 几何仍使用原有事件策略。检查针对数值插值曲线，不是精确物理轨迹的误差证明。
 - 首次入口验证覆盖相邻障碍、同一环面的不同穿入段、微小尺度和边界出发方向；前探与已有事件不能绕过更早的未决接触。远处无关球不再放大附近判定的舍入余量；精确切触在最早未决处停止，避免耗尽细分预算。
@@ -172,7 +185,8 @@
 - `density` 定义为整个场景的种子总预算，并在服务端与浏览器提交前共同校验。
 - 场景元数据区分真实不变平面场线与投影流线，并公开播种说明和终止统计。
 
-[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.4...v0.3.5

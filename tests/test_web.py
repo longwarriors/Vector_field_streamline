@@ -1753,6 +1753,12 @@ def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
     assert presets.status_code == 200
     payload = presets.json()
     assert {preset["id"] for preset in payload} == {
+        "straight_wire",
+        "parallel_wires",
+        "antiparallel_wires",
+        "solenoid",
+        "helmholtz_coils",
+        "anti_helmholtz_coils",
         "electric_dipole",
         "electric_quadrupole",
         "electric_hexagon",
@@ -2235,6 +2241,41 @@ def test_minimal_scene_request_and_every_advertised_preset_are_usable(
         assert payload["metadata"]["projection_note"]
         assert payload["scalar"]["unit"]
         assert len(payload["scalar"]["values"]) == 32 * 32
+
+
+@pytest.mark.parametrize("asset", ["/", "/index.html", "/app.js", "/scene-validation.js", "/styles.css"])
+def test_static_assets_revalidate_cached_html_and_module_dependencies(
+    client: TestClient, asset: str
+) -> None:
+    response = client.get(asset)
+    assert response.status_code == 200
+    assert response.headers.get("cache-control") == "no-cache"
+    etag = response.headers["etag"]
+    assert etag
+
+    # A browser may retain the body, but must check every document/module
+    # before reuse; 304 responses must not restore heuristic freshness.
+    for conditional in (
+        {"If-None-Match": etag},
+        {"If-Modified-Since": response.headers["last-modified"]},
+    ):
+        cached = client.get(asset, headers=conditional)
+        assert cached.status_code == 304
+        assert cached.content == b""
+        assert cached.headers["etag"] == etag
+        assert cached.headers.get("cache-control") == "no-cache"
+
+    changed = client.get(asset, headers={"If-None-Match": '"previous-version"'})
+    assert changed.status_code == 200
+    assert changed.content == response.content
+    assert changed.headers.get("cache-control") == "no-cache"
+
+
+def test_static_cache_policy_does_not_change_api_headers(client: TestClient) -> None:
+    for path in ("/api/health", "/api/presets"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert "cache-control" not in response.headers
 
 
 def test_static_index_and_assets_are_served(client: TestClient) -> None:
