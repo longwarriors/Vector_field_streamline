@@ -3730,7 +3730,9 @@ def test_toggling_layers_never_moves_the_plot_on_a_narrow_frame(
     # the vector grid. On a phone-width frame the chips wrap; switching layers
     # blanks chips but keeps their boxes, so the stage never moves.
     page, page_errors = browser_page
-    page.set_viewport_size({"width": 390, "height": 844})
+    # Start with the seed target below the viewport: raw mouse coordinates do
+    # not scroll, and font/layout differences must not turn the click into a miss.
+    page.set_viewport_size({"width": 390, "height": 320})
     scene = _browser_vector_scene()
     scalar = scene["scalar"]
     lines = scene["lines"]
@@ -3780,14 +3782,20 @@ def test_toggling_layers_never_moves_the_plot_on_a_narrow_frame(
     geometry = _plot_geometry(page, {"x": [-2, 4], "y": [-3, 1]})
     with page.expect_request("**/api/scene"):
         # Away from the fixture's source at (1, -1), which sits at the plot centre.
-        page.mouse.click(
-            geometry["left"] + 0.25 * geometry["plotLeft"] + 0.75 * geometry["plotRight"],
-            geometry["top"] + 0.75 * geometry["plotTop"] + 0.25 * geometry["plotBottom"],
+        page.locator("#field-canvas").click(
+            position={
+                "x": 0.25 * geometry["plotLeft"] + 0.75 * geometry["plotRight"],
+                "y": 0.75 * geometry["plotTop"] + 0.25 * geometry["plotBottom"],
+            },
         )
     expect(page.locator("#field-canvas")).to_have_attribute("data-scene-state", "ready")
     expect(page.locator('.legend-chip[data-layer="seeds"]')).to_be_visible()
     expect(page.locator("#legend-uncolored")).to_be_visible()
-    page.mouse.move(geometry["left"] + 2, geometry["top"] + 2)
+    page.mouse.move(0, 0)
+    # Keep the legend and every toggle visible before comparing viewport
+    # rectangles, so scrolling/scroll anchoring cannot move the measured stage.
+    page.locator(".viewer-heading").scroll_into_view_if_needed()
+    page.locator("#layer-toolbar").scroll_into_view_if_needed()
 
     def stage_rect() -> dict[str, float]:
         return page.evaluate(

@@ -351,3 +351,27 @@ def test_leaf_witness_does_not_skip_an_earlier_entry_at_a_late_parameter() -> No
     # A negative leaf sample only proves penetration, not that a bracketed
     # root finder cannot jump over the first narrow negative interval.
     assert solution.sol(event[0])[0] <= centers[0] - radii[0] + 1e-11
+
+
+@pytest.mark.parametrize("direction, sign", [("forward", 1), ("backward", -1)])
+@pytest.mark.parametrize("offset", [-1e-6, 0.0, 1e-6])
+def test_radau_exclusion_near_an_interface_stops_at_its_first_entry(
+    direction: str, sign: int, offset: float,
+) -> None:
+    entry, radius = 0.1 + offset, 1e-5
+    result = trace_field_line(
+        UniformField((1, 0)), (0, 0),
+        interfaces=(SphericalExclusion((0, 0), 0.1),),
+        exclusions=(SphericalExclusion((sign * (entry + radius), 0), radius),),
+        options=TraceOptions(
+            method="Radau", first_step=0.1, max_step=0.1,
+            max_arc_length=0.5, output_step=0.02,
+        ), direction=direction,
+    )
+    branch = result.forward if sign > 0 else result.backward
+    assert branch is not None
+    # Straight-line geometry fixes the first entry independently of solver
+    # events, including an exclusion before, at, or after the restart surface.
+    assert branch.termination is TerminationReason.EXCLUSION_HIT
+    np.testing.assert_allclose(branch.terminal_point, (sign * entry, 0), atol=2e-12, rtol=0)
+    assert np.all(np.diff(branch.arc_length) > 0)

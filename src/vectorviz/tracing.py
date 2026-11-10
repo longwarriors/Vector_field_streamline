@@ -45,8 +45,42 @@ STALL_REVERSALS_IN_WINDOW = 48
 _STALL_AWARE_SOLVERS: dict[str, type] = {}
 
 
+class _RadauDenseOutput(scipy.integrate.DenseOutput):
+    """Keep event brackets consistent with Radau's accepted endpoint states.
+
+    Radau's cubic starts exactly at its accepted old state, but evaluating its
+    right endpoint can differ from the accepted new state by a few ULPs. An
+    event activated with the latter can then have no root in the interpolant.
+    A linear endpoint correction keeps the curve cubic for geometry checks;
+    exact endpoint assignments also remove final evaluation roundoff.
+    """
+
+    def __init__(
+        self, dense: scipy.integrate.DenseOutput, start: FloatArray, end: FloatArray,
+    ) -> None:
+        super().__init__(dense.t_old, dense.t)
+        self._dense = dense
+        self._start = start.copy()
+        self._end = end.copy()
+        self._correction = self._end - dense(self.t)
+
+    def _call_impl(self, parameter: FloatArray) -> FloatArray:
+        if parameter.ndim == 0:
+            if parameter == self.t_old:
+                return self._start.copy()
+            if parameter == self.t:
+                return self._end.copy()
+        fraction = (parameter - self.t_old) / (self.t - self.t_old)
+        if parameter.ndim == 0:
+            return self._dense(parameter) + fraction * self._correction
+        result = self._dense(parameter) + self._correction[:, None] * fraction
+        result[:, parameter == self.t_old] = self._start[:, None]
+        result[:, parameter == self.t] = self._end[:, None]
+        return result
+
+
 def _stall_aware_solver(method: str) -> str | type:
-    """A solve_ivp method that stops on a stalled step, else the name unchanged."""
+    """Adapt stalled steps and Radau event endpoints; leave unknown methods alone."""
 
     solver = _STALL_AWARE_SOLVERS.get(method)
     if solver is not None:
@@ -61,6 +95,8 @@ def _stall_aware_solver(method: str) -> str | type:
         reversal_history = 0
 
         def step(self) -> str | None:
+            if method == "Radau":
+                self._dense_start = self.y.copy()
             direction_old = getattr(self, "f", None)
             if direction_old is not None:
                 direction_old = np.array(direction_old, dtype=float, copy=True)
@@ -76,6 +112,14 @@ def _stall_aware_solver(method: str) -> str | type:
                 self.stalled = True
                 self.status = "finished"
             return message
+
+        def _dense_output_impl(self) -> scipy.integrate.DenseOutput:
+            dense = super()._dense_output_impl()
+            if method == "Radau":
+                # Wrap only the public dense output. Radau keeps its original
+                # self.sol for predicting the next implicit step.
+                return _RadauDenseOutput(dense, self._dense_start, self.y)
+            return dense
 
     StallAwareSolver.__name__ = f"StallAware{base.__name__}"
     StallAwareSolver.__qualname__ = StallAwareSolver.__name__

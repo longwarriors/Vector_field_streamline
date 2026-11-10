@@ -600,13 +600,14 @@ def _kinked_exit_height(seed_y: float, slope: float) -> float:
     return float(seed_y + slope * (exit_x - entry_x))
 
 
-def test_interface_restart_locates_the_kink_on_the_surface() -> None:
+@pytest.mark.parametrize("method", ["DOP853", "Radau"])
+def test_interface_restart_locates_the_kink_on_the_surface(method: str) -> None:
     # With slope 1/4 the line leaves the disk on its right half, where the
     # outer flow carries it away; the exit height is then exactly known.
     field = _KinkedField(slope=0.25)
     domain = Domain(lower=(-3.0, -3.0), upper=(3.0, 3.0))
     interface = SphericalExclusion((0.0, 0.0), 1.0)
-    options = TraceOptions(max_arc_length=12.0, max_step=0.09, rtol=2.0e-6, atol=1.0e-8)
+    options = TraceOptions(method=method, max_arc_length=12.0, max_step=0.09, rtol=2.0e-6, atol=1.0e-8)
     seed = np.array((-2.5, 0.3))
     expected_exit = _kinked_exit_height(0.3, 0.25)
 
@@ -626,7 +627,36 @@ def test_interface_restart_locates_the_kink_on_the_surface() -> None:
     guarded_error = abs(with_interface.points[-1, 1] - expected_exit)
     smeared_error = abs(without_interface.points[-1, 1] - expected_exit)
     assert guarded_error < 1.0e-5
-    assert guarded_error < smeared_error
+    if method == "DOP853":
+        # This comparison is the original DOP853 benchmark. Adaptive errors
+        # may cancel in an unsegmented Radau trace; its independent oracle is
+        # the absolute analytic error and the two retained crossings above.
+        assert guarded_error < smeared_error
+
+
+@pytest.mark.parametrize("direction, sign", [("forward", 1), ("backward", -1)])
+@pytest.mark.parametrize("output_step", [None, 0.03])
+def test_radau_interface_at_an_accepted_step_endpoint_restarts(
+    direction: str, sign: int, output_step: float | None,
+) -> None:
+    # Distance limiting ends the first chunk exactly at the interface. Radau's
+    # accepted endpoint is on it, but its original dense endpoint is 4 ULPs
+    # inside: event activation and the root bracket must use identical states.
+    result = trace_field_line(
+        UniformField((1, 0)), (0, 0),
+        domain=Domain((-1, -1), (1, 1)),
+        interfaces=(SphericalExclusion((0, 0), 0.1),),
+        options=TraceOptions(method="Radau", max_step=0.1, output_step=output_step),
+        direction=direction,
+    )
+    branch = result.forward if sign > 0 else result.backward
+    assert branch is not None
+    assert branch.termination is TerminationReason.DOMAIN_EXIT
+    np.testing.assert_allclose(branch.terminal_point, (sign, 0), atol=2e-13, rtol=0)
+    assert branch.arc_length[-1] == pytest.approx(1, abs=2e-13)
+    assert np.all(np.diff(branch.arc_length) > 0)
+    assert np.count_nonzero(np.abs(branch.points[:, 0] - sign * 0.1) < 1e-13) == 1
+    np.testing.assert_allclose(branch.points[:, 1], 0, atol=1e-15, rtol=0)
 
 
 def test_interface_sliding_contact_stops_instead_of_restarting_forever() -> None:
