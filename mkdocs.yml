@@ -46,6 +46,7 @@ nav:
       - 3. 数值追踪: tutorial/03-tracing.md
       - 4. 切片、播种与验证: tutorial/04-slices-and-validation.md
       - 5. 引力场与黑洞光线: tutorial/05-gravity-and-rays.md
+      - 6. 非定常流: tutorial/06-unsteady-flow.md
   - 参考资料: references.md
   - API 参考: api.md
   - 开发指南: development.md

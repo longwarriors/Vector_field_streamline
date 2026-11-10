@@ -19,9 +19,16 @@ from vectorviz import (
     LaplaceField,
     MagneticDipoleField,
     MagneticShieldCylinderField,
+    OscillatingFlowField,
+    PathlineResult,
+    PathlineTracer,
     PointChargeField,
     SlopeField,
     SphericalExclusion,
+    StreaklineResult,
+    TimeDependentField,
+    TimeOptions,
+    TimeTerminationReason,
     ToroidalExclusion,
     TerminationReason,
     TraceBranch,
@@ -47,6 +54,40 @@ vectors = field.evaluate(points)
 ### `Domain`
 
 `Domain(lower, upper)` 是轴对齐计算区域，保存每一维的下界与上界。它提供 `dimension`、`extent`、`center`、`contains()` 和用于事件定位的 `margin()`。它描述计算域，不等同于源的奇点 mask。
+
+### 含时速度场与粒子积分 { #time-dependent-python }
+
+`TimeDependentField` 是抽象基类，子类提供 `dimension` 与 `evaluate(points, time)`，并继承 `freeze(time)`。含时求值须调用 `evaluate(points, time)`；此类型没有 `__call__` 别名。空间输入遵守 `(..., dimension)` 的批量约定，`time` 是单个有限实数。`freeze(time)` 返回兼容 `VectorField` 的固定时刻视图，可交给原有 `FieldLineTracer` 求流线；直接跟踪粒子则使用 `PathlineTracer`，不对速度归一化。
+
+```python
+import numpy as np
+
+from vectorviz import (
+    Domain, FieldLineTracer, OscillatingFlowField, PathlineTracer, TimeOptions,
+)
+
+flow = OscillatingFlowField(
+    longitudinal_speed=1.0,
+    transverse_speed=0.0,
+    amplitude=0.6,
+    angular_frequency=1.0,
+)
+domain = Domain((-3.0, -3.0), (3.0, 3.0))
+streamline = FieldLineTracer(flow.freeze(4.0), domain=domain).trace((-2.0, 0.0))
+tracer = PathlineTracer(flow, domain=domain, options=TimeOptions(output_step=0.05))
+pathline = tracer.trace((-2.0, 0.0), start_time=0.0, end_time=4.0)
+streakline = tracer.streakline((-2.0, 0.0), np.linspace(0.0, 4.0, 18), 4.0)
+```
+
+`OscillatingFlowField` 为二维场 $\mathbf u=(U,V+A\sin\omega t)$。四个参数都须有限，`angular_frequency` 不小于零；$U,V,A$ 允许为零或有符号值。坐标单位为 m，速度参数为 m/s，时间为 s，角频率为 rad/s。参数拒绝布尔值和非实数，非有限坐标或求值溢出返回两个分量均为 `NaN`；复数坐标或错误形状抛出 `ValueError`。将 `amplitude=0`、`transverse_speed=0.4` 即得到 Web 定常对照。解析解、定常极限和三类曲线的区别见[非定常流教程](tutorial/06-unsteady-flow.md)。
+
+`TimeOptions(max_step=0.1, rtol=1e-8, atol=1e-10, output_step=0.05, max_steps=10000)` 使用固定的 DOP853 方法。`max_step` 与 `output_step` 使用时间单位，`atol` 使用坐标单位，`rtol` 无量纲；步长和容差须为有限正数，`max_steps` 是正整数。超过已接受步数预算以 `solver_failure` 停止；当 `(end_time - start_time) / output_step > 1_000_000` 时拒绝输出请求；实际结果还保留起点及终点。`output_step=None` 保留自适应步点，否则按物理时间采样并保留实际终点。该接口与以空间弧长计步的 `TraceOptions` 分开。
+
+`PathlineTracer(field, *, domain=None, options=None).trace(seed, start_time, end_time)` 只接受有限种子和正向时间窗 `start_time <= end_time`；核心不限制为 0–6 s，时间差本身也须有限。先检查种子是否在域内，域外种子即使等时也记为 `seed_outside_domain`；域内等时返回 `time_end` 单点，不求值速度。瞬时零速度或全零速度不会触发场线的 `null_field`。`PathlineResult` 保存 `points`、对应的 `times`、`termination`、`nfev` 和 `message`。`TimeTerminationReason` 为 `time_end`、`domain_exit`、`seed_outside_domain`、`nonfinite_field`、`solver_failure`；它与场线的终止枚举独立。非有限场终止保留最后通过域检查的有限状态，不虚构未知位置或到达时间。模型返回复数速度或形状不符属于接口错误，抛出 `ValueError`；`solver_failure` 表示求解器步进失败或步数预算耗尽。`nfev` 统计实际速度函数调用，包含稠密输出所需的额外阶段、失败调用以及可能位于最终返回出口之后的阶段。
+
+`tracer.streakline(site, release_times, observation_time)` 要求释放时间为非空、有限、严格递增的一维数组，每项都不晚于观察时刻。它返回 `StreaklineResult(positions, release_times, arrival_times, terminations, valid, nfev)`：每个释放时刻独立跟踪到同一观察时刻，`positions` 记录实际最终位置，`arrival_times` 记录实际终止时间，`valid` 仅在 `time_end` 时为真。提前终止的位置只供诊断，不能混入观察时刻的脉线。时间窗为零时调用方应传一个释放时间，不传重复值。
+
+这套粒子积分只支持可选的矩形 `Domain`，没有场线追踪器的排除区、材料界面或闭环终止。域边界用于停止追踪，不是固体壁面；不施加反射或无滑移条件。边界种子可向内移动或保持静止；相切接触不停止，恰在最终时刻到达边界记为 `time_end`；已接受步内首次向外穿越的检查见[时间积分教程](tutorial/06-unsteady-flow.md#time-integration)。
 
 ### `SphericalExclusion`
 
@@ -270,7 +311,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 ```json
 {
   "status": "ok",
-  "version": "0.3.9"
+  "version": "0.3.10"
 }
 ```
 
@@ -318,6 +359,8 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 - `slope_linear`
 - `slope_logistic`
 - `magnetic_shield_cylinder`
+- `flow_oscillating`
+- `flow_steady`
 
 此端点是可用预设及其交互能力的权威目录；当前无构建客户端随版本静态提供同一组选项，并由契约测试防止两边漂移。客户端不应假设列表永久不变。
 
@@ -349,10 +392,10 @@ v0.3.8 新增的六个磁静态预设均为固定几何，不提供 `source_sepa
 | 字段 | 必需 | 语义 |
 |---|---:|---|
 | `preset` | 否 | `/api/presets` 返回的稳定标识符；默认 `electric_dipole` |
-| `density` | 否 | 种子总预算，整数范围 6–40，默认 18，不代表物理场强；每个参与播种的源至少分配 1 个种子 |
+| `density` | 否 | 整数范围 6–40，默认 18；静态预设为种子总预算，流场预设为每个站的脉线释放时间目标采样数，不代表场强或质量密度 |
 | `resolution` | 否 | 两个方向共同使用的标量与向量网格分辨率，整数范围 32–144 |
 | `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；电四极子、六个正电荷和三对交替电荷预设接受 1–8 个任意符号的电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及其他固定几何预设的 override 会被拒绝 |
-| `seeds` | 否 | 1–16 个手动种子 `{x, y}`，单位随预设的 `domain.unit`，范围 $[-3,3]$（即计算域）；每个种子在预设预算之外双向追踪一次，所有预设都接受；显式空列表、未知字段和越界坐标会被拒绝 |
+| `seeds` | 否 | 1–16 个手动种子 `{x, y}`，单位随预设的 `domain.unit`，范围 $[-3,3]$（即计算域）；静态场每个种子另做双向追踪，流场每个种子另建一个三类曲线共用的释放站；显式空列表、未知字段和越界坐标会被拒绝 |
 
 `sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m，范围均为 $[-2.8,2.8]$。请求模型 `SourceInput.kind` 只接受 `positive`、`negative`、`dipole`、`uniform`；响应专用的 `wire_out`/`wire_into`/`ring_charge` 不能提交。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。单位由预设决定，请求不得提交 `strength_unit`。
 
@@ -372,7 +415,7 @@ $$
 
 服务端必须为密度、分辨率、源数量和数值范围设置上限，防止一次交互请求耗尽内存或 CPU。
 
-`density` 是一次场景请求的**整数 trace-job 总预算**，不是“每个源各放多少条”，范围为 6–40；浏览器滑块步长为 1，因此圆环的奇数预算轴线分支可达。电偶极的全部正、负电荷都参与预算：每个源先得到 1 个 job，其余按 $|q|$ 用稳定最大余数法分配；正电荷正向追踪，负电荷反向追踪。自定义磁偶极和 Halbach 场景只让非零 active 偶极参与逐源预算；若参与数量超过 `density`，服务端返回 422，例如 `electric_dipole 有 8 个电荷参与播种，density 至少为 8`。默认 Halbach 使用两条独立轨道，所以最低密度仍是 API 下限 6，不受八个显示偶极数量约束。浏览器在所有 POST 路径上执行相同预判并自动抬高不足的预算。
+`density` 是一次静态场景请求的**整数 trace-job 总预算**，不是“每个源各放多少条”，范围为 6–40；浏览器滑块步长为 1，因此圆环的奇数预算轴线分支可达。电偶极的全部正、负电荷都参与预算：每个源先得到 1 个 job，其余按 $|q|$ 用稳定最大余数法分配；正电荷正向追踪，负电荷反向追踪。自定义磁偶极和 Halbach 场景只让非零 active 偶极参与逐源预算；若参与数量超过 `density`，服务端返回 422，例如 `electric_dipole 有 8 个电荷参与播种，density 至少为 8`。默认 Halbach 使用两条独立轨道，所以最低密度仍是 API 下限 6，不受八个显示偶极数量约束。浏览器在所有 POST 路径上执行相同预判并自动抬高不足的预算。
 
 各预设的策略分别是：
 
@@ -387,7 +430,7 @@ $$
 - 介质球与导体球在左边界 $x=-3+10^{-4}$ m 上调用公开的 `DielectricSphereField.flux_function()`：从 $\Psi_D/\lfloor density/2\rfloor$ 到边界最大可用高度 $y=2.88$ m 处的 $\Psi_D$ 等分取目标求根，再镜像到轴两侧；奇数预算另加轴线（$\Psi_D=0$ 的成员），整体 `seed_mode: "equal_flux"`。介质球的线在球面折射后继续，导体球的线在球面以 `null_field` 终止；
 - 匀强场仍从左边界等距覆盖播种，`seed_mode: "coverage"`。
 
-每个 job 无论是否最终渲染，都恰好给 `metadata.termination_counts` 的一个原因加 1，所以 `sum(termination_counts.values()) == density`。对 `BOTH` job，`termination` 和 `termination_counts` 记录点序末端的正向分支，`start_termination` 与 `start_termination_counts` 另记点序起点的反向分支；非双向场景的起点端统计为空对象。双向曲线的点始终从反向端经过种子排到正向端，因此 `direction` 为 `1`。
+静态预设的每个 job 无论是否最终渲染，都恰好给 `metadata.termination_counts` 的一个原因加 1，所以 `sum(termination_counts.values()) == density`。对 `BOTH` job，`termination` 和 `termination_counts` 记录点序末端的正向分支，`start_termination` 与 `start_termination_counts` 另记点序起点的反向分支；非双向场景的起点端统计为空对象。双向曲线的点始终从反向端经过种子排到正向端，因此 `direction` 为 `1`。
 
 电荷场会先完成全部 job，再按实际终止源对去重。若某条可渲染正电荷 $P\to N$ 轨迹已出现，随后终止于同一 $P$ 的负电荷反向 $N\to P$ 轨迹会被抑制；没有正向代表的源对以及负源到计算域边界的轨迹都保留。这里不做浮点几何相似判定。`suppressed_count` 记录被抑制的可渲染轨迹数，`rendered_line_count` 精确等于 `len(lines)`；若还存在不足两个有限点的退化结果，则 `rendered_line_count + suppressed_count <= density`（带手动种子时上界加上 `manual_seed_count`）。
 
@@ -395,9 +438,50 @@ $$
 
 #### 手动种子 { #manual-seeds }
 
-`seeds` 列出的每个点都用该预设的追踪器设置（同样的容差、排除区、界面与零场阈值）**双向**追踪一次，结果按种子顺序追加在预设线之后，并带 `seed_index`（请求中的 0-based 下标）；预设线不带这个字段。手动线的点序从反向端经种子到正向端，`direction` 为 `1`，`termination` 与 `start_termination` 都存在，种子本身是点列中的一个点。种子恰在球面这类界面上时，追踪器先把起点沿场方向推离界面几个 ulp 再积分（见 [`FieldLineTracer`](#fieldlinetracer)），返回的点列仍包含请求的种子：离它最近、且在 $10^{-6}$ m 内的推离起点被换成种子本身。沿对称轴正对零场点（例如六个正电荷的电荷对之间的鞍点）的种子在该零点以 `null_field` 停下，见追踪器的停滞保护。手动种子**不占** `density` 预算，也不参加电荷场的返线抑制：`termination_counts` 之和仍等于 `density`，手动线的两端原因另记在 `metadata.manual_termination_counts` 与 `metadata.manual_start_termination_counts`，二者之和都等于 `manual_seed_count`（即请求的种子数）。落在排除区内、导体球内或零场点上的种子只得到一个点，不产生线，但仍计入手动终止统计（例如 `exclusion_hit` 或 `null_field`），所以 `rendered_line_count + suppressed_count <= density + manual_seed_count`。
+静态场景中，`seeds` 列出的每个点都用该预设的追踪器设置（同样的容差、排除区、界面与零场阈值）**双向**追踪一次，结果按种子顺序追加在预设线之后，并带 `seed_index`（请求中的 0-based 下标）；预设线不带这个字段。手动线的点序从反向端经种子到正向端，`direction` 为 `1`，`termination` 与 `start_termination` 都存在，种子本身是点列中的一个点。种子恰在球面这类界面上时，追踪器先把起点沿场方向推离界面几个 ulp 再积分（见 [`FieldLineTracer`](#fieldlinetracer)），返回的点列仍包含请求的种子：离它最近、且在 $10^{-6}$ m 内的推离起点被换成种子本身。沿对称轴正对零场点（例如六个正电荷的电荷对之间的鞍点）的种子在该零点以 `null_field` 停下，见追踪器的停滞保护。手动种子**不占** `density` 预算，也不参加电荷场的返线抑制：`termination_counts` 之和仍等于 `density`，手动线的两端原因另记在 `metadata.manual_termination_counts` 与 `metadata.manual_start_termination_counts`，二者之和都等于 `manual_seed_count`（即请求的种子数）。落在排除区内、导体球内或零场点上的种子只得到一个点，不产生线，但仍计入手动终止统计（例如 `exclusion_hit` 或 `null_field`），所以 `rendered_line_count + suppressed_count <= density + manual_seed_count`。
 
 同一场景与预算下，预设线的追踪结果与不带 `seeds` 的请求相同并共用缓存；手动线按种子列表另行缓存，改分辨率时二者都不重算。
+
+#### 流场时间契约 { #flow-time-contract }
+
+`time` 是请求中的可选对象，仅 `flow_oscillating` / `flow_steady` 接受；静态场景须省略或传 `null`。
+
+```json
+{
+  "preset": "flow_oscillating",
+  "density": 18,
+  "resolution": 72,
+  "time": {
+    "observation": 4.0,
+    "initial": 0.0,
+    "release_start": 0.0,
+    "release_end": 4.0
+  }
+}
+```
+
+两个流场预设使用 $[-3,3]^2$ m 的真实二维平面，`sources` 与 `regions` 为空；不接受源覆盖。`scalar` 是速度模长，`vector` 是速度分量，单位均为 `m/s`；两张网格与 `lines` 中的流线都冻结在 `time.observation`。`flow_oscillating` 使用 $\mathbf u=(1,0.6\sin t)$ m/s（$t$ 的数值以 s 计，角频率为 1 rad/s）；`flow_steady` 使用 $(1,0.4)$ m/s。
+
+所有时间使用 s，必须为有限 JSON 数值（整数可用，拒绝布尔值与数值字符串），满足 `0 <= initial <= observation <= 6` 与 `0 <= release_start <= release_end <= observation`。`time: null` 等同省略；省略 `time` 或其内部字段时，`observation` 默认为 4，`initial` 和 `release_start` 默认为 0，`release_end` 默认为本次的 `observation`。观察时刻早于初始或释放时间、未知字段、非有限值及范围外的时间返回 422。初始时刻只影响迹线；释放窗只影响脉线，两者相互独立。
+
+默认固定释放站为 `(-2, 0)` m。每个手动种子增加一个站，`release_sites[0]` 是默认站，`release_sites[i+1]` 对应请求的 `seeds[i]`；每站都计算一条双向冻结流线、一条正向迹线、一组脉线粒子。`density` 表示**每站**在闭合释放窗两端之间等时间采样的目标粒子数。正常时间窗产生该数量的粒子；极窄窗口中落在同一浮点时间的样本会合并，非零窗口保留两端，实际数量在 2 与 `density` 之间；释放窗退化为同一时刻时仅采一个粒子，不重复释放。它不控制流线或迹线条数。
+
+流场响应新增 `flow` 对象，静态场景省略它：
+
+| 字段 | 含义 |
+|---|---|
+| `flow.time` / `flow.time_unit` | 补齐缺省值后的四个时间；单位固定为 `"s"` |
+| `flow.release_sites` | 默认与手动站的有限二维坐标，单位由 `domain.unit` 给出 |
+| `flow.pathlines[]` | 每站一项：`site_index`、至少一个 `points`、与其等长且按时间排列的 `times`、`termination` |
+| `flow.streaklines[]` | 每站一项：`site_index`、等长的 `points`、`release_times`、`arrival_times`、`terminations` |
+
+迹线从 `initial` 积分到 `observation`，正常终止为 `time_end`；两时刻相同则只有一个点。脉线按释放时间递增排列，每个粒子从对应 `release_times[j]` 独立积分到同一观察时刻。正常到达的 `points[j]` 是有限坐标，`arrival_times[j]` 等于观察时刻；恰在观察时刻释放的零龄粒子必须仍位于对应释放站。提前终止的 `points[j]` 必须为 `null`，实际终止时间和原因仍分别保存在 `arrival_times[j]` 与 `terminations[j]`。不能跨 `null` 连线，也不能把脉线点序当成单个粒子经过各点的时间序列。`release_end < observation` 表示已停止释放，最近释放的粒子也已离开释放站。
+
+`lines`、`seed_index` 与已有 `metadata.*termination_counts` **仅统计流线**：默认流线的末端和起端计数各为 1，手动流线仍每种子各计一次；`rendered_line_count == len(lines)`。迹线和脉线的终止由 `flow` 各项单独报告。前文 `sum(termination_counts)==density` 的 trace-job 预算规则适用于静态预设，不适用于这两个流场预设。
+
+曲线缓存包含所有补齐后的时间字段、释放站和粒子采样数；只改 `resolution` 可重用曲线并重新采样观察时刻网格。改变观察时刻、初始时刻或任一释放窗端点都不会复用旧时间配置的结果。浏览器只绘制服务端给出的粒子数据；冻结网格预览不能用于迹线或脉线。
+
+#### 静态响应示例
 
 成功响应结构如下。为便于阅读，示意片段把网格缩成 $2\times2$，并只展示渲染轨迹中的 1 条预设线与 1 条手动线；实际端点接受的 `resolution` 不低于 32，数组会相应更长。
 
@@ -664,5 +748,35 @@ $$
       heading_level: 4
 
 ::: vectorviz.tracing.trace_field_line
+    options:
+      heading_level: 4
+
+### 含时流与粒子追踪
+
+::: vectorviz.flows.TimeDependentField
+    options:
+      heading_level: 4
+
+::: vectorviz.flows.OscillatingFlowField
+    options:
+      heading_level: 4
+
+::: vectorviz.flows.TimeOptions
+    options:
+      heading_level: 4
+
+::: vectorviz.flows.TimeTerminationReason
+    options:
+      heading_level: 4
+
+::: vectorviz.flows.PathlineResult
+    options:
+      heading_level: 4
+
+::: vectorviz.flows.StreaklineResult
+    options:
+      heading_level: 4
+
+::: vectorviz.flows.PathlineTracer
     options:
       heading_level: 4

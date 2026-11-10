@@ -156,6 +156,14 @@ PRESETS = [
         id="magnetic_shield_cylinder", label="理想磁屏蔽筒",
         description="横向匀强磁场中的无限长线性圆柱壳：μr=100；展示筒壁集磁与内腔衰减。",
     ),
+    PresetPayload(
+        id="flow_oscillating", label="非定常流：三类曲线",
+        description="u=(1, 0.6 sin t) m/s；比较瞬时流线、质点迹线与持续释放形成的脉线。",
+    ),
+    PresetPayload(
+        id="flow_steady", label="定常流对照",
+        description="u=(1, 0.4) m/s；三类曲线落在同一直线上，时间单位 s。",
+    ),
 ]
 
 

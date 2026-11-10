@@ -4,6 +4,7 @@ import { CANVAS_THEME } from "./canvas-theme.js";
 import { colorForScalar } from "./color-scale.js";
 import { clamp } from "./coordinates.js";
 import { finiteNumber, formatAxisValue, formatValue } from "./formatting.js";
+import { drawFlowCurves } from "./flow-renderer.js";
 import { effectiveDipoleAngleDeg } from "./source-controls.js";
 
 export const SOURCE_GLYPHS = Object.freeze({
@@ -45,6 +46,8 @@ export const ALL_LAYERS = Object.freeze({
   preview: true,
   sources: true,
   grid: true,
+  pathlines: true,
+  streaklines: true,
 });
 
 // What a fresh page shows: the slope glyphs start hidden so the field lines
@@ -90,6 +93,9 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     drawGridAndAxes({ onField: layers.heatmap, grid: layers.grid });
     if (layers.slopes && view.scene.vector) drawSlopes();
     if (layers.lines) drawStreamlines({ arrows: layers.arrows });
+    if (view.scene.flow) {
+      drawFlowCurves(context, view.scene.flow, view.transform, theme, layers);
+    }
     if (layers.preview && view.preview?.length) drawPreview(view.preview);
     drawRegions();
     if (layers.sources) drawSources();
@@ -519,7 +525,9 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
 
   // Pinned manual seeds: a small blue dot with a white ring at each seed.
   function drawSeeds() {
-    const seeds = view.seeds || [];
+    const seeds = view.scene.flow
+      ? view.scene.flow.release_sites.map(([x, y]) => ({ x, y }))
+      : view.seeds || [];
     if (!seeds.length) return;
     const { seed } = theme;
     context.save();

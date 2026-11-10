@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="light">
     <meta
       name="description"
-      content="VectorViz：在浏览器中交互探索二维电场与磁场场线。"
+      content="VectorViz：在浏览器中交互探索二维场线与非定常流的流线、迹线和脉线。"
     >
     <title>VectorViz · 场线实验室</title>
     <link rel="stylesheet" href="styles.css">
@@ -59,6 +59,8 @@
                 <option value="slope_linear">线性斜率场</option>
                 <option value="slope_logistic">Logistic 斜率场</option>
                 <option value="magnetic_shield_cylinder">理想磁屏蔽筒</option>
+                <option value="flow_oscillating">非定常横向振荡流</option>
+                <option value="flow_steady">定常流对照</option>
               </select>
             </div>
           </div>
@@ -85,7 +87,13 @@
             </div>
             <div class="legend-chips" aria-label="图例">
               <span class="legend-chip" data-layer="lines">
-                <i class="legend-line" aria-hidden="true"></i>场线
+                <i class="legend-line" aria-hidden="true"></i><span id="line-legend-label">场线</span>
+              </span>
+              <span class="legend-chip" data-layer="pathlines" hidden title="迹线：同一粒子从初始时刻到观察时刻的运动轨迹；圆点是末位置。">
+                <i class="legend-pathline" aria-hidden="true"></i>迹线
+              </span>
+              <span class="legend-chip" data-layer="streaklines" hidden title="脉线：各释放时刻的粒子在同一观察时刻的位置；圆点为采样粒子，虚线仅连接相邻存活样本。">
+                <i class="legend-streakline" aria-hidden="true"></i>脉线
               </span>
               <span class="legend-chip" data-layer="arrows">
                 <i class="legend-arrow" aria-hidden="true">
@@ -147,6 +155,12 @@
               <button type="button" class="layer-toggle" data-layer="lines" aria-pressed="true" title="场线">
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 14c4-9 10-9 14 0" /></svg>
                 <span>场线</span>
+              </button>
+              <button type="button" class="layer-toggle" data-layer="pathlines" aria-pressed="true" title="迹线：同一粒子的物理时间轨迹" hidden>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path stroke-dasharray="3 2" d="M3 15c3-12 9 2 14-10" /></svg><span>迹线</span>
+              </button>
+              <button type="button" class="layer-toggle" data-layer="streaklines" aria-pressed="true" title="脉线：同一观察时刻的粒子集合" hidden>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="14" r="1.7"/><circle cx="10" cy="10" r="1.7"/><circle cx="16" cy="6" r="1.7"/></svg><span>脉线</span>
               </button>
               <button type="button" class="layer-toggle" data-layer="arrows" aria-pressed="true" title="方向箭头">
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h11M11 6l4 4-4 4" /></svg>
@@ -219,6 +233,7 @@
               <span class="caption-mark" aria-hidden="true">i</span>
               <span class="caption-text">
                 <span id="projection-note">曲线沿局部场方向积分；颜色表示场强大小。</span>
+                <span class="caption-flow" id="caption-flow" hidden></span>
                 <span class="caption-seed" id="caption-seed">播种：— · 渲染 — / 抑制 —</span>
                 <span class="caption-preview" id="caption-preview" hidden>
                   光标周围的蓝色预览束是浏览器对服务端向量网格做双线性插值再用 RK4 积分的结果，不是服务端积分；点击图中位置可把该种子交给服务端得到精确场线。
@@ -243,9 +258,20 @@
             </div>
 
             <form id="scene-form">
+              <fieldset id="flow-controls" class="flow-controls" hidden>
+                <legend>物理时间 / s</legend>
+                <div class="flow-time-grid">
+                  <label for="observation-time">观察时刻<input id="observation-time" type="number" min="0" max="6" step="0.1" value="4" required></label>
+                  <label for="initial-time">迹线初始时刻<input id="initial-time" type="number" min="0" max="6" step="0.1" value="0" required></label>
+                  <label for="release-start">释放窗起点<input id="release-start" type="number" min="0" max="6" step="0.1" value="0" required></label>
+                  <label for="release-end">释放窗终点<input id="release-end" type="number" min="0" max="6" step="0.1" value="4" required></label>
+                </div>
+                <p class="field-help">范围 0–6 s。初始时刻与释放窗不能晚于观察时刻；修改后离开输入框提交。</p>
+                <p class="source-status" id="time-status" role="status"></p>
+              </fieldset>
               <div class="control-group range-control">
                 <div class="label-row">
-                  <label for="density">播种预算</label>
+                  <label for="density" id="density-label">播种预算</label>
                   <output id="density-output" for="density">18</output>
                 </div>
                 <input
@@ -261,7 +287,7 @@
                   <span>稀疏</span>
                   <span>细密</span>
                 </div>
-                <p class="field-help">每次计算的总种子预算，不代表场强。</p>
+                <p class="field-help" id="density-help">每次计算的总种子预算，不代表场强。</p>
               </div>
 
               <div class="control-group range-control">
@@ -336,11 +362,11 @@
               <ul class="reading-list">
                 <li>颜色表示色标标题所写物理量的大小；对数色标按数量级着色。</li>
                 <li>色标上下限只是显示范围：尖角表示有格点超出范围、按端色显示，精确值请用探针。</li>
-                <li>场线上的箭头只标方向：足够长的线按屏幕弧长放 1–3 个，很短的线不放；箭头大小固定，不表示强弱。</li>
-                <li>场线疏密取决于播种方式和预算，不能直接读成场的强弱；圆环为等通量播种，见“播种说明”。</li>
+                <li id="guide-arrows">场线上的箭头只标方向：足够长的线按屏幕弧长放 1–3 个，很短的线不放；箭头大小固定，不表示强弱。</li>
+                <li id="guide-density">场线疏密取决于播种方式和预算，不能直接读成场的强弱；圆环为等通量播种，见“播种说明”。</li>
                 <li>探针吸附到离指针最近的网格点：显示该点的坐标和原值（未按色标截断、不插值），图上的小圆点标出这个点；有向量分量时另显示该点的场方向角（从 +x 朝 +y 逆时针）与两个分量。</li>
                 <li>“斜率”图层在采样格点上画沿场方向的等长短线：只表示方向，不分正反，也不表示强弱。</li>
-                <li>光标周围的蓝色预览束是浏览器对向量网格做双线性插值再用 RK4 积分的结果，随采样分辨率变化，不是服务端积分；点击图中位置才把该种子交给服务端算出精确场线（蓝色光晕），手动种子不占播种预算。</li>
+                <li id="guide-preview">光标周围的蓝色预览束是浏览器对向量网格做双线性插值再用 RK4 积分的结果，随采样分辨率变化，不是服务端积分；点击图中位置才把该种子交给服务端算出精确场线（蓝色光晕），手动种子不占播种预算。</li>
                 <li>对数色标上的短刻度是十的整数次幂，读数时按数量级看。</li>
                 <li>斜线区未着色：场源排除区（半径为数值设定）或非有限值；对数色标下为 0 的格点也不着色。</li>
               </ul>
@@ -350,7 +376,7 @@
               <h2 id="details-heading">科学详情</h2>
               <dl class="scene-stats" aria-label="场景统计">
                 <div>
-                  <dt>场线</dt>
+                  <dt id="line-count-label">场线</dt>
                   <dd id="line-count">—</dd>
                 </div>
                 <div>
@@ -377,19 +403,23 @@
                   <dd id="seed-description">—</dd>
                 </div>
                 <div>
-                  <dt>末端终止</dt>
+                  <dt id="termination-label">末端终止</dt>
                   <dd id="termination-counts">—</dd>
                 </div>
                 <div>
-                  <dt>起点端终止</dt>
+                  <dt id="start-termination-label">起点端终止</dt>
                   <dd id="start-termination-counts">—</dd>
                 </div>
+                <div id="flow-summary-row" hidden>
+                  <dt>粒子终止</dt>
+                  <dd id="flow-summary">—</dd>
+                </div>
                 <div>
-                  <dt>手动种子</dt>
+                  <dt id="manual-summary-label">手动种子</dt>
                   <dd id="manual-seed-summary">—</dd>
                 </div>
                 <div>
-                  <dt>尝试结果</dt>
+                  <dt id="trace-outcomes-label">尝试结果</dt>
                   <dd class="trace-outcomes">
                     渲染 <strong id="rendered-line-count">—</strong>
                     · 抑制 <strong id="suppressed-count">—</strong>

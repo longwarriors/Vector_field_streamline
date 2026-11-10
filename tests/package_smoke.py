@@ -21,6 +21,8 @@ def main() -> None:
                 InfiniteWireField,
                 LaplaceField,
                 MagneticShieldCylinderField,
+                OscillatingFlowField,
+                PathlineTracer,
                 SlopeField,
                 UniformField,
                 __version__,
@@ -35,6 +37,11 @@ def main() -> None:
             assert tuple(LaplaceField()((1.0, 2.0))) == (-1.0, 2.0)
             assert tuple(SlopeField(lambda x, y: x-y)((1.0, 2.0))) == (1.0, -1.0)
             assert MagneticShieldCylinderField().shielding_factor > 13.0
+            flow = OscillatingFlowField(amplitude=0, transverse_speed=0.4)
+            path = PathlineTracer(flow).trace((0, 0), 0, 1)
+            assert path.termination == "time_end"
+            assert abs(path.points[-1, 0] - 1) < 1e-12
+            assert abs(path.points[-1, 1] - 0.4) < 1e-12
             for asset in (
                 "index.html",
                 "app.js",
@@ -43,6 +50,8 @@ def main() -> None:
                 "scene-loader.js",
                 "preview.js",
                 "scene-validation.js",
+                "flow-validation.js",
+                "flow-renderer.js",
                 "formatting.js",
                 "source-controls.js",
                 "coordinates.js",

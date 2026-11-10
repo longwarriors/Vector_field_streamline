@@ -1777,6 +1777,8 @@ def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
         "slope_linear",
         "slope_logistic",
         "magnetic_shield_cylinder",
+        "flow_oscillating",
+        "flow_steady",
     }
     assert all(preset["label"] and preset["description"] for preset in payload)
     by_id = {preset["id"]: preset for preset in payload}

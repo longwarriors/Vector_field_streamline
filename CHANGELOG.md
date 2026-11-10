@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-11-10
+
+### Added
+
+- 含时速度场公共接口 `TimeDependentField`、二维 `OscillatingFlowField`、`TimeOptions`、`PathlineTracer` 与独立的时间结果/终止类型。迹线按真实速度积分，瞬时零速度不终止；脉线逐个释放时刻跟踪到同一观察时刻。
+- `flow_oscillating` 与 `flow_steady` 两个预设，当前共 24 个。使用独立解析解区分冻结流线、迹线和脉线，并核对定常极限；空间、速度、时间明确使用 m、m/s、s。
+- Web 可选 `time` 请求与 `flow` 响应，公开观察时刻、初始时刻、释放窗、逐粒子实际终止时间与原因。默认观察 4 s、初始 0 s、释放窗 [0,4] s；只允许 0–6 s 的合法正向窗口。
+- 前端时间控制、三类曲线图例与共同释放站交互；网格只代表观察时刻，粒子积分保留在核心。
+
+### Changed
+
+- 新流场的 `density` 表示每个固定站的脉线释放目标采样数，退化释放窗只产生一个粒子，极窄窗口合并相同浮点释放时刻；旧静态预设的预算语义不变。`lines` 与已有终止统计只表示冻结流线，粒子结果单独表达；曲线缓存包含全部时间字段，分辨率变化可复用曲线。
+- 同步 API、教程、路线图与版本文档；迟滞电磁场、自定义表达式、数值网格与三维仍留待后续。
+
 ## [0.3.9] - 2026-11-10
 
 ### Added
@@ -204,7 +218,8 @@
 - `density` 定义为整个场景的种子总预算，并在服务端与浏览器提交前共同校验。
 - 场景元数据区分真实不变平面场线与投影流线，并公开播种说明和终止统计。
 
-[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.9...HEAD
+[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.10...HEAD
+[0.3.10]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.9...HEAD
 [0.3.9]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.6...v0.3.7

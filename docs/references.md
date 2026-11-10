@@ -51,6 +51,12 @@
 
 2. OpenStax, *Calculus*, Vol. 2：[§4.2 Direction Fields and Numerical Methods](https://openstax.org/books/calculus-volume-2/pages/4-2-direction-fields-and-numerical-methods) 与 [§4.4 The Logistic Equation](https://openstax.org/books/calculus-volume-2/pages/4-4-the-logistic-equation)。用于一阶斜率场、Logistic 解析解与平衡解的教学说明。
 
+## 非定常流与粒子运动
+
+1. Fred Stern, [*ME:5160, Chapter 2: Pressure Distribution in a Fluid*](https://stern.lab.uiowa.edu/sites/stern.lab.uiowa.edu/files/2025-01/Chapter%202---58160-2024_final.pdf), University of Iowa, Fall 2024，pp. 40–42。固定时刻的流线、单质点迹线、固定位置释放的脉线，以及定常情况下的几何一致性。
+
+2. SciPy, [`DOP853`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.DOP853.html) 与 [`solve_ivp`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.solve_ivp.html)。物理时间初值问题、自适应误差控制和稠密输出。项目使用的均匀振荡流闭式通过直接积分速度得到，作为数值实现的独立基准，不是引用来源中的具体算例。
+
 ## 数值积分与向量场可视化
 
 1. J. R. Dormand, P. J. Prince, [“A family of embedded Runge–Kutta formulae”](https://doi.org/10.1016/0771-050X(80)90013-3), *Journal of Computational and Applied Mathematics* **6** (1980), 19–26。

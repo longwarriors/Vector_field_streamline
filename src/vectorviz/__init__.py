@@ -1,6 +1,6 @@
 """VectorViz: reusable scientific vector-field models and field-line tracing."""
 
-__version__ = "0.3.9"
+__version__ = "0.3.10"
 
 from .core import Domain, ExclusionRegion, SphericalExclusion, ToroidalExclusion, VectorField
 from .fields import (
@@ -12,6 +12,15 @@ from .fields import (
     MagneticDipoleField,
     PointChargeField,
     UniformField,
+)
+from .flows import (
+    OscillatingFlowField,
+    PathlineResult,
+    PathlineTracer,
+    StreaklineResult,
+    TimeDependentField,
+    TimeOptions,
+    TimeTerminationReason,
 )
 from .material_fields import MagneticShieldCylinderField
 from .planar_fields import LaplaceField, SlopeField
@@ -37,10 +46,17 @@ __all__ = [
     "LaplaceField",
     "MagneticDipoleField",
     "MagneticShieldCylinderField",
+    "OscillatingFlowField",
+    "PathlineResult",
+    "PathlineTracer",
     "PointChargeField",
     "SlopeField",
     "SphericalExclusion",
+    "StreaklineResult",
     "TerminationReason",
+    "TimeDependentField",
+    "TimeOptions",
+    "TimeTerminationReason",
     "ToroidalExclusion",
     "TraceBranch",
     "TraceDirection",

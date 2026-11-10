@@ -1,4 +1,5 @@
 /** Structural validation of a scene response against the browser contract. */
+import { validateFlow } from "./flow-validation.js";
 
 export const SOURCE_STRENGTH_UNITS = Object.freeze({
   positive: "nC",
@@ -299,5 +300,6 @@ export function validateScene(scene, preset, expected = {}) {
       `服务端记录了 ${metadata.manual_seed_count} 个手动种子，请求发送的是 ${expected.seedCount} 个`,
     );
   }
+  validateFlow(scene, preset, expected);
   return scene;
 }

@@ -47,5 +47,12 @@ export function createSceneLoader({ fetchScene, onStart, onSuccess, onError, onS
     }
   }
 
-  return { load, schedule, cancelScheduled };
+  function cancel() {
+    cancelScheduled();
+    controller?.abort();
+    sequence += 1;
+    controller = null;
+  }
+
+  return { load, schedule, cancelScheduled, cancel };
 }

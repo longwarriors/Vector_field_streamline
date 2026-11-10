@@ -6,6 +6,7 @@ import math
 import threading
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import Literal
 
 import numpy as np
@@ -22,6 +23,7 @@ from vectorviz.fields import (
     PointChargeField,
     UniformField,
 )
+from vectorviz.flows import OscillatingFlowField, PathlineTracer
 from vectorviz.material_fields import MagneticShieldCylinderField
 from vectorviz.planar_fields import LaplaceField, SlopeField
 from vectorviz.tracing import (
@@ -35,9 +37,12 @@ from vectorviz.tracing import (
 
 from .schemas import (
     ELECTRIC_PRESETS,
+    FLOW_PRESETS,
     DomainPayload,
+    FlowPayload,
     LinePayload,
     MetadataPayload,
+    PathlinePayload,
     RegionPayload,
     ScalarPayload,
     SceneRequest,
@@ -46,6 +51,7 @@ from .schemas import (
     SeedMode,
     SourceInput,
     SourcePayload,
+    StreaklinePayload,
     VectorPayload,
 )
 from .seeding import (
@@ -619,7 +625,80 @@ def _shield_model(request: SceneRequest) -> _SceneModel:
     )
 
 
+def _flow_field(preset: str) -> OscillatingFlowField:
+    return OscillatingFlowField() if preset == "flow_oscillating" else OscillatingFlowField(
+        amplitude=0.0, transverse_speed=0.4
+    )
+
+
+def _flow_model(request: SceneRequest) -> _SceneModel:
+    assert request.time is not None
+    oscillating = request.preset == "flow_oscillating"
+    return _SceneModel(
+        field=_flow_field(request.preset).freeze(request.time.observation),
+        sources=(), exclusions=(),
+        trace_jobs=(TraceJob((-2.0, 0.0), TraceDirection.BOTH),),
+        trace_options=DEFAULT_TRACE_OPTIONS,
+        scalar_label="|u|", scalar_unit="m/s",
+        title="非定常横向振荡流" if oscillating else "定常流对照",
+        field_model=("u=(1, 0.6 sin t) m/s" if oscillating else "u=(1, 0.4) m/s") +
+            "；给定的二维不可压速度场，无粒子相互作用或流体方程求解。",
+        projection_note=(
+            "坐标 m，物理时间 s。流线冻结于观察时刻；迹线随物理时间积分；"
+            "脉线是在同一观察时刻仍未出域的释放粒子位置集合。网格仅表示瞬时速度。"
+        ),
+        seed_mode=SeedMode.COVERAGE,
+        seed_description=(
+            "固定释放站 (−2, 0) m；点击增加释放站，每站同时计算三类曲线。"
+            f"目标采样数 {request.density} 表示每站释放窗内等时间隔的粒子数"
+            "（零窗口为 1，浮点舍入后重合的时刻会合并）；"
+            "既有终止统计仅计流线，粒子终止见时间曲线数据。"
+        ),
+    )
+
+
+@lru_cache(maxsize=16)
+def _trace_flow_cached(key: str) -> FlowPayload:
+    """Resolution-independent particle cache, bounded to 16 validated Web requests.
+
+    Each key includes all four physical times, density and manual release sites.
+    Web limits bound each entry to 17 sites, 40 releases/site and six seconds.
+    Callers always receive a deep copy, including the nested time configuration.
+    """
+    request = SceneRequest.model_validate_json(key)
+    time = request.time
+    assert time is not None
+    tracer = PathlineTracer(_flow_field(request.preset), domain=DOMAIN)
+    sites = [(-2.0, 0.0), *((seed.x, seed.y) for seed in request.seeds or ())]
+    # Adjacent representable time endpoints may admit fewer distinct samples
+    # than the requested target. Keep both endpoints and merge only exact
+    # floating-point duplicates instead of rejecting an otherwise valid window.
+    releases = np.unique(np.linspace(time.release_start, time.release_end,
+                           1 if time.release_start == time.release_end else request.density))
+    paths, streaks = [], []
+    for index, site in enumerate(sites):
+        path = tracer.trace(site, time.initial, time.observation)
+        streak = tracer.streakline(site, releases, time.observation)
+        paths.append(PathlinePayload(
+            site_index=index, points=path.points.tolist(), times=path.times.tolist(),
+            termination=path.termination.value,
+        ))
+        streaks.append(StreaklinePayload(
+            site_index=index,
+            points=[tuple(point) if valid else None for point, valid in zip(
+                streak.positions, streak.valid, strict=True
+            )],
+            release_times=streak.release_times.tolist(),
+            arrival_times=streak.arrival_times.tolist(),
+            terminations=[reason.value for reason in streak.terminations],
+        ))
+    return FlowPayload(time=time, time_unit="s", release_sites=sites,
+                       pathlines=paths, streaklines=streaks)
+
+
 def _build_model(request: SceneRequest) -> _SceneModel:
+    if request.preset in FLOW_PRESETS:
+        return _flow_model(request)
     if request.preset in {"laplace_saddle", "laplace_multipole", "slope_linear", "slope_logistic"}:
         return _mathematical_model(request)
     if request.preset == "magnetic_shield_cylinder":
@@ -1304,6 +1383,10 @@ def build_scene(request: SceneRequest) -> SceneResponse:
         lines=lines,
         sources=list(model.sources),
         regions=list(model.regions),
+        flow=(
+            _trace_flow_cached(request.model_dump_json(exclude={"resolution"})).model_copy(deep=True)
+            if request.preset in FLOW_PRESETS else None
+        ),
         metadata=MetadataPayload(
             title=model.title,
             projection_note=model.projection_note,

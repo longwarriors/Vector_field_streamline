@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CORE_MODULES = ("__init__.py", "core.py", "fields.py", "tracing.py", "_trace_geometry.py", "planar_fields.py", "material_fields.py")
+CORE_MODULES = ("__init__.py", "core.py", "fields.py", "tracing.py", "_trace_geometry.py", "planar_fields.py", "material_fields.py", "flows.py")
 
 
 def test_core_sources_never_reference_the_web_package() -> None:

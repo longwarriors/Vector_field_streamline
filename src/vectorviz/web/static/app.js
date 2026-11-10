@@ -29,6 +29,7 @@ import {
 import { createPreviewGrid, previewBundle } from "./preview.js";
 import { DEFAULT_LAYERS, createRenderer, sourceStyle } from "./renderer.js";
 import { createSceneLoader } from "./scene-loader.js";
+import { FLOW_PRESETS } from "./flow-validation.js";
 import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validation.js";
 
 (() => {
@@ -57,6 +58,19 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     preset: document.querySelector("#preset"),
     density: document.querySelector("#density"),
     densityOutput: document.querySelector("#density-output"),
+    densityLabel: document.querySelector("#density-label"),
+    densityHelp: document.querySelector("#density-help"),
+    flowControls: document.querySelector("#flow-controls"),
+    observationTime: document.querySelector("#observation-time"),
+    initialTime: document.querySelector("#initial-time"),
+    releaseStart: document.querySelector("#release-start"),
+    releaseEnd: document.querySelector("#release-end"),
+    timeStatus: document.querySelector("#time-status"),
+    captionFlow: document.querySelector("#caption-flow"),
+    flowSummaryRow: document.querySelector("#flow-summary-row"),
+    flowSummary: document.querySelector("#flow-summary"),
+    lineLegendLabel: document.querySelector("#line-legend-label"),
+    seedHelp: document.querySelector("#seed-help"),
     resolution: document.querySelector("#resolution"),
     resolutionOutput: document.querySelector("#resolution-output"),
     runButton: document.querySelector("#run-button"),
@@ -68,6 +82,8 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     addDipoleSource: document.querySelector("#add-dipole-source"),
     sourceEditorList: document.querySelector("#source-editor-list"),
     sourceHelp: document.querySelector("#source-help"),
+    sourceHeading: document.querySelector("#source-heading"),
+    lineCountLabel: document.querySelector("#line-count-label"),
     sourceStatus: document.querySelector("#source-status"),
     interactionHelp: document.querySelector("#interaction-help"),
     sceneTitle: document.querySelector("#scene-title"),
@@ -227,6 +243,54 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     state.presetCapabilities = capabilities;
   }
 
+  function isFlow() { return FLOW_PRESETS.has(elements.preset.value); }
+
+  function updateFlowControls() {
+    const flow = isFlow();
+    elements.flowControls.hidden = !flow;
+    elements.densityLabel.textContent = flow ? "每站释放采样数" : "播种预算";
+    elements.densityHelp.textContent = flow
+      ? "每个固定释放站在释放窗内等间隔采样；零时长窗只采 1 个粒子。" : "每次计算的总种子预算，不代表场强。";
+    elements.seedHelp.textContent = flow
+      ? "点击添加固定释放站：同一点分别计算流线、迹线、脉线；最多添加 16 个站。"
+      : "点击图中位置，由服务端从该点双向积分一条精确场线；最多 16 个。";
+    elements.lineLegendLabel.textContent = flow ? "流线" : "场线";
+    elements.lineCountLabel.textContent = flow ? "流线" : "场线";
+    document.getElementById("termination-label").textContent = flow ? "流线末端终止" : "末端终止";
+    document.getElementById("start-termination-label").textContent = flow ? "流线起点端终止" : "起点端终止";
+    document.getElementById("manual-summary-label").textContent = flow ? "手动流线" : "手动种子";
+    document.getElementById("trace-outcomes-label").textContent = flow ? "流线尝试结果" : "尝试结果";
+    elements.sourceHeading.textContent = flow ? "释放站位置" : "场源位置";
+    const flowGuide = {
+      "guide-arrows": "箭头仅表示冻结流线的速度方向；红虚线按物理时间排列，末端圆点为粒子最终位置。脉线不画方向箭头，其切线通常不是速度方向。",
+      "guide-density": "蓝点按释放时刻等间隔采样：每个点是同一观察时刻的一个粒子，点间虚线仅连接相邻存活样本。采样点密度不能直接当成速度或流量。",
+      "guide-preview": "含时流禁用浏览器网格预览；热图、斜率短线和探针只读观察时刻的冻结速度场。点击添加一个固定释放站，由服务端分别计算三类曲线。",
+    };
+    Object.entries(flowGuide).forEach(([id, text]) => {
+      const item = document.getElementById(id);
+      item.dataset.staticText ??= item.textContent;
+      item.textContent = flow ? text : item.dataset.staticText;
+    });
+    elements.layerToggles.forEach((button) => {
+      if (["pathlines", "streaklines"].includes(button.dataset.layer)) button.hidden = !flow;
+      if (["sources", "preview"].includes(button.dataset.layer)) button.hidden = flow;
+      if (button.dataset.layer === "lines") {
+        button.querySelector("span").textContent = flow ? "流线" : "场线";
+        button.title = flow ? "流线：观察时刻冻结的速度场切线" : "场线";
+      }
+    });
+  }
+
+  function readTimeControls() {
+    const inputs = [elements.observationTime, elements.initialTime, elements.releaseStart, elements.releaseEnd];
+    const [observation, initial, release_start, release_end] = inputs.map((input) => input.valueAsNumber);
+    if (inputs.some((input) => !input.validity.valid) || initial > observation ||
+        release_start > release_end || release_end > observation) {
+      throw new Error("时间须为 0–6 s；初始时刻 ≤ 观察时刻，释放窗起点 ≤ 终点 ≤ 观察时刻。");
+    }
+    return { observation, initial, release_start, release_end };
+  }
+
   function currentRequestBody() {
     const serializedSources =
       sourcesAreEditable() && state.sourceOverrides?.length
@@ -252,6 +316,7 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       density,
       resolution: Number(elements.resolution.value),
     };
+    if (isFlow()) body.time = readTimeControls();
     if (serializedSources) {
       body.sources = serializedSources;
     }
@@ -308,6 +373,9 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     elements.terminationCounts.textContent = "—";
     elements.startTerminationCounts.textContent = "—";
     elements.manualSeedSummary.textContent = "—";
+    elements.captionFlow.hidden = true;
+    elements.flowSummary.textContent = "—";
+    elements.flowSummaryRow.hidden = !isFlow();
     elements.renderedLineCount.textContent = "—";
     elements.suppressedCount.textContent = "—";
     elements.colorbar.hidden = true;
@@ -359,6 +427,9 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     if (!response.ok) throw new Error(await extractError(response));
     return validateScene(await response.json(), requestBody.preset, {
       seedCount: requestBody.seeds?.length ?? 0,
+      seeds: requestBody.seeds || [],
+      time: requestBody.time,
+      density: requestBody.density,
     });
   }
 
@@ -376,7 +447,7 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
         ? scene.sources.map(serializeSource)
         : null;
       state.selectedSource = null;
-      state.previewGrid = scene.vector ? createPreviewGrid(scene) : null;
+      state.previewGrid = scene.vector && !scene.flow ? createPreviewGrid(scene) : null;
       state.preview = null;
       renderSourceEditors();
       updateSceneDetails();
@@ -386,7 +457,9 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
         scene.metadata.manual_seed_count > 0
           ? `，其中 ${scene.lines.filter((line) => Number.isInteger(line.seed_index)).length} 条来自 ${scene.metadata.manual_seed_count} 个手动种子`
           : "";
-      elements.liveStatus.textContent = `${scene.metadata.title || "场景"}已加载，渲染 ${scene.metadata.rendered_line_count} 条场线${manualNote}，抑制 ${scene.metadata.suppressed_count} 次尝试。`;
+      elements.liveStatus.textContent = scene.flow
+        ? `${scene.metadata.title}已加载：${scene.metadata.rendered_line_count} 条流线、${scene.flow.pathlines.length} 条迹线、${scene.flow.streaklines.length} 组脉线。`
+        : `${scene.metadata.title || "场景"}已加载，渲染 ${scene.metadata.rendered_line_count} 条场线${manualNote}，抑制 ${scene.metadata.suppressed_count} 次尝试。`;
     },
     onError(error) {
       invalidateSceneView("error");
@@ -408,7 +481,20 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       state.seeds = [];
       renderSeedStatus();
     }
-    await loader.load(currentRequestBody());
+    updateFlowControls();
+    let body;
+    try {
+      body = currentRequestBody();
+      elements.timeStatus.textContent = "";
+    } catch (error) {
+      loader.cancel();
+      setLoading(false);
+      invalidateSceneView("error");
+      elements.timeStatus.textContent = error.message;
+      setError(error.message);
+      return;
+    }
+    await loader.load(body);
   }
 
   function scheduleLoad(delay = 260) {
@@ -416,6 +502,7 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
   }
 
   const TERMINATION_LABELS = Object.freeze({
+    time_end: "到达观察时刻",
     domain_exit: "离开计算域",
     null_field: "零场",
     nonfinite_field: "非有限场",
@@ -465,6 +552,14 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       scene.metadata.rendered_line_count.toLocaleString("zh-CN");
     elements.suppressedCount.textContent =
       scene.metadata.suppressed_count.toLocaleString("zh-CN");
+    elements.captionFlow.hidden = !scene.flow;
+    elements.flowSummaryRow.hidden = !scene.flow;
+    if (scene.flow) {
+      const { time, pathlines, streaklines } = scene.flow;
+      elements.captionFlow.textContent = `观察 ${formatValue(time.observation)} s · 迹线初始 ${formatValue(time.initial)} s · 释放窗 [${formatValue(time.release_start)}, ${formatValue(time.release_end)}] s。黑实线：流线；红虚线：迹线；蓝点线：脉线。`;
+      const counts = (reasons) => reasons.reduce((acc, reason) => ({ ...acc, [reason]: (acc[reason] || 0) + 1 }), {});
+      elements.flowSummary.textContent = `迹线：${formatTerminationCounts(counts(pathlines.map((line) => line.termination)))}；脉线粒子：${formatTerminationCounts(counts(streaklines.flatMap((line) => line.terminations)))}。出域粒子不画在脉线上；相邻存活采样点之间的虚线仅作连接。`;
+    }
 
     const scale = resolveScale(scalar);
     elements.colorbar.hidden = false;
@@ -485,7 +580,7 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     elements.colorbar.toggleAttribute("data-extend-under", under > 0);
     elements.colorbarExtent.textContent =
       `${over} 个格点高于上限、${under} 个格点低于下限，按端色显示。`;
-    elements.captionSeed.textContent = `播种：${
+    elements.captionSeed.textContent = `${scene.flow ? "流线" : ""}播种：${
       SEED_MODE_LABELS[scene.metadata.seed_mode] || scene.metadata.seed_mode
     } · 渲染 ${scene.metadata.rendered_line_count} / 抑制 ${scene.metadata.suppressed_count}`;
     elements.colorbarLabel.textContent = quantityWithUnit(scalar.label || "场强", scalar.unit);
@@ -501,10 +596,14 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     // reflows (and the plot never moves) when a layer is switched.
     const hasVector = Boolean(scene.vector);
     elements.captionPreview.hidden = !hasVector;
+    elements.captionPreview.textContent = scene.flow
+      ? `热图、向量探针与斜率短线仅表示观察时刻 ${formatValue(scene.flow.time.observation)} s 的冻结速度场；含时流已禁用网格预览。迹线与脉线由服务端按物理时间积分。`
+      : "光标周围的蓝色预览束是浏览器对服务端向量网格做双线性插值再用 RK4 积分的结果，不是服务端积分；点击图中位置可把该种子交给服务端得到精确场线。";
     elements.layerToggles.forEach((button) => {
       if (button.dataset.layer === "slopes" || button.dataset.layer === "preview") {
-        button.disabled = !hasVector;
-        button.title = hasVector ? button.dataset.title : "此响应没有向量分量，无法显示";
+        const frozenPreview = button.dataset.layer === "preview" && Boolean(scene.flow);
+        button.disabled = !hasVector || frozenPreview;
+        button.title = frozenPreview ? "含时流禁用网格预览；热图与向量仅表示观察时刻的冻结场" : hasVector ? button.dataset.title : "此响应没有向量分量，无法显示";
       }
     });
     renderSeedStatus();
@@ -587,6 +686,8 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       slope_linear: "线性斜率场",
       slope_logistic: "Logistic 斜率场",
       magnetic_shield_cylinder: "理想磁屏蔽筒",
+      flow_oscillating: "非定常横向振荡流",
+      flow_steady: "定常流对照",
     }[value] || "物理场";
   }
 
@@ -641,7 +742,9 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       arrows: [true, layers.lines && layers.arrows],
       sources: [scene.sources.length > 0, layers.sources],
       slopes: [hasVector, layers.slopes],
-      preview: [hasVector, layers.preview],
+      preview: [hasVector && !scene.flow, layers.preview],
+      pathlines: [Boolean(scene.flow), layers.pathlines],
+      streaklines: [Boolean(scene.flow), layers.streaklines],
       seeds: [hasManualLines, layers.lines],
     };
     elements.legendChips.forEach((chip) => {
@@ -649,13 +752,15 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       chip.hidden = !applicable;
       chip.toggleAttribute("data-layer-off", applicable && !shown);
     });
-    elements.captionPreview.toggleAttribute("data-layer-off", !layers.preview);
+    elements.captionPreview.toggleAttribute("data-layer-off", !scene.flow && !layers.preview);
     const draggableSourceCount = sourcesDraggable() ? state.scene.sources.length : 0;
     elements.canvas.dataset.draggable = String(draggableSourceCount > 0);
     const title = state.scene.metadata.title || presetLabel(elements.preset.value);
     elements.canvas.setAttribute(
       "aria-label",
-      `${title}二维可视化，共 ${state.scene.metadata.rendered_line_count} 条场线、${draggableSourceCount} 个可移动场源。`,
+      scene.flow
+        ? `${title}二维可视化：流线冻结观察时刻，迹线沿物理时间，脉线表示同时刻粒子位置。${scene.flow.release_sites.length} 个固定释放站，坐标 m、速度 m/s、时间 s。`
+        : `${title}二维可视化，共 ${state.scene.metadata.rendered_line_count} 条场线、${draggableSourceCount} 个可移动场源。`,
     );
   }
 
@@ -663,6 +768,8 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
     heatmap: "热图",
     slopes: "斜率短线",
     lines: "场线",
+    pathlines: "迹线",
+    streaklines: "脉线",
     arrows: "方向箭头",
     preview: "光标预览束",
     sources: "场源",
@@ -748,10 +855,12 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       ? electric
         ? "可增删电荷；拖动标记或输入坐标。"
         : "可增删磁偶极子并编辑面内方向。"
-      : "固定预设只显示只读几何标记。";
+      : isFlow() ? "释放站在整个释放时间窗内保持固定。" : "固定预设只显示只读几何标记。";
     elements.interactionHelp.textContent = editable
       ? "拖动场源改变位置；移动指针可探测坐标与场强。"
-      : "移动指针可探测坐标与场强；固定标记不可移动。";
+      : isFlow()
+        ? "流线冻结观察时刻；迹线跟随同一粒子；脉线是不同释放时刻的粒子在观察时刻的位置集合。三类图层可分别开关，定常流中重合。"
+        : "移动指针可探测坐标与场强；固定标记不可移动。";
     if (!editable && sources.length) {
       const fixed = document.createElement("p");
       fixed.className = "fixed-sources-note";
@@ -782,6 +891,8 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
       fixed.textContent =
         elements.preset.value === "uniform"
           ? "匀强场的方向与强度由预设固定。"
+          : isFlow()
+            ? "固定释放站为 (−2, 0) m；蓝点表示释放位置。点击画布可添加站位，同一站位分别用于三类曲线。速度单位 m/s，时间单位 s。"
           : elements.preset.value === "magnetic_shield_cylinder"
             ? "无限长圆柱壳的内外半径、恒定磁导率与横向外场固定；两条虚线圆是材料界面。"
           : MATHEMATICAL_PRESETS.has(elements.preset.value)
@@ -1285,6 +1396,9 @@ import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene }
   elements.resolution.addEventListener("change", () => {
     updateRange(elements.resolution, elements.resolutionOutput, (value) => `${value} × ${value}`);
     scheduleLoad(SLIDER_COMMIT_DELAY);
+  });
+  [elements.observationTime, elements.initialTime, elements.releaseStart, elements.releaseEnd].forEach((input) => {
+    input.addEventListener("change", () => { if (isFlow()) loadScene(); });
   });
   elements.runButton.addEventListener("click", () => loadScene());
   elements.retryButton.addEventListener("click", () => loadScene());

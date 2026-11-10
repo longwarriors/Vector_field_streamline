@@ -36,7 +36,10 @@ PresetName = Literal[
     "slope_linear",
     "slope_logistic",
     "magnetic_shield_cylinder",
+    "flow_oscillating",
+    "flow_steady",
 ]
+FLOW_PRESETS = frozenset({"flow_oscillating", "flow_steady"})
 # Presets whose geometry is fixed by the server and returned as read-only
 # markers or regions.
 FIXED_PRESETS = frozenset(
@@ -51,6 +54,8 @@ FIXED_PRESETS = frozenset(
         "slope_linear",
         "slope_logistic",
         "magnetic_shield_cylinder",
+        "flow_oscillating",
+        "flow_steady",
         "straight_wire",
         "parallel_wires",
         "antiparallel_wires",
@@ -85,6 +90,7 @@ SourceStrengthUnit = Literal["nC", "A·m²", "A"]
 # seed outside it could only terminate as seed_outside_domain.
 SEED_COORDINATE_LIMIT = 3.0
 MAX_MANUAL_SEEDS = 16
+FiniteTime = Annotated[FiniteFloat, Field(strict=True)]
 
 
 class SeedMode(StrEnum):
@@ -165,6 +171,32 @@ class SeedInput(BaseModel):
     y: float = Field(ge=-SEED_COORDINATE_LIMIT, le=SEED_COORDINATE_LIMIT)
 
 
+class FlowTime(BaseModel):
+    """Physical times in seconds; the browser examples cover the closed interval [0, 6]."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    observation: FiniteTime = Field(default=4.0, ge=0.0, le=6.0)
+    initial: FiniteTime = Field(default=0.0, ge=0.0, le=6.0)
+    release_start: FiniteTime = Field(default=0.0, ge=0.0, le=6.0)
+    release_end: FiniteTime = Field(default=4.0, ge=0.0, le=6.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_release_end(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "release_end" not in data:
+            return {**data, "release_end": data.get("observation", 4.0)}
+        return data
+
+    @model_validator(mode="after")
+    def validate_order(self) -> "FlowTime":
+        if self.initial > self.observation:
+            raise ValueError("initial must not exceed observation")
+        if not self.release_start <= self.release_end <= self.observation:
+            raise ValueError("release_start <= release_end <= observation is required")
+        return self
+
+
 class SceneRequest(BaseModel):
     """Parameters that affect physical sampling and field-line tracing."""
 
@@ -173,6 +205,7 @@ class SceneRequest(BaseModel):
     preset: PresetName = "electric_dipole"
     density: int = Field(default=18, ge=6, le=40)
     resolution: int = Field(default=72, ge=32, le=144)
+    time: FlowTime | None = None
     sources: list[SourceInput] | None = Field(default=None, min_length=1, max_length=8)
     seeds: list[SeedInput] | None = Field(
         default=None,
@@ -186,6 +219,11 @@ class SceneRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_source_override(self) -> "SceneRequest":
+        if self.preset in FLOW_PRESETS:
+            if self.time is None:
+                self.time = FlowTime()
+        elif self.time is not None:
+            raise ValueError("time is only valid for flow presets")
         if self.sources is None:
             return self
         kinds = {source.kind for source in self.sources}
@@ -378,6 +416,87 @@ class MetadataPayload(_ResponsePayload):
         return self
 
 
+TimeTermination = Literal[
+    "time_end", "domain_exit", "seed_outside_domain", "nonfinite_field", "solver_failure"
+]
+
+
+class PathlinePayload(_ResponsePayload):
+    site_index: Annotated[StrictInt, Field(ge=0)]
+    points: list[tuple[FiniteFloat, FiniteFloat]] = Field(min_length=1)
+    times: list[FiniteTime] = Field(min_length=1)
+    termination: TimeTermination
+
+    @model_validator(mode="after")
+    def validate_samples(self) -> "PathlinePayload":
+        if len(self.points) != len(self.times):
+            raise ValueError("pathline points and times must have equal length")
+        if any(b <= a for a, b in zip(self.times, self.times[1:], strict=False)):
+            raise ValueError("pathline times must be strictly increasing")
+        return self
+
+
+class StreaklinePayload(_ResponsePayload):
+    site_index: Annotated[StrictInt, Field(ge=0)]
+    points: list[tuple[FiniteFloat, FiniteFloat] | None] = Field(min_length=1)
+    release_times: list[FiniteTime] = Field(min_length=1)
+    arrival_times: list[FiniteTime] = Field(min_length=1)
+    terminations: list[TimeTermination] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_samples(self) -> "StreaklinePayload":
+        size = len(self.points)
+        if any(len(values) != size for values in (
+            self.release_times, self.arrival_times, self.terminations
+        )):
+            raise ValueError("streakline sample arrays must have equal length")
+        if any(b <= a for a, b in zip(self.release_times, self.release_times[1:], strict=False)):
+            raise ValueError("streakline release_times must be strictly increasing")
+        if any((point is None) != (reason != "time_end") for point, reason in zip(
+            self.points, self.terminations, strict=True
+        )):
+            raise ValueError("streakline points must be null exactly for unfinished particles")
+        return self
+
+
+class FlowPayload(_ResponsePayload):
+    time: FlowTime
+    time_unit: Literal["s"]
+    release_sites: list[tuple[FiniteFloat, FiniteFloat]] = Field(min_length=1, max_length=17)
+    pathlines: list[PathlinePayload]
+    streaklines: list[StreaklinePayload]
+
+    @model_validator(mode="after")
+    def validate_time_contract(self) -> "FlowPayload":
+        expected = list(range(len(self.release_sites)))
+        if [line.site_index for line in self.pathlines] != expected or [
+            line.site_index for line in self.streaklines
+        ] != expected:
+            raise ValueError("flow needs exactly one pathline and streakline per site in order")
+        for line in self.pathlines:
+            if line.points[0] != self.release_sites[line.site_index]:
+                raise ValueError("pathline must start at its release site")
+            if line.times[0] != self.time.initial or line.times[-1] > self.time.observation:
+                raise ValueError("pathline times must span initial to at most observation")
+            if line.termination == "time_end" and line.times[-1] != self.time.observation:
+                raise ValueError("completed pathline must reach observation")
+        for line in self.streaklines:
+            if (line.release_times[0], line.release_times[-1]) != (
+                self.time.release_start, self.time.release_end
+            ):
+                raise ValueError("streakline releases must span the release window")
+            for release, arrival, reason, point in zip(
+                line.release_times, line.arrival_times, line.terminations, line.points, strict=True
+            ):
+                if not release <= arrival <= self.time.observation:
+                    raise ValueError("particle arrival must be between release and observation")
+                if reason == "time_end" and arrival != self.time.observation:
+                    raise ValueError("visible streak particles must reach the same observation")
+                if release == self.time.observation and point != self.release_sites[line.site_index]:
+                    raise ValueError("newly released streak particles must remain at their site")
+        return self
+
+
 class SceneResponse(_ResponsePayload):
     domain: DomainPayload
     scalar: ScalarPayload
@@ -386,6 +505,25 @@ class SceneResponse(_ResponsePayload):
     sources: list[SourcePayload]
     regions: list[RegionPayload] = Field(default_factory=list)
     metadata: MetadataPayload
+    flow: FlowPayload | None = None
+
+    @model_validator(mode="after")
+    def validate_flow_contract(self) -> "SceneResponse":
+        if self.flow is None:
+            return self
+        if self.domain.unit != "m" or self.scalar.unit != "m/s" or (
+            self.vector is None or self.vector.unit != "m/s"
+        ):
+            raise ValueError("flow scenes require coordinates in m and velocity in m/s")
+        if len(self.flow.release_sites) != self.metadata.manual_seed_count + 1:
+            raise ValueError("flow sites must account for the default and every manual seed")
+        points = list(self.flow.release_sites)
+        points.extend(point for line in self.flow.pathlines for point in line.points)
+        points.extend(point for line in self.flow.streaklines for point in line.points if point)
+        if any(not (self.domain.x[0] - 1e-9 <= x <= self.domain.x[1] + 1e-9 and
+                    self.domain.y[0] - 1e-9 <= y <= self.domain.y[1] + 1e-9) for x, y in points):
+            raise ValueError("flow samples must stay in the declared domain")
+        return self
 
     @model_validator(mode="after")
     def validate_rendered_line_count(self) -> "SceneResponse":

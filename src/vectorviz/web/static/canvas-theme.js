@@ -35,6 +35,10 @@ export const CANVAS_THEME = deepFreeze({
     // A manually seeded line keeps the ink core; its halo takes the seed blue.
     manualHalo: "rgba(66, 98, 255, 0.55)",
   },
+  flow: {
+    pathline: "#a32653",
+    streakline: "#1959a6",
+  },
   arrow: {
     fill: "#1c1c1e",
     stroke: "rgba(255, 255, 255, 0.9)",
