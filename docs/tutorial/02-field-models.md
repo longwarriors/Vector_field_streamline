@@ -368,6 +368,84 @@ $$
 
 浏览器的 `dielectric_sphere` 预设取 $\varepsilon_r=4$、$a=1\ \mathrm m$、$E_0=1\ \mathrm{V/m}$ 沿 $+x$，`conducting_sphere` 取导体极限；两者都没有场源，响应用 `regions` 给出球的截线并在图上画成虚线圆。所画的 $z=0$ 平面包含外场方向与球心，是该轴对称场的不变平面。种子在左边界按等间隔 $\Psi_D$ 求根，见[切片与验证](04-slices-and-validation.md)。
 
+## 二维 Laplace 场族 { #laplace-fields }
+
+满足 $\nabla^2\phi=0$ 的势称为谐函数。解析复函数的实部、虚部提供成对的二维谐函数，因此可以从 $z^n$ 直接构造一族可验证的场，而无需先求解数值边值问题。[^eremenko-harmonic] `LaplaceField` 使用平移、旋转和尺度变换后的复坐标
+
+$$
+w=\frac{[(x-c_x)+i(y-c_y)]e^{-i\theta}}{L},\qquad
+\phi=\frac{F_0L}{n}\operatorname{Re}(w^n),\qquad
+\mathbf F=-\nabla\phi.
+$$
+
+这里 $n$ 是正整数阶数，$F_0$ 是场尺度，$L>0$ 是坐标尺度，$\theta$ 是弧度转角，$\mathbf c$ 是中心。负梯度使场线沿势降低的方向；$n=1$ 给出匀强场，$n>1$ 的中心是零点。模型没有有限位置的解析奇点；高阶多项式在很大坐标上仍可能超出浮点范围。
+
+Web 首版取 $F_0=L=1$、$\theta=0$、$\mathbf c=0$，坐标与场统一无量纲：
+
+| 预设 | 势 $\phi$ | 向量 $\mathbf F$ | 沿场线不变的量 $\psi$ |
+|---|---|---|---|
+| `laplace_saddle` | $(x^2-y^2)/2$ | $(-x,y)$ | $xy$ |
+| `laplace_multipole` | $(x^3-3xy^2)/3$ | $(y^2-x^2,2xy)$ | $x^2y-y^3/3$ |
+
+表中的 $\psi$ 是同一复多项式的虚部。由 Cauchy–Riemann 条件得到 $\nabla\phi\cdot\nabla\psi=0$，因此沿 $-\nabla\phi$ 的曲线 $\psi$ 不变；同时 $\nabla\cdot\mathbf F=0$、$\nabla\times\mathbf F=0$。这给出势、场与积分轨迹三层独立可检查的关系。默认覆盖播种只选择一组可见曲线，不把线密度当作通量；原点的手动种子以 `null_field` 结束。该场族不表示三维点电荷场，也不提供任意形状的 Laplace 边值求解。
+
+## 斜率场与一阶微分方程 { #slope-fields }
+
+对 $y'=f(x,y)$，在每个点画斜率为 $f(x,y)$ 的短线，就得到方向场或斜率场。[^openstax-slope] 将它交给现有向量场追踪器，只需构造
+
+$$
+\mathbf F(x,y)=(1,f(x,y)).
+$$
+
+归一化后 $dx/ds>0$，而 $(dy/ds)/(dx/ds)=f$，所以积分曲线仍是原方程的解图像。$f=0$ 是水平切线，辅助向量 $(1,0)$ 并不为零；平衡解应继续画成水平直线。热图展示的是 $\sqrt{1+f^2}$，这个选择依赖辅助场的参数化，不代表速度、能量或某个物理场强。
+
+`SlopeField` 的 Python API 接受向量化 callable；Web 只提供下面两个固定、无量纲例子：
+
+| 预设 | 方程 | 验证依据 |
+|---|---|---|
+| `slope_linear` | $y'=x-y$ | $y=x-1+Ce^{-x}$，沿线 $(y-x+1)e^x$ 为常数 |
+| `slope_logistic` | $y'=y(1-y)$ | $y=1/(1+Ce^{-x})$，另有水平解 $y=0$、$y=1$ |
+
+Logistic 解在 $0<y<1$ 时随 $x$ 增加趋于 1；这里用归一化变量演示其解结构。[^openstax-logistic] 画面中的负 $y$ 仍按数学方程积分，不解释为负人口。某些初值的解有有限 $x$ 的极点，服务端只追踪计算域内的可见部分。短线图层、光标预览束与手动种子沿用既有交互；浏览器插值预览与服务端解析场积分的误差仍需分开。
+
+## 理想磁屏蔽圆柱壳 { #magnetic-shield-cylinder }
+
+取内半径 $a$、外半径 $b$ 的无限长圆柱壳，$0<a<b$，轴沿 $z$；内腔和外部是真空，筒壁满足 $\mathbf B=\mu_0\mu_r\mathbf H$，$\mu_r$ 为有限常数。远处施加横向匀强场 $\mathbf B_0=B_0\widehat{\mathbf x}$。无自由电流时，两材料界面要求法向 B 与切向 H 连续；这个边界问题有分段解析解。[^bidinosti-shield]
+
+内腔是减弱后的匀强场，屏蔽因子定义为外加场与内腔场之比：
+
+$$
+\mathbf B_{\rm cavity}=\frac{\mathbf B_0}{S},\qquad
+S=\frac{(\mu_r+1)^2-(a/b)^2(\mu_r-1)^2}{4\mu_r}
+=1+\frac{(\mu_r-1)^2}{4\mu_r}\left(1-\frac{a^2}{b^2}\right).
+$$
+
+这对应原论文圆筒解的 $n=1$ 情况。[^bidinosti-shield] 为给出可复核的场线不变量，令 $\rho$ 是到筒心的距离，$\vartheta$ 从外场方向量起，并定义
+
+$$
+u=\frac{\mu_r+1}{2\mu_r S},\qquad
+v=\frac{a^2(\mu_r-1)}{2\mu_r S},\qquad
+k=b^2(1-u)-v.
+$$
+
+直接由边界连续条件可得二维矢势
+
+$$
+A_z=B_0\sin\vartheta\begin{cases}
+\rho/S,&\rho<a,\\
+\mu_r(u\rho-v/\rho),&a\le\rho<b,\\
+\rho+k/\rho,&\rho\ge b.
+\end{cases}
+$$
+
+对它求 $\mathbf B=(\partial_y A_z,-\partial_x A_z)$ 即得到 `MagneticShieldCylinderField.evaluate()` 的场；`flux_function()` 返回这个 $A_z$，单位 T·m。$A_z$ 跨界面连续，在磁场线上保持不变；它是每单位轴长的二维磁通函数，与圆环子午面的 $\psi=\rho A_\phi$ 不是同一个定义。
+
+Web 预设取 $a=0.7\ \mathrm m$、$b=1\ \mathrm m$、$\mu_r=100$、$B_0=1\ \mu\mathrm T$，得到 $S=13.496275$、内腔约 $0.0741\ \mu\mathrm T$。图中可比较筒壁内的磁通集中和内腔减弱；覆盖播种会刻意让内腔、筒壁与外部都有可见线，因此应从热图和探针读强弱，不能从线条疏密估计屏蔽比。
+
+两个圆都是材料界面，不是奇点或排除区。场在界面有限，但切向 B 因磁导率变化而跳变；恰在界面上取径向外侧值（内圆取壁内、外圆取真空）。服务端将两个圆登记为 `interfaces`，定位折点并在另一侧重启，允许从壁内或内腔播种。验证应同时检查屏蔽因子、两侧的 $B_n$ 和 $H_t$、远处匀强极限，以及跨界面轨迹上的 $A_z$ 漂移；$\mu_r=1$ 或壁厚趋零时都应恢复匀强场。
+
+该解的理想化条件是无限长、单层、线性各向同性、恒定磁导率与静态横向外场。它不包含有限长筒的端部漏磁、开口、多层耦合、坡莫合金的饱和/磁滞或涡流，不能作为有限长坡莫合金实物的完整材料模拟。有限长、开口与多层数值数据仍按[路线图](../roadmap.md)后置。
+
 ## 三类场模型
 
 | 类型 | 怎样得到 $\mathbf F(\mathbf x)$ | 优点 | 主要误差 |
@@ -397,6 +475,8 @@ vectors = field.evaluate(points)  # points.shape == vectors.shape == (..., D)
 - [ ] 轴对称磁场画 $\psi=\rho A_\phi$，并检查是否存在 $B_\phi$。
 - [ ] 轴对称无散电场画通量函数 $\Psi$，并写明割线在哪里。
 - [ ] 场不连续的界面交给追踪器的 `interfaces`，并用两侧都连续的通量函数检验穿越。
+- [ ] 数学预设明确标为无量纲，斜率为零不误当向量为零，热图不冒充物理场强。
+- [ ] 磁屏蔽筒同时验证内腔衰减、界面连续条件与通量不变量，不把无限长线性模型套用于真实端部和材料非线性。
 
 下一章把已经能求值的 $\mathbf F(\mathbf x)$ 交给自适应 ODE 求解器。
 
@@ -418,3 +498,7 @@ vectors = field.evaluate(points)  # points.shape == vectors.shape == (..., D)
 [^paxton]: F. Paxton, [“Solid Angle Calculation for a Circular Disk”](https://doi.org/10.1063/1.1716590), *Review of Scientific Instruments* 30 (1959), 254–258。离轴点对圆盘所张立体角的椭圆积分闭式。
 [^scipy-incomplete]: SciPy，[`ellipkinc`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipkinc.html) 与 [`ellipeinc`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipeinc.html)，不完全椭圆积分，参数约定同样是 $m=k^2$。
 [^ogilvie-flux]: G. I. Ogilvie, [“Astrophysical fluid dynamics”](https://doi.org/10.1017/S0022377816000489), *Journal of Plasma Physics* 82 (2016), §9.2。
+[^eremenko-harmonic]: A. Eremenko, [*Harmonic functions*, Math 530](https://www.math.purdue.edu/~eremenko/dvi/harm.pdf), Purdue University, 2024，二维谐函数与解析函数的实部。
+[^openstax-slope]: OpenStax, [*Calculus*, Vol. 2, §4.2 Direction Fields and Numerical Methods](https://openstax.org/books/calculus-volume-2/pages/4-2-direction-fields-and-numerical-methods)。
+[^openstax-logistic]: OpenStax, [*Calculus*, Vol. 2, §4.4 The Logistic Equation](https://openstax.org/books/calculus-volume-2/pages/4-4-the-logistic-equation)，Logistic 解与平衡态。
+[^bidinosti-shield]: C. P. Bidinosti and J. W. Martin, [“Passive Magnetic Shielding in Gradient Fields”](https://arxiv.org/abs/1310.8242), 2013，§III.B，式 (10)–(11) 的 $n=1$ 圆筒屏蔽因子；其线性均匀材料假设见 §II。

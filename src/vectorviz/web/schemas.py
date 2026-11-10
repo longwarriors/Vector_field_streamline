@@ -31,6 +31,11 @@ PresetName = Literal[
     "dielectric_sphere",
     "conducting_sphere",
     "uniform",
+    "laplace_saddle",
+    "laplace_multipole",
+    "slope_linear",
+    "slope_logistic",
+    "magnetic_shield_cylinder",
 ]
 # Presets whose geometry is fixed by the server and returned as read-only
 # markers or regions.
@@ -41,6 +46,11 @@ FIXED_PRESETS = frozenset(
         "dielectric_sphere",
         "conducting_sphere",
         "uniform",
+        "laplace_saddle",
+        "laplace_multipole",
+        "slope_linear",
+        "slope_logistic",
+        "magnetic_shield_cylinder",
         "straight_wire",
         "parallel_wires",
         "antiparallel_wires",
@@ -49,7 +59,7 @@ FIXED_PRESETS = frozenset(
         "anti_helmholtz_coils",
     }
 )
-RegionKind = Literal["dielectric_sphere", "conducting_sphere"]
+RegionKind = Literal["dielectric_sphere", "conducting_sphere", "magnetic_shield_cylinder"]
 # Presets that share the point-charge contract: charge-only overrides,
 # circular exclusions, budget by |q| and return-pair suppression.
 ELECTRIC_PRESETS = frozenset(
@@ -71,7 +81,7 @@ SourcePayloadKind = Literal[
     "ring_charge",
 ]
 SourceStrengthUnit = Literal["nC", "A·m²", "A"]
-# The tracing domain is the fixed square [-3, 3] m (scene.DOMAIN); a manual
+# The tracing domain is the fixed square [-3, 3] in scene units; a manual
 # seed outside it could only terminate as seed_outside_domain.
 SEED_COORDINATE_LIMIT = 3.0
 MAX_MANUAL_SEEDS = 16
@@ -147,7 +157,7 @@ class SourceInput(BaseModel):
 
 
 class SeedInput(BaseModel):
-    """A manual seed in Cartesian metres inside the tracing domain."""
+    """A manual seed in the scene's Cartesian units inside the tracing domain."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -196,7 +206,7 @@ class DomainPayload(_ResponsePayload):
     x: tuple[FiniteFloat, FiniteFloat]
     y: tuple[FiniteFloat, FiniteFloat]
     coordinate_system: Literal["cartesian"]
-    unit: Literal["m"]
+    unit: Literal["m", "1"]
 
     @model_validator(mode="after")
     def validate_bounds(self) -> "DomainPayload":
@@ -313,17 +323,26 @@ class SourcePayload(_ResponsePayload):
 
 
 class RegionPayload(_ResponsePayload):
-    """A material region drawn as geometry: a sphere seen in the web plane."""
+    """A material sphere section or annular cylinder cross-section."""
 
     kind: RegionKind
     x: FiniteFloat
     y: FiniteFloat
     radius: FiniteFloat = Field(gt=0.0)
     relative_permittivity: FiniteFloat | None = Field(default=None, ge=1.0)
+    inner_radius: FiniteFloat | None = Field(default=None, gt=0.0)
+    relative_permeability: FiniteFloat | None = Field(default=None, ge=1.0)
     unit: Literal["m"]
 
     @model_validator(mode="after")
     def validate_material(self) -> "RegionPayload":
+        if self.kind == "magnetic_shield_cylinder":
+            if self.inner_radius is None or self.inner_radius >= self.radius:
+                raise ValueError("magnetic_shield_cylinder requires 0 < inner_radius < radius")
+            if self.relative_permeability is None or self.relative_permittivity is not None:
+                raise ValueError("magnetic_shield_cylinder requires permeability, not permittivity")
+        elif self.inner_radius is not None or self.relative_permeability is not None:
+            raise ValueError("sphere regions have no inner_radius or relative_permeability")
         if self.kind == "dielectric_sphere" and self.relative_permittivity is None:
             raise ValueError("dielectric_sphere regions must state relative_permittivity")
         if self.kind == "conducting_sphere" and self.relative_permittivity is not None:

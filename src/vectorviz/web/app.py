@@ -136,6 +136,26 @@ PRESETS = [
         label="匀强电场",
         description="用于验证积分器的直线基准场。",
     ),
+    PresetPayload(
+        id="laplace_saddle", label="Laplace 鞍点场",
+        description="二维谐波势 φ=(x²−y²)/2 的负梯度；无量纲坐标。",
+    ),
+    PresetPayload(
+        id="laplace_multipole", label="Laplace 三阶场",
+        description="二维谐波势 φ=(x³−3xy²)/3 的负梯度；无量纲坐标。",
+    ),
+    PresetPayload(
+        id="slope_linear", label="线性斜率场",
+        description="dy/dx=x−y 的无向短线与解曲线；无量纲坐标。",
+    ),
+    PresetPayload(
+        id="slope_logistic", label="Logistic 斜率场",
+        description="dy/dx=y(1−y)，含 y=0 与 y=1 平衡解；无量纲坐标。",
+    ),
+    PresetPayload(
+        id="magnetic_shield_cylinder", label="理想磁屏蔽筒",
+        description="横向匀强磁场中的无限长线性圆柱壳：μr=100；展示筒壁集磁与内腔衰减。",
+    ),
 ]
 
 

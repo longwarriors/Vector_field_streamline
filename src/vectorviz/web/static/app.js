@@ -29,7 +29,7 @@ import {
 import { createPreviewGrid, previewBundle } from "./preview.js";
 import { DEFAULT_LAYERS, createRenderer, sourceStyle } from "./renderer.js";
 import { createSceneLoader } from "./scene-loader.js";
-import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validation.js";
+import { MATHEMATICAL_PRESETS, REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validation.js";
 
 (() => {
   "use strict";
@@ -449,7 +449,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       `${scalar.nx}²`,
       scalar.nx === scalar.ny ? `${scalar.nx}²` : `${scalar.nx}×${scalar.ny}`,
     );
-    elements.fieldUnit.textContent = unit;
+    elements.fieldUnit.textContent = unit === "1" ? "无量纲" : unit;
     elements.fieldModel.textContent = scene.metadata.field_model;
     elements.seedMode.textContent =
       SEED_MODE_LABELS[scene.metadata.seed_mode] || scene.metadata.seed_mode;
@@ -559,6 +559,7 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
   function quantityWithUnit(quantity, unit) {
     const trimmed = String(unit || "").trim();
     if (!trimmed) return quantity;
+    if (trimmed === "1") return `${quantity}（无量纲）`;
     return /[\s/·]/.test(trimmed) ? `${quantity} / (${trimmed})` : `${quantity} / ${trimmed}`;
   }
 
@@ -581,6 +582,11 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       dielectric_sphere: "介质球电场",
       conducting_sphere: "导体球电场",
       uniform: "匀强场",
+      laplace_saddle: "Laplace 鞍点场",
+      laplace_multipole: "Laplace 三阶谐波场",
+      slope_linear: "线性斜率场",
+      slope_logistic: "Logistic 斜率场",
+      magnetic_shield_cylinder: "理想磁屏蔽筒",
     }[value] || "物理场";
   }
 
@@ -776,6 +782,10 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
       fixed.textContent =
         elements.preset.value === "uniform"
           ? "匀强场的方向与强度由预设固定。"
+          : elements.preset.value === "magnetic_shield_cylinder"
+            ? "无限长圆柱壳的内外半径、恒定磁导率与横向外场固定；两条虚线圆是材料界面。"
+          : MATHEMATICAL_PRESETS.has(elements.preset.value)
+            ? "数学场的方程由预设固定，坐标与向量均无量纲；可点击画布添加初值。"
           : REGION_PRESETS.has(elements.preset.value)
             ? "球的半径、材料与外场由预设固定；虚线圆是球面在该平面上的截线。"
           : state.presentationStatus === "error"
@@ -1161,9 +1171,9 @@ import { REGION_PRESETS, SEED_MODE_LABELS, validateScene } from "./scene-validat
     const [worldX, worldY] = canvasToWorld(canvasX, canvasY);
     const node = nearestNode(state.scene.scalar, state.scene.domain, worldX, worldY);
     const coordinateUnit = String(state.scene.domain.unit || "").trim();
-    const unitSuffix = coordinateUnit ? ` ${coordinateUnit}` : "";
+    const unitSuffix = coordinateUnit === "1" ? "" : coordinateUnit ? ` ${coordinateUnit}` : "";
     elements.probePosition.textContent = `x ${formatEditorValue(node.x)}${unitSuffix} · y ${formatEditorValue(node.y)}${unitSuffix}`;
-    elements.probeValue.textContent = `${state.scene.scalar.label || "场强"} ${formatValue(node.value)} ${state.scene.scalar.unit || ""}`.trim();
+    elements.probeValue.textContent = `${state.scene.scalar.label || "场强"} ${formatValue(node.value)} ${state.scene.scalar.unit === "1" ? "（无量纲）" : state.scene.scalar.unit || ""}`.trim();
     elements.probeDirection.textContent = formatProbeDirection(node);
     elements.probeDirection.hidden = !elements.probeDirection.textContent;
     const [nodeX, nodeY] = worldToCanvas(node.x, node.y);

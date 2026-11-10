@@ -23,7 +23,11 @@ export const FIXED_MARKER_KINDS = Object.freeze({
   charged_ring: ["ring_charge", "ring_charge"],
 });
 
-export const REGION_KINDS = new Set(["dielectric_sphere", "conducting_sphere"]);
+export const REGION_KINDS = new Set(["dielectric_sphere", "conducting_sphere", "magnetic_shield_cylinder"]);
+
+export const MATHEMATICAL_PRESETS = new Set([
+  "laplace_saddle", "laplace_multipole", "slope_linear", "slope_logistic",
+]);
 
 export const REGION_PRESETS = new Set(REGION_KINDS);
 
@@ -53,7 +57,7 @@ export function validateScene(scene, preset, expected = {}) {
     xDomain[0] >= xDomain[1] ||
     yDomain[0] >= yDomain[1] ||
     coordinateSystem !== "cartesian" ||
-    coordinateUnit !== "m"
+    coordinateUnit !== (MATHEMATICAL_PRESETS.has(preset) ? "1" : "m")
   ) {
     throw new Error("场景缺少有效的笛卡尔 domain.x / domain.y / unit");
   }
@@ -184,7 +188,7 @@ export function validateScene(scene, preset, expected = {}) {
     throw new Error("场源缺少有效坐标、强度或 strength_unit");
   }
   // Regions are additive: an older server omits the field entirely; once
-  // present it must be a list that describes every material sphere.
+  // present it must be a list describing the material geometry.
   if (scene.regions === undefined) {
     scene.regions = [];
   }
@@ -204,12 +208,19 @@ export function validateScene(scene, preset, expected = {}) {
         return false;
       }
       const permittivity = region.relative_permittivity;
+      const noPermittivity = permittivity === undefined || permittivity === null;
+      if (region.kind === "magnetic_shield_cylinder") {
+        return noPermittivity && Number.isFinite(region.inner_radius) &&
+          region.inner_radius > 0 && region.inner_radius < region.radius &&
+          Number.isFinite(region.relative_permeability) && region.relative_permeability >= 1;
+      }
+      if (region.inner_radius != null || region.relative_permeability != null) return false;
       if (region.kind === "dielectric_sphere") {
         return Number.isFinite(permittivity) && permittivity >= 1;
       }
-      return permittivity === undefined || permittivity === null;
+      return noPermittivity;
     });
-  // A sphere preset returns exactly one region of its own material.
+  // A material preset returns exactly one region of its own kind.
   const expectedRegionKind = REGION_PRESETS.has(preset)
     ? preset
     : null;
@@ -219,7 +230,7 @@ export function validateScene(scene, preset, expected = {}) {
       ? scene.regions.length === 1 && scene.regions[0].kind === expectedRegionKind
       : scene.regions.length === 0);
   if (!regionsMatchPreset) {
-    throw new Error("区域几何缺少有效的种类、圆心、半径、单位或介电常数，或与预设不符");
+    throw new Error("区域几何缺少有效的种类、圆心、半径、单位或材料参数，或与预设不符");
   }
   const metadata = scene.metadata;
   const terminationCounts = metadata?.termination_counts;

@@ -367,7 +367,7 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     context.strokeRect(snap(left), snap(top), snap(right) - snap(left), snap(bottom) - snap(top));
 
     const unit = String(view.scene.domain.unit || "").trim();
-    const axisTitle = (axis) => (unit ? `${axis} / ${unit}` : axis);
+    const axisTitle = (axis) => (unit === "1" ? `${axis}（无量纲）` : unit ? `${axis} / ${unit}` : axis);
     context.fillStyle = theme.axes.title;
     context.font = theme.axes.titleFont;
     context.textAlign = "left";
@@ -379,8 +379,8 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
     context.restore();
   }
 
-  // A material sphere is drawn as its dashed outline in the plane, with the
-  // material named above it; the field inside is real and stays coloured.
+  // Material boundaries are dashed circles; a shell has inner and outer
+  // circles. The field in each material is real and stays coloured.
   function drawRegions() {
     const regionTheme = theme.region;
     for (const region of view.scene.regions) {
@@ -388,20 +388,27 @@ export function createRenderer(canvas, theme = CANVAS_THEME) {
       const [edgeX] = worldToCanvas(region.x + region.radius, region.y);
       const radius = Math.abs(edgeX - x);
       context.save();
-      context.beginPath();
-      context.arc(x, y, radius, 0, Math.PI * 2);
-      context.strokeStyle = regionTheme.halo;
-      context.lineWidth = regionTheme.haloWidth;
-      context.stroke();
-      context.setLineDash(regionTheme.dash);
-      context.strokeStyle = regionTheme.outline;
-      context.lineWidth = regionTheme.outlineWidth;
-      context.stroke();
+      const radii = region.kind === "magnetic_shield_cylinder"
+        ? [radius, radius * region.inner_radius / region.radius] : [radius];
+      for (const boundaryRadius of radii) {
+        context.setLineDash([]);
+        context.beginPath();
+        context.arc(x, y, boundaryRadius, 0, Math.PI * 2);
+        context.strokeStyle = regionTheme.halo;
+        context.lineWidth = regionTheme.haloWidth;
+        context.stroke();
+        context.setLineDash(regionTheme.dash);
+        context.strokeStyle = regionTheme.outline;
+        context.lineWidth = regionTheme.outlineWidth;
+        context.stroke();
+      }
       context.setLineDash([]);
       const label =
         region.kind === "conducting_sphere"
           ? "导体"
-          : `εr = ${formatValue(region.relative_permittivity)}`;
+          : region.kind === "magnetic_shield_cylinder"
+            ? `μr = ${formatValue(region.relative_permeability)}`
+            : `εr = ${formatValue(region.relative_permittivity)}`;
       context.font = regionTheme.labelFont;
       context.textAlign = "center";
       context.textBaseline = "bottom";

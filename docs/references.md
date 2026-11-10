@@ -43,6 +43,14 @@
 
 10. F. Paxton, [“Solid Angle Calculation for a Circular Disk”](https://doi.org/10.1063/1.1716590), *Review of Scientific Instruments* **30** (1959), 254–258。离轴点对圆盘所张立体角的椭圆积分闭式；本项目用它给出带电圆环电场的通量函数。
 
+11. C. P. Bidinosti and J. W. Martin, [“Passive Magnetic Shielding in Gradient Fields”](https://arxiv.org/abs/1310.8242), 2013。§II 声明线性、均匀、无自由电流的材料假设，§III.B 式 (10)–(11) 给出无限长圆柱壳的横向屏蔽因子；本项目首版取匀强场对应的 $n=1$，不实现论文中的多层或更高阶外场屏蔽。
+
+## Laplace 方程与斜率场
+
+1. A. Eremenko, [*Harmonic functions*, Math 530](https://www.math.purdue.edu/~eremenko/dvi/harm.pdf), Purdue University, 2024。Laplace 方程、谐函数与解析函数实部的关系；本项目选取 $z^n$ 的实部构造二维多项式族。
+
+2. OpenStax, *Calculus*, Vol. 2：[§4.2 Direction Fields and Numerical Methods](https://openstax.org/books/calculus-volume-2/pages/4-2-direction-fields-and-numerical-methods) 与 [§4.4 The Logistic Equation](https://openstax.org/books/calculus-volume-2/pages/4-4-the-logistic-equation)。用于一阶斜率场、Logistic 解析解与平衡解的教学说明。
+
 ## 数值积分与向量场可视化
 
 1. J. R. Dormand, P. J. Prince, [“A family of embedded Runge–Kutta formulae”](https://doi.org/10.1016/0771-050X(80)90013-3), *Journal of Computational and Applied Mathematics* **6** (1980), 19–26。

@@ -16,7 +16,15 @@ def main() -> None:
         try:
             os.chdir(temporary_directory)
 
-            from vectorviz import FieldLineTracer, InfiniteWireField, UniformField, __version__
+            from vectorviz import (
+                FieldLineTracer,
+                InfiniteWireField,
+                LaplaceField,
+                MagneticShieldCylinderField,
+                SlopeField,
+                UniformField,
+                __version__,
+            )
             from vectorviz.web.app import STATIC_DIR, create_app
 
             assert version("vector-field-streamline") == __version__
@@ -24,6 +32,9 @@ def main() -> None:
             assert UniformField.__module__ == "vectorviz.fields"
             assert InfiniteWireField.__module__ == "vectorviz.fields"
             assert InfiniteWireField(1.0)((1.0, 0.0, 0.0))[1] > 0.0
+            assert tuple(LaplaceField()((1.0, 2.0))) == (-1.0, 2.0)
+            assert tuple(SlopeField(lambda x, y: x-y)((1.0, 2.0))) == (1.0, -1.0)
+            assert MagneticShieldCylinderField().shielding_factor > 13.0
             for asset in (
                 "index.html",
                 "app.js",

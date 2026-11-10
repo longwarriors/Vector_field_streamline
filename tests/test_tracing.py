@@ -659,6 +659,31 @@ def test_radau_interface_at_an_accepted_step_endpoint_restarts(
     np.testing.assert_allclose(branch.points[:, 1], 0, atol=1e-15, rtol=0)
 
 
+def test_separated_interface_crossings_are_not_mistaken_for_sliding() -> None:
+    # Distance-limited chunks can end within 1e-6 m of every crossing.
+    # Progress must include the earlier chunks since the previous crossing,
+    # not only the short chunk that finally triggers this event.
+    height = 0.4949747468305833
+    branch = trace_field_line(
+        UniformField((1.0, 0.0)),
+        (-2.0, height),
+        domain=Domain((-3.0, -3.0), (3.0, 3.0)),
+        interfaces=tuple(SphericalExclusion((0.0, 0.0), r) for r in (0.7, 1.0)),
+        options=TraceOptions(
+            method="DOP853", max_arc_length=18, max_step=0.035, rtol=2e-7, atol=1e-9,
+            output_step=0.045,
+        ),
+        direction="forward",
+    ).forward
+    assert branch.termination is TerminationReason.DOMAIN_EXIT
+    np.testing.assert_allclose(branch.points[-1], (3.0, height), atol=1e-13)
+    np.testing.assert_allclose(branch.points[:, 1], height, atol=1e-15)
+    radii = np.hypot(branch.points[:, 0], branch.points[:, 1])
+    for radius in (0.7, 1.0):
+        assert np.count_nonzero(np.abs(radii - radius) < 1e-10) == 2
+    assert np.all(np.diff(branch.arc_length) > 0.0)
+
+
 def test_interface_sliding_contact_stops_instead_of_restarting_forever() -> None:
     # With slope 1 the line leaves the disk on its upper-left arc, where the
     # outer flow points straight back in: a sliding contact with no solution.

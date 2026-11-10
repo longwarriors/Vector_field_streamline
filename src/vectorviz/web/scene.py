@@ -22,6 +22,8 @@ from vectorviz.fields import (
     PointChargeField,
     UniformField,
 )
+from vectorviz.material_fields import MagneticShieldCylinderField
+from vectorviz.planar_fields import LaplaceField, SlopeField
 from vectorviz.tracing import (
     FieldLineTracer,
     TerminationReason,
@@ -266,6 +268,7 @@ class _SceneModel:
     suppress_electric_return_pairs: bool = False
     interfaces: tuple[SphericalExclusion, ...] = ()
     regions: tuple[RegionPayload, ...] = ()
+    coordinate_unit: Literal["m", "1"] = "m"
 
     @property
     def seeds(self) -> NDArray[np.float64]:
@@ -526,7 +529,101 @@ def _require_seed_budget(
         )
 
 
+def _mathematical_model(request: SceneRequest) -> _SceneModel:
+    if request.preset.startswith("laplace_"):
+        order = 2 if request.preset == "laplace_saddle" else 3
+        field = LaplaceField(order)
+        # On these rays Im(z**n) is extremal in angle. Each ray covers a
+        # different flow sector, without seeding the central null.
+        angles = (np.arange(2 * order) + 0.5) * np.pi / order
+        directions = np.stack((np.cos(angles), np.sin(angles)), axis=-1)
+        segments = np.stack((0.12 * directions, 2.8 * directions), axis=1)
+        jobs = coverage_segment_jobs(segments, request.density)
+        title = "二维 Laplace 鞍点场" if order == 2 else "二维 Laplace 三阶谐波场"
+        formula = "φ=(x²−y²)/2，F=(−x,y)" if order == 2 else "φ=(x³−3xy²)/3，F=(y²−x²,2xy)"
+        explanation = f"二维谐波多项式：{formula}；∇²φ=0，F=−∇φ。中心为零点，无奇点。"
+        description = "在各流动扇区的径向线段上覆盖播种，避开中心零点；线密度不代表场强。"
+    else:
+        logistic = request.preset == "slope_logistic"
+        field = SlopeField((lambda x, y: y * (1.0 - y)) if logistic else (lambda x, y: x - y))
+        title = "Logistic 方程的斜率场" if logistic else "线性方程的斜率场"
+        equation = "dy/dx=y(1−y)" if logistic else "dy/dx=x−y"
+        explanation = f"{equation}，以 F=(1,f(x,y)) 表示解曲线的方向；|F| 不是解的幅值或速度。"
+        if logistic:
+            jobs = [TraceJob((0.0, y), TraceDirection.BOTH) for y in (0.0, 1.0)]
+            jobs += coverage_segment_jobs(
+                (((0.0, -2.8), (0.0, 0.0)), ((0.0, 0.0), (0.0, 1.0)), ((0.0, 1.0), (0.0, 2.8))),
+                request.density - 2,
+            )
+            description = "保留 y=0 与 y=1 两条平衡解，其余预算在 x=0 的三个区间覆盖播种；线密度无物理通量含义。"
+        else:
+            jobs = coverage_segment_jobs((((0.0, -2.8), (0.0, 2.8)),), request.density)
+            description = "在 x=0 上等距覆盖不同初值，双向追踪解曲线；线密度无物理通量含义。"
+    return _SceneModel(
+        field=field,
+        sources=(),
+        exclusions=(),
+        trace_jobs=tuple(jobs),
+        trace_options=replace(DEFAULT_TRACE_OPTIONS, null_threshold=1.0e-8),
+        scalar_label="|F|",
+        scalar_unit="1",
+        coordinate_unit="1",
+        title=title,
+        field_model=explanation,
+        projection_note="真实二维数学场，x、y 与 F 均为无量纲量；曲线不是三维场的投影。",
+        seed_mode=SeedMode.COVERAGE,
+        seed_description=description,
+    )
+
+
+def _shield_model(request: SceneRequest) -> _SceneModel:
+    cylinder = MagneticShieldCylinderField()
+    a, b = cylinder.inner_radius, cylinder.outer_radius
+    # Reserve representation of the attenuated cavity, both wall halves and
+    # the exterior. Equal geometric intervals are deliberately not flux weights.
+    segments = (
+        ((0.0, -a), (0.0, a)),
+        ((0.0, a), (0.0, b)),
+        ((0.0, -b), (0.0, -a)),
+        ((0.0, b), (0.0, 2.85)),
+        ((0.0, -2.85), (0.0, -b)),
+    )
+    return _SceneModel(
+        field=cylinder,
+        sources=(),
+        exclusions=(),
+        trace_jobs=tuple(coverage_segment_jobs(segments, request.density, weights=(2, 2, 2, 1, 1))),
+        trace_options=replace(DEFAULT_TRACE_OPTIONS, max_step=0.035, rtol=2.0e-7, atol=1.0e-9),
+        scalar_label="|B|",
+        scalar_unit="T",
+        title="横向匀强磁场中的理想磁屏蔽筒",
+        field_model=(
+            "沿 z 无限长的圆柱壳：内半径 0.7 m、外半径 1 m，线性各向同性、恒定 μr=100，"
+            "内外真空，横向外场 B₀=(1 μT,0)。内腔匀强场 B₀/13.496275；筒壁磁通集中。"
+        ),
+        projection_note=(
+            "真实二维横截面磁力线。理想模型不包含有限长度、开口、端部漏磁、多层、"
+            "饱和或磁滞，不是有限长坡莫合金实物的完整材料模拟。"
+            "两条虚线圆为材料界面；网格预览不解析界面折射，点击后的服务端轨迹会在界面续算。"
+        ),
+        seed_mode=SeedMode.COVERAGE,
+        seed_description=(
+            "在 x=0 的内腔、两侧筒壁与外部五段分别覆盖播种；"
+            "为展示内腔弱场保留种子，线密度不代表磁通或场强。"
+        ),
+        interfaces=tuple(SphericalExclusion(((0.0, 0.0),), r) for r in (a, b)),
+        regions=(RegionPayload(
+            kind="magnetic_shield_cylinder", x=0.0, y=0.0, radius=b,
+            inner_radius=a, relative_permeability=cylinder.relative_permeability, unit="m",
+        ),),
+    )
+
+
 def _build_model(request: SceneRequest) -> _SceneModel:
+    if request.preset in {"laplace_saddle", "laplace_multipole", "slope_linear", "slope_logistic"}:
+        return _mathematical_model(request)
+    if request.preset == "magnetic_shield_cylinder":
+        return _shield_model(request)
     if request.preset in {"straight_wire", "parallel_wires", "antiparallel_wires"}:
         return _wire_model(request)
     if request.preset in {"solenoid", "helmholtz_coils", "anti_helmholtz_coils"}:
@@ -1200,7 +1297,7 @@ def build_scene(request: SceneRequest) -> SceneResponse:
             x=(float(DOMAIN.lower[0]), float(DOMAIN.upper[0])),
             y=(float(DOMAIN.lower[1]), float(DOMAIN.upper[1])),
             coordinate_system="cartesian",
-            unit="m",
+            unit=model.coordinate_unit,
         ),
         scalar=scalar,
         vector=vector,

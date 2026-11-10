@@ -705,6 +705,7 @@ class FieldLineTracer:
         termination: TerminationReason | None = None
         integration_first_step = options.first_step
         stalled_restarts = 0
+        last_interface_restart = 0.0
         solver_method = _stall_aware_solver(options.method)
         stall_terminal: FloatArray | None = None
         stall_message: str | None = None
@@ -836,11 +837,15 @@ class FieldLineTracer:
                 # A branch whose field points back across the surface it just
                 # left slides along the interface without progress; stop it
                 # instead of restarting forever.
-                progress = float(solution.t[-1]) - branch_start
+                # Include all distance-limited chunks since the last
+                # interface restart. The final chunk alone can be tiny
+                # even after substantial travel to a different surface.
+                progress = float(solution.t[-1]) - last_interface_restart
                 stalled_restarts = (
                     stalled_restarts + 1 if progress <= 1.0e-6 * max(1.0, branch_start) else 0
                 )
                 branch_start = float(solution.t[-1])
+                last_interface_restart = branch_start
                 if stalled_restarts >= 3:
                     termination = TerminationReason.SOLVER_FAILURE
                     break

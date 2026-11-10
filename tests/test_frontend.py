@@ -433,6 +433,76 @@ def test_magnetostatic_presets_connect_to_live_api_and_accept_manual_seeds(
     assert page_errors == []
 
 
+@pytest.mark.browser
+def test_mathematical_and_shield_presets_connect_to_live_api(
+    browser_page: tuple[Page, list[str]], frontend_url: str,
+) -> None:
+    page, page_errors = browser_page
+    page.unroute("**/api/presets")
+    requests = []
+    page.on("request", lambda request: requests.append(request.post_data_json)
+            if request.url.endswith("/api/scene") else None)
+    page.goto(frontend_url)
+    canvas = page.locator("#field-canvas")
+    expect(canvas).to_have_attribute("data-scene-state", "ready", timeout=30_000)
+    page.evaluate("""() => {
+        document.querySelector('#density').value = '6';
+        document.querySelector('#resolution').value = '32';
+    }""")
+    for preset in ("laplace_saddle", "laplace_multipole", "slope_linear", "slope_logistic", "magnetic_shield_cylinder"):
+        with page.expect_response("**/api/scene", timeout=30_000) as response:
+            page.locator("#preset").select_option(preset)
+        assert response.value.status == 200
+        scene = response.value.json()
+        expect(canvas).to_have_attribute("data-scene-state", "ready", timeout=30_000)
+        expect(page.locator("#loading-overlay")).to_be_hidden()
+        expect(page.locator("#scene-title")).to_have_text(scene["metadata"]["title"])
+        expect(page.locator("#source-editor-list input")).to_have_count(0)
+        expect(page.locator("#error-banner")).to_be_hidden()
+        shield = preset == "magnetic_shield_cylinder"
+        expect(page.locator("#field-unit")).to_have_text("T" if shield else "无量纲")
+        expect(page.locator(".empty-sources")).to_contain_text("两条虚线圆" if shield else "无量纲")
+        # Malformed material geometry and mismatched coordinate units cannot
+        # silently reach the renderer, even though these are additive fields.
+        assert page.evaluate("""async ({scene, preset, shield}) => {
+            const {validateScene} = await import('/scene-validation.js');
+            const mutations = shield ? [
+                s => s.regions[0].inner_radius = 1,
+                s => delete s.regions[0].relative_permeability,
+                s => s.regions[0].relative_permittivity = 4,
+                s => s.regions = [],
+            ] : [s => s.domain.unit = 'm'];
+            return mutations.every(mutate => {
+                const invalid = structuredClone(scene); mutate(invalid);
+                try { validateScene(invalid, preset); return false; }
+                catch { return true; }
+            });
+        }""", {"scene": scene, "preset": preset, "shield": shield})
+        canvas.scroll_into_view_if_needed()
+        point = page.evaluate("""async domain => {
+            const rect = document.querySelector('#field-canvas').getBoundingClientRect();
+            const {calculatePlotRect, createCoordinateTransform} = await import('/coordinates.js');
+            const transform = createCoordinateTransform(domain, calculatePlotRect(rect.width, rect.height, domain));
+            return transform.worldToCanvas(0.2, 0.3);
+        }""", scene["domain"])
+        count = len(requests)
+        canvas.hover(position={"x": point[0], "y": point[1]})
+        expect(page.locator("#probe-direction")).to_contain_text("Bx" if shield else "Fx")
+        assert len(requests) == count
+        # Short segments and preview use the vector grid without new requests.
+        page.locator('.layer-toggle[data-layer="slopes"]').click()
+        assert len(requests) == count
+        with page.expect_response("**/api/scene", timeout=30_000) as seeded:
+            canvas.click(position={"x": point[0], "y": point[1]})
+        assert seeded.value.status == 200
+        assert seeded.value.json()["metadata"]["manual_seed_count"] == 1
+        assert any(line.get("seed_index") == 0 for line in seeded.value.json()["lines"])
+        expect(canvas).to_have_attribute("data-scene-state", "ready", timeout=30_000)
+        expect(page.locator("#manual-seed-summary")).to_contain_text("1 个种子 → 1 条线")
+        assert "sources" not in requests[-1]
+    assert page_errors == []
+
+
 def _instrument_canvas(page: Page) -> None:
     page.add_init_script(
         """(() => {

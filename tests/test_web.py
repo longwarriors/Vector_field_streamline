@@ -914,6 +914,8 @@ def test_dielectric_sphere_scene_publishes_its_region_and_keeps_displacement_flu
             "y": 0.0,
             "radius": 1.0,
             "relative_permittivity": 4.0,
+            "inner_radius": None,
+            "relative_permeability": None,
             "unit": "m",
         }
     ]
@@ -1770,6 +1772,11 @@ def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
         "dielectric_sphere",
         "conducting_sphere",
         "uniform",
+        "laplace_saddle",
+        "laplace_multipole",
+        "slope_linear",
+        "slope_logistic",
+        "magnetic_shield_cylinder",
     }
     assert all(preset["label"] and preset["description"] for preset in payload)
     by_id = {preset["id"]: preset for preset in payload}
@@ -1785,6 +1792,11 @@ def test_preset_endpoint_lists_supported_scenes(client: TestClient) -> None:
         "dielectric_sphere",
         "conducting_sphere",
         "uniform",
+        "laplace_saddle",
+        "laplace_multipole",
+        "slope_linear",
+        "slope_logistic",
+        "magnetic_shield_cylinder",
     ):
         assert "source_separation" not in by_id[preset_id]
 

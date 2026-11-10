@@ -8,14 +8,19 @@ VectorViz 同时提供 Python 公共 API 与浏览器使用的 HTTP API。本页
 
 ```python
 from vectorviz import (
+    ChargedRingField,
     CircularLoopField,
     CompositeField,
+    DielectricSphereField,
     Domain,
     ExclusionRegion,
     FieldLineTracer,
     InfiniteWireField,
+    LaplaceField,
     MagneticDipoleField,
+    MagneticShieldCylinderField,
     PointChargeField,
+    SlopeField,
     SphericalExclusion,
     ToroidalExclusion,
     TerminationReason,
@@ -66,6 +71,9 @@ vectors = field.evaluate(points)
 | `CircularLoopField` | 理想细圆电流环的三维磁感应强度 |
 | `ChargedRingField` | 均匀带电理想细圆环的三维电场，圆环的静电孪生 |
 | `DielectricSphereField` | 匀强外场中介质球或导体球的三维电场，分段解析 |
+| `LaplaceField` | 二维谐波多项式势的负梯度；首版为解析场族，不是通用边值求解器 |
+| `SlopeField` | 一阶 ODE $y'=f(x,y)$ 的二维辅助向量场 $(1,f)$ |
+| `MagneticShieldCylinderField` | 无限长线性磁屏蔽圆柱壳在横向匀强外场中的二维 B 场 |
 | `CompositeField` | 对多个同维场做线性叠加 |
 
 所有物理场内部应采用一致单位。输入源参数的单位与坐标系不得只存在于图标题里。
@@ -138,6 +146,59 @@ psi = sphere.flux_function(points)
 
 `flux_function()` 返回 $\mathbf D/\varepsilon_0$ 的轴对称通量函数：以外场方向为轴，球内取 $\varepsilon_r\mathbf E$、球外取 $\mathbf E$ 穿过同轴圆盘的通量除以 $2\pi$。因为 $\mathbf D$ 的法向分量在介质表面连续，它在球面连续，等值线同时是 $\mathbf E$ 与 $\mathbf D$ 的场线；导体的球内值为 0，函数在球面跳变，线终止于自由面电荷。
 
+#### `LaplaceField`
+
+```python
+field = LaplaceField(
+    order=2,
+    strength=1.0,
+    length_scale=1.0,
+    angle=0.0,
+    center=(0.0, 0.0),
+)
+vectors = field.evaluate(points)
+phi = field.potential(points)
+```
+
+令 $w=((x-c_x)+i(y-c_y))e^{-i\theta}/L$，模型取 $\phi=FL\operatorname{Re}(w^n)/n$、$\mathbf F=-\nabla\phi$。`order` 是正整数 $n$，`strength` 是有限的场尺度 $F$，`length_scale` 是有限正长度 $L$，`angle` 是有限的弧度角 $\theta$，`center` 是有限二维坐标。所有参数为只读属性；`potential()` 的输出形状是 `points.shape[:-1]`，`evaluate()` 保留输入形状 `(..., 2)`。
+
+调用方负责统一单位：势的单位是场单位乘坐标单位。Web 两个预设统一使用无量纲约定。非零强度下，$n=1$ 为匀强场，$n>1$ 在中心有真实零点；`strength=0` 则为全零场。无有限位置的解析奇点，非有限坐标或浮点溢出返回 `NaN`，不能靠 softening 隐藏。各阶是谐波多项式，不包括对数源、任意边界条件或数值 Laplace 求解。
+
+#### `SlopeField`
+
+```python
+field = SlopeField(lambda x, y: x - y)
+vectors = field.evaluate([[0.0, 1.0], [1.0, 0.0]])
+```
+
+`slope` 必须是接受 NumPy `x`、`y` 数组的 callable，返回标量或能广播到点批次形状的实数数组。模型返回 $(1,f(x,y))$；归一化追踪只改变参数化，不改变 $y'=f(x,y)$ 的解图像。输入与输出均为二维，Web 例子坐标和向量单位均为 `"1"`（无量纲）。斜率为零表示水平解，向量并不为零；热图 $\sqrt{1+f^2}$ 只是辅助向量的大小，不是速度或物理场强。非有限坐标或斜率使两个分量都返回 `NaN`，交给追踪器的 `nonfinite_field` 政策处理；复数输出或错误的广播形状抛出 `ValueError`。调用方仍需保证函数的光滑性，并为奇点配置排除区。
+
+这里的 Python callable 不会由 HTTP 请求创建或执行；Web 只提供固定公式的两个预设，自定义表达式输入仍在后续路线图中。
+
+#### `MagneticShieldCylinderField`
+
+```python
+shield = MagneticShieldCylinderField(
+    applied_field=(1.0e-6, 0.0),
+    inner_radius=0.7,
+    outer_radius=1.0,
+    center=(0.0, 0.0),
+    relative_permeability=100.0,
+)
+b = shield.evaluate(points)
+az = shield.flux_function(points)
+```
+
+模型维数为 2，横截面垂直于无限长筒的轴；内腔和外部为真空，筒壁是线性、各向同性、均匀材料。`applied_field` 是有限非零的二维远处磁感应强度（T），半径和 `center` 使用 m，必须满足 $0<a<b$；`relative_permeability` 是有限且不小于 1 的相对磁导率 $\mu_r$，不接受 `math.inf`。参数与 `interior_field`、`shielding_factor` 都是只读属性。内腔为匀强场 $\mathbf B_0/S$，其中
+
+$$
+S=1+\frac{(\mu_r-1)^2}{4\mu_r}\left(1-\frac{a^2}{b^2}\right).
+$$
+
+`evaluate()` 返回 B，场在两个界面都有限，恰在界面上采用径向外侧值：$r=a$ 属筒壁，$r=b$ 属外部。法向 B 连续，切向 H 连续，切向 B 一般跳变。`flux_function()` 返回二维 $A_z$，单位 T·m，形状为 `points.shape[:-1]`，满足 $\mathbf B=(\partial_y A_z,-\partial_x A_z)$；它跨两界面连续，可用作场线不变量。
+
+手动使用追踪器时应把以 `center` 为圆心、半径分别为 $a,b$ 的两个 `SphericalExclusion` 登记为 `interfaces`，而非 `exclusions`。材料不是奇点区，壁内允许采样与追踪。首版不包含有限长度、端部开口、多层、非线性、饱和、磁滞或涡流；公式推导及原始来源见[场模型教程](tutorial/02-field-models.md#magnetic-shield-cylinder)。
+
 ### `TraceOptions`
 
 构造签名：
@@ -209,7 +270,7 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 ```json
 {
   "status": "ok",
-  "version": "0.3.8"
+  "version": "0.3.9"
 }
 ```
 
@@ -252,8 +313,15 @@ result = tracer.trace(seed, direction=TraceDirection.BOTH)
 - `dielectric_sphere`
 - `conducting_sphere`
 - `uniform`
+- `laplace_saddle`
+- `laplace_multipole`
+- `slope_linear`
+- `slope_logistic`
+- `magnetic_shield_cylinder`
 
 此端点是可用预设及其交互能力的权威目录；当前无构建客户端随版本静态提供同一组选项，并由契约测试防止两边漂移。客户端不应假设列表永久不变。
+
+v0.3.9 的五个预设也不接受 `sources` 覆盖，不提供 `source_separation`，仍接受同样的 `density`、`resolution` 与 `seeds`。`laplace_saddle` 与 `laplace_multipole` 分别取 `order=2/3`、其余参数为默认值；`slope_linear` 使用 $y'=x-y$，`slope_logistic` 使用 $y'=y(1-y)$。这四个预设的 `domain.unit`、`scalar.unit`、`vector.unit` 均为 `"1"`，向量标签为 `F`。`magnetic_shield_cylinder` 采用上述 Python 示例参数，坐标单位 m，向量标签 B、单位 T，`sources` 为空，`regions` 返回一个圆柱壳。五个场景的 `seed_mode` 都是 `coverage`，线密度不表示场强或磁通。
 
 v0.3.8 新增的六个磁静态预设均为固定几何，不提供 `source_separation`，不接受 `sources` 覆盖（返回 422）；`density`、`resolution` 和手动 `seeds` 与其他预设相同。直导线标记表示横截面，螺线管与线圈组的每一对标记表示同一个圆环的两个截面；均复用 `wire_out`（⊙，电流沿 +z）与 `wire_into`（⊗，沿 −z），`strength` 是电流大小，单位 A。场和向量网格的量为 B，单位 T，曲线是 z=0 不变平面中的真实磁场线。播种为 `coverage`，图中的线密度不代表磁感应强度；各场景的具体布点和近似由 `metadata` 说明。闭合终止仍使用既有的 `closed_loop` 契约。
 
@@ -284,7 +352,7 @@ v0.3.8 新增的六个磁静态预设均为固定几何，不提供 `source_sepa
 | `density` | 否 | 种子总预算，整数范围 6–40，默认 18，不代表物理场强；每个参与播种的源至少分配 1 个种子 |
 | `resolution` | 否 | 两个方向共同使用的标量与向量网格分辨率，整数范围 32–144 |
 | `sources` | 否 | 电偶极预设接受 2–8 个电荷且至少各含一个正、负电荷；电四极子、六个正电荷和三对交替电荷预设接受 1–8 个任意符号的电荷；磁偶极和 Halbach 预设接受 1–8 个 `dipole`；若省略则使用预设源，显式空列表、未知字段以及其他固定几何预设的 override 会被拒绝 |
-| `seeds` | 否 | 1–16 个手动种子 `{x, y}`，坐标单位 m、范围 $[-3,3]$（即计算域）；每个种子在预设预算之外双向追踪一次，所有预设都接受；显式空列表、未知字段和越界坐标会被拒绝 |
+| `seeds` | 否 | 1–16 个手动种子 `{x, y}`，单位随预设的 `domain.unit`，范围 $[-3,3]$（即计算域）；每个种子在预设预算之外双向追踪一次，所有预设都接受；显式空列表、未知字段和越界坐标会被拒绝 |
 
 `sources[].x` 与 `sources[].y` 是笛卡尔坐标，单位固定为 m，范围均为 $[-2.8,2.8]$。请求模型 `SourceInput.kind` 只接受 `positive`、`negative`、`dipole`、`uniform`；响应专用的 `wire_out`/`wire_into`/`ring_charge` 不能提交。电荷源的 `strength` 单位为 nC：`positive` 必须严格大于 0，`negative` 必须严格小于 0，二者都拒绝 0；省略时正电荷默认为 `1`，负电荷按 `kind` 默认为 `-1`。单位由预设决定，请求不得提交 `strength_unit`。
 
@@ -307,6 +375,8 @@ $$
 `density` 是一次场景请求的**整数 trace-job 总预算**，不是“每个源各放多少条”，范围为 6–40；浏览器滑块步长为 1，因此圆环的奇数预算轴线分支可达。电偶极的全部正、负电荷都参与预算：每个源先得到 1 个 job，其余按 $|q|$ 用稳定最大余数法分配；正电荷正向追踪，负电荷反向追踪。自定义磁偶极和 Halbach 场景只让非零 active 偶极参与逐源预算；若参与数量超过 `density`，服务端返回 422，例如 `electric_dipole 有 8 个电荷参与播种，density 至少为 8`。默认 Halbach 使用两条独立轨道，所以最低密度仍是 API 下限 6，不受八个显示偶极数量约束。浏览器在所有 POST 路径上执行相同预判并自动抬高不足的预算。
 
 各预设的策略分别是：
+
+- v0.3.9 的两个 Laplace、两个斜率场和磁屏蔽筒使用 `coverage`，覆盖各自的方向区间、解曲线族或内腔/筒壁/外部区域；每个 job 双向积分，具体布点由 `seed_description` 说明；不宣称等通量；
 
 - 电荷与自定义多磁偶极使用逐源几何覆盖，`seed_mode: "coverage"`；
 - 单个 active 磁偶极沿随参数角度旋转的赤道线按距离等距覆盖并双向追踪，`seed_mode: "coverage"`；负强度会反转实际磁矩，但不会改变同一条赤道几何；
@@ -408,7 +478,7 @@ $$
 
 #### `domain`
 
-给出数值坐标范围、坐标系和长度单位。当前响应固定为 `coordinate_system: "cartesian"` 与 `unit: "m"`。前端使用同一个范围映射标量栅格、曲线和源，不能为每个图层独立自动缩放；探针与源坐标编辑器必须同时显示该单位。
+给出数值坐标范围、坐标系和坐标单位。当前响应固定为 `coordinate_system: "cartesian"`，`unit` 为 `"m"` 或 `"1"`；四个数学预设使用 `"1"`，表示无量纲，其余物理预设使用 m。前端使用同一个范围映射标量栅格、曲线和源，不能为每个图层独立自动缩放；坐标轴与探针必须显示该单位或其无量纲含义。
 
 #### `scalar`
 
@@ -416,7 +486,7 @@ $$
 - `values` 是长度为 `nx * ny` 的 row-major 一维数组：第 0 行对应 `ymax`，每行从 `xmin` 到 `xmax`，随后向 `ymin` 进入下一行；未遮罩项是未按色标裁剪的原始有限浮点值；
 - `mask` 与 `values` 等长并逐项满足 `mask[i] == (values[i] is null)`；`true`/`null` 表示源排除区或非有限采样；
 - `scale` 当前只允许 `linear` 或 `log`；
-- `label` 与 `unit` 必须一同显示，避免无量纲色图。
+- `label` 与 `unit` 必须一同显示；`unit: "1"` 明确表示无量纲，不能把未声明单位的物理量默认为无量纲。
 - `vmin` 与 `vmax` 是服务端在排除 mask 后给出的建议色标范围，必须满足 `vmax > vmin`，对数尺度还要求 `vmin > 0`。
 
 `vmin`/`vmax` 只控制颜色归一化；探针和数据消费者仍读取 `values` 的原值，即使它低于 `vmin` 或高于 `vmax`。对数尺度不能显示的非正值由显示层标为未着色（浏览器画成灰底斜线），不得改写成任意小正数；它们若本身有限，也仍是未遮罩原值。
@@ -427,7 +497,7 @@ $$
 
 - `nx`、`ny` 与 `scalar` 相同，排列方式也相同（第 0 行对应 `ymax`，每行从 `xmin` 到 `xmax`）；
 - `u`、`v` 分别是 $x$、$y$ 分量（沿用 matplotlib `quiver(X, Y, U, V)` 的命名），是未裁剪的 float64 原值，`null` 的位置与 `scalar.mask` 逐项一致，二者必须同时为 `null`；
-- `label` 是场的名字（`E` 或 `B`），`unit` 是分量单位，与 `scalar.unit` 相同；当前 `scalar` 就是这个场的模长，`scalar.label` 为 `|E|`/`|B|`，$\sqrt{u^2+v^2}$ 与 `scalar.values` 只差浮点舍入。
+- `label` 是场的名字（`E`、`B` 或数学辅助场 `F`），`unit` 是分量单位，与 `scalar.unit` 相同；当前 `scalar` 就是这个场的模长，`scalar.label` 为 `|E|`/`|B|`/`|F|`，$\sqrt{u^2+v^2}$ 与 `scalar.values` 只差浮点舍入。
 
 导体球内部是真实的零场：`u`、`v` 为 `0.0`，不是 `null`。浏览器用这份网格画无向的斜率短线、在探针里显示方向角，并在光标周围用双线性插值加 RK4 画预览束；预览只是网格插值，不是服务端积分，点击后才把种子交给服务端得到精确线（见[手动种子](#manual-seeds)）。缺少这一字段的旧响应仍然有效，只是没有这些显示。
 
@@ -447,7 +517,22 @@ $$
 
 #### `regions`
 
-材料区域是几何，不是场源：`dielectric_sphere` 与 `conducting_sphere` 各返回一个区域，其他预设返回空列表 `[]`。每个区域给出 `kind`、球心 `x`/`y`、`radius`、`unit: "m"`，介质球另给 `relative_permittivity`（不小于 1），导体球该字段为 `null`。前端把区域画成该平面上的虚线截线并标注材料，区域内的场是真实值、照常着色；缺少这一字段的旧响应按空列表处理，但存在时每个区域必须完整，否则整个场景被判为无效。
+材料区域是几何，不是场源：`dielectric_sphere`、`conducting_sphere` 与 `magnetic_shield_cylinder` 各返回一个区域，其他预设返回空列表 `[]`。每个区域给出 `kind`、中心 `x`/`y`、`radius`、`unit: "m"`。介质球另给 `relative_permittivity`（不小于 1），导体球该字段为 `null`；球体的 `inner_radius` 与 `relative_permeability` 只能省略或为 `null`，不能带有圆柱壳参数值。前端把区域画成该平面上的界面并标注材料，区域内的场是真实值、照常着色；缺少 `regions` 字段的旧响应按空列表处理，但存在时每个区域必须完整，否则整个场景被判为无效。
+
+圆柱壳的 `radius` 是外半径，`inner_radius` 必须满足 `0 < inner_radius < radius`，`relative_permeability` 必须有限且不小于 1；其 `relative_permittivity` 为 `null`。前端显示内外两条圆界面与材料环，内腔不会被填成实心材料，也不会因材料区域而遮罩或禁止播种。
+
+```json
+{
+  "kind": "magnetic_shield_cylinder",
+  "x": 0.0,
+  "y": 0.0,
+  "radius": 1.0,
+  "inner_radius": 0.7,
+  "relative_permeability": 100.0,
+  "relative_permittivity": null,
+  "unit": "m"
+}
+```
 
 ```json
 {
@@ -545,6 +630,18 @@ $$
       heading_level: 4
 
 ::: vectorviz.fields.CompositeField
+    options:
+      heading_level: 4
+
+::: vectorviz.planar_fields.LaplaceField
+    options:
+      heading_level: 4
+
+::: vectorviz.planar_fields.SlopeField
+    options:
+      heading_level: 4
+
+::: vectorviz.material_fields.MagneticShieldCylinderField
     options:
       heading_level: 4
 

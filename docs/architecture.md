@@ -15,6 +15,8 @@ Vector_field_streamline/
 │       ├── __init__.py          # 稳定公共导出
 │       ├── core.py              # VectorField、Domain、排除几何
 │       ├── fields.py            # 解析场与组合场
+│       ├── planar_fields.py     # 二维 Laplace 与斜率场
+│       ├── material_fields.py   # 磁屏蔽圆柱壳解析场
 │       ├── tracing.py           # 自适应场线积分与结果类型
 │       ├── _trace_geometry.py   # 内置排除区的步内曲线检查（私有）
 │       └── web/
@@ -33,7 +35,7 @@ Vector_field_streamline/
 | 层 | 负责 | 不负责 |
 |---|---|---|
 | `core.py` | 接口、区域、排除几何和共享数组约定 | 具体物理模型、HTTP、绘制 |
-| `fields.py` | 批量求值解析场与组合场 | 播种、积分、颜色映射 |
+| `fields.py`、`planar_fields.py`、`material_fields.py` | 批量求值解析场、斜率场与组合场 | 播种、积分、颜色映射 |
 | `tracing.py` | 方向归一化、双向积分、事件、终止信息 | 物理源公式、浏览器状态 |
 | 验证代码 | 解析解、不变量、残差与收敛诊断 | 修改模型参数以“修好”结果 |
 | Python Web 层 | 输入校验、预设播种、场景编排、静态资源、JSON 序列化 | 复制核心物理公式、改写核心积分政策 |
@@ -111,16 +113,21 @@ halbach_array    -> 单个批量 MagneticDipoleField（默认八个点偶极源�
 current_loop    -> CircularLoopField(...) 的 z=0 子午面适配器
 charged_ring    -> ChargedRingField(...) 的 z=0 子午面适配器
 dielectric_sphere / conducting_sphere -> DielectricSphereField(...) 的 z=0 切片适配器，球面作为追踪器的 interface
+laplace_saddle / laplace_multipole -> LaplaceField(order=2 / 3)，真实二维无量纲场
+slope_linear / slope_logistic -> SlopeField(固定 callable)，真实二维无量纲解曲线
+magnetic_shield_cylinder -> MagneticShieldCylinderField(...)，两个圆作为 interfaces
 uniform         -> UniformField(...)
 ```
 
-`resolution` 控制标量背景采样；`density` 控制播种数量或间距。这两个参数不能互相代替。完整 JSON 契约见 [HTTP API](api.md#http-api)。
+`resolution` 控制标量与向量背景采样；`density` 是预设追踪 job 的整数总预算。这两个参数不能互相代替。完整 JSON 契约见 [HTTP API](api.md#http-api)。
 
 `web/seeding.py` 把每个预设的种子位置、追踪方向和可选源下标封装为不可变 `TraceJob`。它只组合核心公开接口：圆环等 $\psi$ 策略调用 `CircularLoopField.flux_function()` 并用 SciPy 求根，不在 Web 层复制圆环磁场公式。`scene.py` 统一执行 job、组织双端终止信息，并在所有结果已知后做电荷源对抑制；抑制属于展示编排，不改写积分器或尝试预算。
 
 磁偶极与 Halbach 场景都只把 HTTP 中的面内角度转换成三维磁矩，再复用核心的批量 `MagneticDipoleField`；Web 层不复制磁偶极公式。单个 active 磁偶极沿旋转赤道线生成 `BOTH` job；多个 active 偶极使用逐源外向半球覆盖。Halbach 默认几何由八个等间距点偶极组成，相邻方向转过 90°，其专用 `BOTH` job 位于 $y=\pm0.45$ m 两条轨道。用户编辑后它成为普通的可编辑面内偶极阵列，退回逐源覆盖，响应元数据也不再把任意排列冒充标准 Halbach 几何。
 
 圆环是三维理想细导线模型；二维 Web 追踪器使用它的真实不变子午面。三维环面排除管在该平面上的截面是两个圆盘，因此 Web 层传给二维追踪器的是两个 `SphericalExclusion`，而不是维数不匹配的 `ToroidalExclusion`。响应中的两个 wire 标记仅表示同一圆环与子午面的交点，不是两个独立场源。环内非轴 job 由等间隔 $\psi$ 目标反解并成对镜像，奇数预算另含一条轴线特征 job。带电圆环复用同一个子午面适配器和同样的两个圆盘排除区，种子改在两个截面周围的种子圆上按等间隔 $\Psi$ 反解角度并镜像；零通量目标直接放在环内赤道上，奇数预算另含一条环外赤道射线。两种球体没有场源，响应改用 `regions` 给出球面截线；场景把球面作为追踪器的界面传入，穿过球面的线由事件停下并在另一侧重启，种子按 $\mathbf D$ 的通量函数在左边界等分。
+
+四个数学预设直接使用二维模型，`domain.unit` 与场单位为 `"1"`；不通过三维切片适配器，也不把坐标解释为 m。磁屏蔽筒直接使用真实二维横截面模型，`regions` 用一个带内外半径的区域描述材料壁，两个圆分别登记为追踪器界面；材料本身不是排除区。五个新场景复用覆盖播种与双向追踪，不改变原场景的模型或追踪设置。
 
 ## 前端模块 { #frontend-modules }
 

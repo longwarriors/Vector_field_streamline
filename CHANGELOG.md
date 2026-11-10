@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-11-10
+
+### Added
+
+- `LaplaceField`：二维谐波多项式势的负梯度，支持阶数、强度、长度尺度、转角和平移，公开 `potential()`；新增 `laplace_saddle` 与 `laplace_multipole` 预设。
+- `SlopeField`：将向量化 Python callable `f(x, y)` 组成二维辅助场 `(1, f)`；新增 `slope_linear`（$y'=x-y$）与 `slope_logistic`（$y'=y(1-y)$）预设。水平平衡解仍是有效曲线，热图只表示辅助场模长，不赋予物理场强含义。
+- `MagneticShieldCylinderField` 与 `magnetic_shield_cylinder`：无限长、线性各向同性、恒定相对磁导率的圆柱壳，在横向匀强外场中给出内腔、筒壁、外部的分段磁感应强度与二维通量函数。默认内外半径 0.7/1 m、相对磁导率 100、外场 1 μT；内腔约 0.0741 μT。两条材料界面交给追踪器定位与重启，筒壁照常采样和播种。
+- 五个预设均支持覆盖播种、热图、向量探针、斜率短线、光标预览和手动种子，固定公式与几何不接受 `sources` 覆盖。明确说明有限长、开口、多层、非线性、饱和及磁滞不在首版屏蔽模型内。
+
+### Changed
+
+- `domain.unit` 支持 `"1"`，四个数学预设的坐标和向量均无量纲，前端据响应显示单位；已有物理场景继续使用 m。
+- `regions` 增加 `magnetic_shield_cylinder`，以 `radius`、`inner_radius`、`relative_permeability` 表示环形材料区域；旧球体契约保留，前后端校验两类材料字段。
+- 路线图将 Laplace／斜率场与理想材料边界正式落实为 v0.3.9；后续从非定常流与含时电磁场继续。
+
+### Fixed
+
+- 界面滑移保护改为检查两次界面重启之间的累计行程，避免将穿越多个相距较远的界面误报为 `solver_failure`；真正连续无进展的界面滑移仍会终止。保留匀强场与磁屏蔽筒的修复前失败回归。
+
 ## [0.3.8] - 2026-11-10
 
 ### Added
@@ -185,7 +204,8 @@
 - `density` 定义为整个场景的种子总预算，并在服务端与浏览器提交前共同校验。
 - 场景元数据区分真实不变平面场线与投影流线，并公开播种说明和终止统计。
 
-[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.8...HEAD
+[Unreleased]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.9...HEAD
+[0.3.9]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/longwarriors/Vector_field_streamline/compare/v0.3.5...v0.3.6
